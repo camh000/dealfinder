@@ -1,21 +1,54 @@
-# GPU Deal Finder
+# PC Deal Finder
 
-Scrapes eBay UK for used GPU auctions, compares against historical sold prices, and surfaces deals ending within 2 hours that are 20%+ below market rate.
+Scrapes eBay UK for used GPU, CPU, and Hard Drive auctions, compares against historical sold prices, and surfaces deals ending within 2 hours that are 20%+ below market rate.
 
 ## Project Structure
 
 ```
 ├── EbayScraper.py       # Scraper + DB upload logic
 ├── scheduler.py         # Runs the scraper every 30 minutes
-├── app.py               # Flask web server + API
+├── App.py               # Flask web server + API
 ├── templates/
-│   └── index.html       # Frontend dashboard
+│   └── Index.html       # Frontend dashboard
 ├── Dockerfile.web       # Docker image for the web app
 ├── Dockerfile.scraper   # Docker image for the scraper
 ├── docker-compose.yml   # Orchestrates both containers
 ├── requirements.txt
 ├── credentials.env      # NOT committed - see below
 └── .gitignore
+```
+
+## Database Schema
+
+Your MariaDB `Scraper` database needs the following tables in addition to the base `EBAY` table:
+
+```sql
+CREATE TABLE GPU (
+    ID BIGINT PRIMARY KEY,
+    Brand VARCHAR(50),
+    Model VARCHAR(100),
+    VRAM INT,
+    FOREIGN KEY (ID) REFERENCES EBAY(ID)
+);
+
+CREATE TABLE CPU (
+    ID BIGINT PRIMARY KEY,
+    Brand VARCHAR(50),
+    Model VARCHAR(100),
+    Socket VARCHAR(20),
+    Cores INT,
+    FOREIGN KEY (ID) REFERENCES EBAY(ID)
+);
+
+CREATE TABLE HDD (
+    ID BIGINT PRIMARY KEY,
+    Brand VARCHAR(50),
+    CapacityGB INT,
+    Interface VARCHAR(10),
+    FormFactor VARCHAR(10),
+    RPM INT,
+    FOREIGN KEY (ID) REFERENCES EBAY(ID)
+);
 ```
 
 ## Setup
@@ -47,7 +80,7 @@ OXYLABS_PASSWORD=your_oxylabs_password
 
 ### 3. Set up the database
 
-Make sure your MariaDB instance has the `Scraper` database with the `EBAY` and `GPU` tables. The MariaDB instance should allow connections from your Docker container's host IP.
+Run the `CREATE TABLE` statements above against your MariaDB instance. The instance should allow connections from your Docker container's host IP.
 
 ### 4. Deploy on Unraid
 
@@ -78,9 +111,12 @@ docker compose up -d --build
 ## How it works
 
 - The **scraper** container runs `scheduler.py` which calls `EbayScraper.ScrapeAndUpload()` on startup and then every 30 minutes
-- The **web** container serves the Flask dashboard on port 5000
-- The dashboard polls `/api/deals` every 5 minutes and highlights items ending within 2 hours at 20%+ below average sold price
-- Listings are distinguished as active vs sold based on whether `SoldDate` is NULL
+- Searches cover GPUs (GTX 9/10, RTX 20/30/40, AMD RX 5/6/7000), CPUs (Intel Core i3–i9, AMD Ryzen 3–9), and Hard Drives (SATA & SAS, 4–12TB)
+- The **web** container serves the Flask dashboard on port 5000 with GPU, CPU, and HDD tabs
+- Each tab polls `/api/deals?type=gpu|cpu|hdd` every 5 minutes, showing auctions ending within 2 hours at 20%+ below the average sold price for that model
+- Live countdown timers update every second; items under 5 minutes highlight in red
+- Hard drives default to SATA if the listing does not explicitly mention SAS
+- Market averages require at least 5 historical sold listings per model before a deal is surfaced
 
 ## GitHub Setup
 

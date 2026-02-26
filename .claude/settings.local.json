@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add TODO.md)",
+      "Bash(git commit:*)",
+      "Bash(git push origin claude/eager-nightingale)"
+    ]
+  }
+}

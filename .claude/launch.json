@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["App.py"],
+      "port": 5000
+    },
+    {
+      "name": "scraper",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["scheduler.py"],
+      "port": 5001
+    }
+  ]
+}
