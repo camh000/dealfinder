@@ -52,32 +52,99 @@ typeDict = {
     'offers': '&LH_BO=1'
 }
 
+# Persistent curl-cffi session — reused across requests within a scrape run so
+# that Akamai cookies set on the homepage warmup are carried to search requests.
+# Call reset_direct_session() before each run to get a fresh identity.
+_direct_session = None
+
+# Full browser header set that Akamai inspects.  curl-cffi sets the TLS/HTTP2
+# fingerprint; we supply the application-layer headers to match.
+_DIRECT_HEADERS_BASE = {
+    'Accept': (
+        'text/html,application/xhtml+xml,application/xml;q=0.9,'
+        'image/avif,image/webp,image/apng,*/*;q=0.8,'
+        'application/signed-exchange;v=b3;q=0.7'
+    ),
+    'Accept-Language':          'en-GB,en-US;q=0.9,en;q=0.8',
+    'Accept-Encoding':          'gzip, deflate, br',
+    'Sec-Fetch-Dest':           'document',
+    'Sec-Fetch-Mode':           'navigate',
+    'Sec-Fetch-User':           '?1',
+    'Upgrade-Insecure-Requests':'1',
+    'DNT':                      '1',
+}
+
+
+def reset_direct_session() -> None:
+    """Discard the current curl-cffi session.
+
+    Call at the start of each scrape run so a fresh Akamai identity
+    (new cookies, new TLS session) is established via the homepage warmup.
+    """
+    global _direct_session
+    _direct_session = None
+
+
 def _fetch_direct(url: str) -> str | None:
-    """Fetch URL via curl-cffi impersonating Chrome (no proxy needed).
+    """Fetch URL via a persistent curl-cffi session impersonating Chrome 131.
+
+    On first call (or after reset_direct_session()), warms up by fetching the
+    eBay homepage so Akamai bot-detection cookies (_abck, bm_sz, etc.) are
+    established before any search request.
 
     Returns HTML string on success, or None if the request fails or the
     response looks like a bot-detection / block page.
     """
+    global _direct_session
+
     try:
         from curl_cffi import requests as cffi_requests
-        resp = cffi_requests.get(
+    except ImportError:
+        log.warning("curl_cffi not installed — skipping direct fetch")
+        return None
+
+    # Initialise session + homepage warmup once per scrape run.
+    if _direct_session is None:
+        _direct_session = cffi_requests.Session(impersonate='chrome131')
+        try:
+            warmup = _direct_session.get(
+                'https://www.ebay.co.uk/',
+                headers={**_DIRECT_HEADERS_BASE, 'Sec-Fetch-Site': 'none'},
+                timeout=15,
+            )
+            log.info(
+                "Direct session warmed up (HTTP %s, %d cookies)",
+                warmup.status_code, len(_direct_session.cookies),
+            )
+        except Exception as e:
+            log.warning("Session warmup failed: %s", e)
+
+    try:
+        resp = _direct_session.get(
             url,
-            impersonate='chrome120',
-            headers={'Accept-Language': 'en-GB,en;q=0.9'},
+            headers={
+                **_DIRECT_HEADERS_BASE,
+                'Referer':        'https://www.ebay.co.uk/',
+                'Sec-Fetch-Site': 'same-origin',
+            },
             timeout=30,
         )
         if resp.status_code != 200:
             log.warning("Direct fetch: HTTP %s for %s", resp.status_code, url)
             return None
         html = resp.text
-        # Real eBay search pages are >1 MB; block/CAPTCHA pages are tiny
+        # Real eBay search pages are >1 MB; block/CAPTCHA pages are tiny.
         if len(html) < 50_000:
-            log.warning("Direct fetch: response too small (%d chars) — possible block page", len(html))
+            log.warning(
+                "Direct fetch: response too small (%d chars) — possible block page", len(html)
+            )
+            _direct_session = None  # session may be flagged; reset for next call
             return None
-        log.debug("Fetched directly via curl-cffi (%d chars)", len(html))
+        log.debug("Fetched via curl-cffi/chrome131 (%d chars)", len(html))
         return html
     except Exception as e:
         log.warning("Direct fetch failed: %s", e)
+        _direct_session = None
         return None
 
 
