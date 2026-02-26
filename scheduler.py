@@ -41,13 +41,16 @@ CPU_QUERY_LIST = [
 ]
 
 HDD_QUERY_LIST = [
-    "SAS hard drive 1TB",
-    "SAS hard drive 2TB",
     "SAS hard drive 4TB",
-    "SATA hard drive 1TB",
-    "SATA hard drive 2TB",
+    "SAS hard drive 6TB",
+    "SAS hard drive 8TB",
+    "SAS hard drive 10TB",
+    "SAS hard drive 12TB",
     "SATA hard drive 4TB",
+    "SATA hard drive 6TB",
     "SATA hard drive 8TB",
+    "SATA hard drive 10TB",
+    "SATA hard drive 12TB",
 ]
 
 def run_scraper():
@@ -71,4 +74,7 @@ if __name__ == "__main__":
 
     scheduler = BlockingScheduler()
     scheduler.add_job(run_scraper, 'interval', minutes=30)
-    scheduler.start()
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        log.info("Scheduler stopped.")

@@ -211,6 +211,18 @@ def __ParseItems(soup, query, productType):
             brand = extract_brand(title)
         elif productType == 'CPU':
 
+            # Drop complete-system listings (mini PCs etc.) that mention a CPU
+            _tl = title.lower()
+            _is_system = (
+                any(k in _tl for k in ['mini pc', 'mini-pc', ' nuc', 'barebones',
+                                        'desktop pc', 'all-in-one', 'laptop', 'notebook'])
+                or (bool(re.search(r'\d+\s*gb\s*(ddr\d?|ram)', _tl))
+                    and bool(re.search(r'\d+\s*(tb|gb)\s*(ssd|nvme|hdd|m\.2)', _tl)))
+            )
+            if _is_system:
+                log.debug("[%s] Skipping system listing: %s", query, title[:60])
+                continue
+
             def extract_cpu_brand(title: str):
                 t = title.upper()
                 if 'AMD' in t:
@@ -219,12 +231,29 @@ def __ParseItems(soup, query, productType):
                     return 'Intel'
                 return ''
 
-            amd_model_pattern   = re.compile(r'Ryzen\s*(?:Threadripper\s*(?:PRO\s*)?)?\d+\s+\d+[A-Z0-9]*', re.IGNORECASE)
-            intel_model_pattern = re.compile(r'Core\s+[iI]\d-\d{4,5}[A-Z0-9]*', re.IGNORECASE)
+            # AMD: "Ryzen 5 3400G", "Ryzen 9 7940HS", "Ryzen R9 7940HS" (R-prefix variant)
+            amd_model_pattern = re.compile(
+                r'Ryzen\s*(?:Threadripper\s*(?:PRO\s*)?)?R?(\d+)\s+(\d+[A-Z0-9]*)',
+                re.IGNORECASE
+            )
+
+            # Intel: handles all of:
+            #   "Core i5-6600K"  "i5 9400F"  "I5-6600K"  "i5 CPU 6500"  "i5 650"
+            intel_model_pattern = re.compile(
+                r'[iI]([3579])[\s\-](?:CPU\s+)?(\d{3,5}[A-Z0-9]*)',
+                re.IGNORECASE
+            )
 
             def extract_cpu_model(title: str):
-                m = amd_model_pattern.search(title) or intel_model_pattern.search(title)
-                return m.group(0).strip() if m else None
+                # AMD — normalise to "Ryzen 9 7940HS"
+                m = amd_model_pattern.search(title)
+                if m:
+                    return f"Ryzen {m.group(1)} {m.group(2).upper()}"
+                # Intel — normalise to "i5-6600K"
+                m = intel_model_pattern.search(title)
+                if m:
+                    return f"i{m.group(1)}-{m.group(2).upper()}"
+                return None
 
             socket_pattern = re.compile(r'(LGA\s*\d{3,4}|AM\s*[2345]|FM[12]|TR[X]?\d+)', re.IGNORECASE)
 
@@ -234,8 +263,8 @@ def __ParseItems(soup, query, productType):
                     return re.sub(r'\s+', '', m.group(0)).upper()
                 return None
 
-            cores_num_pattern   = re.compile(r'(\d+)\s*[Cc]ore')
-            cores_named_map     = {'dual':2,'triple':3,'quad':4,'hexa':6,'octa':8,'deca':10,'dodeca':12}
+            cores_num_pattern = re.compile(r'(\d+)\s*[Cc]ore')
+            cores_named_map   = {'dual':2,'triple':3,'quad':4,'hexa':6,'octa':8,'deca':10,'dodeca':12}
 
             def extract_cores(title: str):
                 m = cores_num_pattern.search(title)

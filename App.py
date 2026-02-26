@@ -46,6 +46,7 @@ JOIN ModelStats ms ON ms.Model = g.Model
 WHERE
     e.SoldDate IS NULL
     AND (e.Price / 100) < ms.AvgPrice * 0.8
+    AND e.EndTime > NOW()
     AND e.EndTime < NOW() + INTERVAL 2 HOUR
 ORDER BY PotentialGain DESC;
 """
@@ -54,14 +55,13 @@ CPU_DEALS_QUERY = """
 WITH ModelStats AS (
     SELECT
         c.Model,
-        c.Socket,
         AVG(e.Price / 100) AS AvgPrice
     FROM Scraper.CPU c
     JOIN Scraper.EBAY e ON e.ID = c.ID
     WHERE
         e.SoldDate IS NOT NULL
         AND c.Model IS NOT NULL
-    GROUP BY c.Model, c.Socket
+    GROUP BY c.Model
     HAVING COUNT(*) >= 5
 )
 SELECT
@@ -78,10 +78,11 @@ SELECT
     e.URL
 FROM Scraper.EBAY e
 JOIN Scraper.CPU c ON c.ID = e.ID
-JOIN ModelStats ms ON ms.Model = c.Model AND (ms.Socket = c.Socket OR (ms.Socket IS NULL AND c.Socket IS NULL))
+JOIN ModelStats ms ON ms.Model = c.Model
 WHERE
     e.SoldDate IS NULL
     AND (e.Price / 100) < ms.AvgPrice * 0.8
+    AND e.EndTime > NOW()
     AND e.EndTime < NOW() + INTERVAL 2 HOUR
 ORDER BY PotentialGain DESC;
 """
@@ -119,6 +120,7 @@ JOIN ModelStats ms ON ms.CapacityGB = h.CapacityGB AND ms.Interface = h.Interfac
 WHERE
     e.SoldDate IS NULL
     AND (e.Price / 100) < ms.AvgPrice * 0.8
+    AND e.EndTime > NOW()
     AND e.EndTime < NOW() + INTERVAL 2 HOUR
 ORDER BY PotentialGain DESC;
 """
@@ -127,6 +129,57 @@ DEALS_QUERIES = {
     'gpu': GPU_DEALS_QUERY,
     'cpu': CPU_DEALS_QUERY,
     'hdd': HDD_DEALS_QUERY,
+}
+
+GPU_COUNT_QUERY = """
+WITH ModelStats AS (
+    SELECT g.Model, AVG(e.Price / 100) AS AvgPrice
+    FROM Scraper.GPU g JOIN Scraper.EBAY e ON e.ID = g.ID
+    WHERE e.SoldDate IS NOT NULL AND g.Model IS NOT NULL
+    GROUP BY g.Model HAVING COUNT(*) >= 5
+)
+SELECT COUNT(*) AS cnt
+FROM Scraper.EBAY e
+JOIN Scraper.GPU g ON g.ID = e.ID
+JOIN ModelStats ms ON ms.Model = g.Model
+WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
+  AND e.EndTime > NOW() AND e.EndTime < NOW() + INTERVAL 2 HOUR;
+"""
+
+CPU_COUNT_QUERY = """
+WITH ModelStats AS (
+    SELECT c.Model, AVG(e.Price / 100) AS AvgPrice
+    FROM Scraper.CPU c JOIN Scraper.EBAY e ON e.ID = c.ID
+    WHERE e.SoldDate IS NOT NULL AND c.Model IS NOT NULL
+    GROUP BY c.Model HAVING COUNT(*) >= 5
+)
+SELECT COUNT(*) AS cnt
+FROM Scraper.EBAY e
+JOIN Scraper.CPU c ON c.ID = e.ID
+JOIN ModelStats ms ON ms.Model = c.Model
+WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
+  AND e.EndTime > NOW() AND e.EndTime < NOW() + INTERVAL 2 HOUR;
+"""
+
+HDD_COUNT_QUERY = """
+WITH ModelStats AS (
+    SELECT h.CapacityGB, h.Interface, AVG(e.Price / 100) AS AvgPrice
+    FROM Scraper.HDD h JOIN Scraper.EBAY e ON e.ID = h.ID
+    WHERE e.SoldDate IS NOT NULL AND h.CapacityGB IS NOT NULL
+    GROUP BY h.CapacityGB, h.Interface HAVING COUNT(*) >= 5
+)
+SELECT COUNT(*) AS cnt
+FROM Scraper.EBAY e
+JOIN Scraper.HDD h ON h.ID = e.ID
+JOIN ModelStats ms ON ms.CapacityGB = h.CapacityGB AND ms.Interface = h.Interface
+WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
+  AND e.EndTime > NOW() AND e.EndTime < NOW() + INTERVAL 2 HOUR;
+"""
+
+COUNT_QUERIES = {
+    'gpu': GPU_COUNT_QUERY,
+    'cpu': CPU_COUNT_QUERY,
+    'hdd': HDD_COUNT_QUERY,
 }
 
 @app.route("/")
@@ -147,9 +200,26 @@ def deals():
 
         for row in rows:
             if row.get("EndTime"):
-                row["EndTime"] = row["EndTime"].strftime("%H:%M:%S")
+                row["EndTime"] = row["EndTime"].isoformat()
 
         return jsonify({"status": "ok", "deals": rows})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@app.route("/api/deal-counts")
+def deal_counts():
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        counts = {}
+        for key, query in COUNT_QUERIES.items():
+            cur.execute(query)
+            counts[key] = cur.fetchone()['cnt']
+        return jsonify({"status": "ok", "counts": counts})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:

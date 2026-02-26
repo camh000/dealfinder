@@ -128,6 +128,23 @@
             border-bottom-color: var(--green);
         }
 
+        .tab-badge {
+            display: none;
+            background: var(--green);
+            color: var(--bg);
+            font-family: var(--sans);
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 1;
+            padding: 2px 6px;
+            border-radius: 8px;
+            margin-left: 7px;
+            vertical-align: middle;
+        }
+
+        .tab-badge.visible { display: inline-block; }
+        .tab-btn:not(.active) .tab-badge { background: var(--green-dim); color: var(--text); }
+
         main { padding: 30px 40px; max-width: 1400px; margin: 0 auto; }
 
         .section-header {
@@ -332,6 +349,83 @@
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: var(--bg); }
         ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        /* ── Mobile ──────────────────────────────────────────── */
+        @media (max-width: 640px) {
+            header {
+                padding: 14px 16px;
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+
+            .status-bar { gap: 14px; flex-wrap: wrap; }
+
+            .tab-bar { padding: 0; }
+            .tab-btn { flex: 1; padding: 13px 0; font-size: 11px; letter-spacing: 2px; text-align: center; }
+
+            main { padding: 16px; }
+            footer { padding: 16px; font-size: 10px; letter-spacing: 0; }
+
+            /* Card layout — convert table rows to stacked cards */
+            .table-wrap { border-left: none; border-right: none; border-radius: 0; }
+            table, tbody, tr { display: block; width: 100%; }
+            thead { display: none; }
+
+            tbody tr {
+                padding: 14px 16px;
+                border-bottom: 1px solid var(--border);
+            }
+
+            td {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 5px 0;
+                border: none;
+                text-align: left !important;
+            }
+
+            /* Label injected from data-label attribute */
+            td[data-label]::before {
+                content: attr(data-label);
+                font-family: var(--sans);
+                font-size: 10px;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+                color: var(--muted);
+                min-width: 72px;
+                flex-shrink: 0;
+            }
+
+            /* Card header — model/capacity line */
+            td.card-title {
+                display: block;
+                padding-bottom: 10px;
+                margin-bottom: 6px;
+                border-bottom: 1px solid rgba(28,42,58,0.6);
+            }
+
+            /* VIEW button — full width */
+            td.card-action {
+                display: flex;
+                margin-top: 10px;
+                padding-top: 10px;
+                border-top: 1px solid rgba(28,42,58,0.6);
+                justify-content: stretch;
+            }
+            .link-btn {
+                display: block;
+                width: 100%;
+                text-align: center;
+                padding: 11px;
+                font-size: 12px;
+            }
+
+            .state-row td { display: block; padding: 40px 20px; text-align: center !important; }
+
+            /* .price-avg shown with its own data-label row on mobile */
+        }
     </style>
 </head>
 <body>
@@ -347,9 +441,9 @@
 </header>
 
 <div class="tab-bar">
-    <button class="tab-btn active" data-type="gpu" onclick="switchTab('gpu')">GPU</button>
-    <button class="tab-btn" data-type="cpu" onclick="switchTab('cpu')">CPU</button>
-    <button class="tab-btn" data-type="hdd" onclick="switchTab('hdd')">HDD</button>
+    <button class="tab-btn active" data-type="gpu" onclick="switchTab('gpu')">GPU<span class="tab-badge" id="badge-gpu"></span></button>
+    <button class="tab-btn" data-type="cpu" onclick="switchTab('cpu')">CPU<span class="tab-badge" id="badge-cpu"></span></button>
+    <button class="tab-btn" data-type="hdd" onclick="switchTab('hdd')">HDD<span class="tab-badge" id="badge-hdd"></span></button>
 </div>
 
 <main>
@@ -383,7 +477,7 @@
             <th class="right">Avg Market</th>
             <th class="right">You Save</th>
             <th>Discount</th>
-            <th>Ends</th>
+            <th>Ends In</th>
             <th></th>
         </tr>`,
         cpu: `<tr>
@@ -393,7 +487,7 @@
             <th class="right">Avg Market</th>
             <th class="right">You Save</th>
             <th>Discount</th>
-            <th>Ends</th>
+            <th>Ends In</th>
             <th></th>
         </tr>`,
         hdd: `<tr>
@@ -403,7 +497,7 @@
             <th class="right">Avg Market</th>
             <th class="right">You Save</th>
             <th>Discount</th>
-            <th>Ends</th>
+            <th>Ends In</th>
             <th></th>
         </tr>`,
     };
@@ -418,10 +512,25 @@
         loadDeals();
     }
 
-    function timeUrgency(timeStr) {
-        if (!timeStr) return false;
-        const [h, m] = timeStr.split(':').map(Number);
-        return h === 0 && m <= 30;
+    function formatCountdown(isoStr) {
+        if (!isoStr) return '—';
+        const diff = Math.floor((new Date(isoStr) - Date.now()) / 1000);
+        if (diff <= 0) return 'ENDED';
+        const h = Math.floor(diff / 3600);
+        const m = Math.floor((diff % 3600) / 60);
+        const s = diff % 60;
+        if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
+        if (m > 0) return `${m}m ${String(s).padStart(2, '0')}s`;
+        return `${s}s`;
+    }
+
+    function tickCountdowns() {
+        document.querySelectorAll('[data-ends]').forEach(el => {
+            const isoStr = el.dataset.ends;
+            const diff = isoStr ? (new Date(isoStr) - Date.now()) / 1000 : -1;
+            el.textContent = formatCountdown(isoStr);
+            el.classList.toggle('urgent', diff >= 0 && diff < 300);
+        });
     }
 
     function safeUrl(url) {
@@ -432,20 +541,20 @@
     }
 
     function renderRow(d, type, i) {
-        const urgent      = timeUrgency(d.EndTime);
         const bigDiscount = d.DiscountPct >= 30;
         const delay       = i * 60;
+        const fmt = v => (v != null && !isNaN(v)) ? Number(v).toFixed(2) : '—';
         const prices = `
-            <td style="text-align:right"><div class="price-current">£${d.CurrentPrice.toFixed(2)}</div></td>
-            <td style="text-align:right"><div class="price-avg">£${d.AvgMarketPrice.toFixed(2)}</div></td>
-            <td style="text-align:right"><span class="gain">+£${d.PotentialGain.toFixed(2)}</span></td>
-            <td><span class="discount-badge ${bigDiscount ? 'high' : ''}">${d.DiscountPct}% OFF</span></td>
-            <td><span class="time-cell ${urgent ? 'urgent' : ''}">${d.EndTime || '—'}</span></td>
-            <td><a href="${safeUrl(d.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>`;
+            <td data-label="Current" style="text-align:right"><div class="price-current">£${fmt(d.CurrentPrice)}</div></td>
+            <td data-label="Avg" style="text-align:right"><div class="price-avg">£${fmt(d.AvgMarketPrice)}</div></td>
+            <td data-label="Saving" style="text-align:right"><span class="gain">+£${fmt(d.PotentialGain)}</span></td>
+            <td data-label="Discount"><span class="discount-badge ${bigDiscount ? 'high' : ''}">${d.DiscountPct}% OFF</span></td>
+            <td data-label="Ends In"><span class="time-cell" data-ends="${d.EndTime || ''}"></span></td>
+            <td class="card-action"><a href="${safeUrl(d.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>`;
 
         if (type === 'gpu') {
             return `<tr style="animation-delay:${delay}ms">
-                <td>
+                <td class="card-title">
                     <div class="model-cell">${d.Model || '—'}</div>
                     <div class="brand-tag">${d.Brand || ''}${d.VRAM ? ' · ' + d.VRAM + 'GB' : ''}</div>
                 </td>
@@ -454,11 +563,11 @@
         }
         if (type === 'cpu') {
             return `<tr style="animation-delay:${delay}ms">
-                <td>
+                <td class="card-title">
                     <div class="model-cell">${d.Model || '—'}</div>
                     <div class="brand-tag">${d.Brand || ''}</div>
                 </td>
-                <td>
+                <td data-label="Socket">
                     <div class="model-cell" style="font-size:13px">${d.Socket || '—'}</div>
                     <div class="brand-tag">${d.Cores ? d.Cores + ' cores' : ''}</div>
                 </td>
@@ -470,10 +579,10 @@
                 ? (d.CapacityGB / 1000).toFixed(d.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
                 : d.CapacityGB + 'GB';
             return `<tr style="animation-delay:${delay}ms">
-                <td>
+                <td class="card-title">
                     <div class="model-cell">${cap} · ${d.Interface || 'SATA'}</div>
                 </td>
-                <td>
+                <td data-label="Details">
                     <div class="model-cell" style="font-size:13px">${d.Brand || '—'}</div>
                     <div class="brand-tag">${d.FormFactor || ''}${d.RPM ? ' · ' + d.RPM.toLocaleString() + ' rpm' : ''}</div>
                 </td>
@@ -496,6 +605,25 @@
         }
 
         tbody.innerHTML = deals.map((d, i) => renderRow(d, type, i)).join('');
+        tickCountdowns();
+    }
+
+    async function loadTabCounts() {
+        try {
+            const res  = await fetch('/api/deal-counts');
+            const data = await res.json();
+            if (data.status !== 'ok') return;
+            ['gpu', 'cpu', 'hdd'].forEach(type => {
+                const badge = document.getElementById(`badge-${type}`);
+                const count = data.counts[type];
+                if (count > 0) {
+                    badge.textContent = count;
+                    badge.classList.add('visible');
+                } else {
+                    badge.classList.remove('visible');
+                }
+            });
+        } catch {}
     }
 
     async function loadStats() {
@@ -525,9 +653,10 @@
                 document.getElementById('deals-body').innerHTML =
                     `<tr class="state-row"><td colspan="${cols}">Error: ${data.message}</td></tr>`;
             }
-        } catch {
+        } catch(err) {
+            console.error('loadDeals error:', err);
             document.getElementById('deals-body').innerHTML =
-                `<tr class="state-row"><td colspan="${cols}">Could not connect to server.</td></tr>`;
+                `<tr class="state-row"><td colspan="${cols}">Error: ${err.message || 'Could not connect to server.'}</td></tr>`;
         } finally {
             btn.classList.remove('spinning');
         }
@@ -535,8 +664,11 @@
 
     loadStats();
     loadDeals();
+    loadTabCounts();
+    setInterval(tickCountdowns, 1000);
     setInterval(loadDeals, 5 * 60 * 1000);
     setInterval(loadStats, 5 * 60 * 1000);
+    setInterval(loadTabCounts, 5 * 60 * 1000);
 </script>
 </body>
 </html>
