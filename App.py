@@ -1,9 +1,12 @@
 from flask import Flask, jsonify, render_template, request
 import mariadb
 import os
+import logging
 from dotenv import load_dotenv
 
 load_dotenv("credentials.env")
+
+log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -38,6 +41,7 @@ SELECT
     ROUND(ms.AvgPrice, 2) AS AvgMarketPrice,
     ROUND(ms.AvgPrice - (e.Price / 100), 2) AS PotentialGain,
     ROUND((1 - (e.Price / 100) / ms.AvgPrice) * 100, 1) AS DiscountPct,
+    e.Bids,
     e.EndTime,
     e.URL
 FROM Scraper.EBAY e
@@ -74,6 +78,7 @@ SELECT
     ROUND(ms.AvgPrice, 2) AS AvgMarketPrice,
     ROUND(ms.AvgPrice - (e.Price / 100), 2) AS PotentialGain,
     ROUND((1 - (e.Price / 100) / ms.AvgPrice) * 100, 1) AS DiscountPct,
+    e.Bids,
     e.EndTime,
     e.URL
 FROM Scraper.EBAY e
@@ -112,6 +117,7 @@ SELECT
     ROUND(ms.AvgPrice, 2) AS AvgMarketPrice,
     ROUND(ms.AvgPrice - (e.Price / 100), 2) AS PotentialGain,
     ROUND((1 - (e.Price / 100) / ms.AvgPrice) * 100, 1) AS DiscountPct,
+    e.Bids,
     e.EndTime,
     e.URL
 FROM Scraper.EBAY e
@@ -182,9 +188,82 @@ COUNT_QUERIES = {
     'hdd': HDD_COUNT_QUERY,
 }
 
+OUTCOMES_RESOLVED_QUERY = """
+SELECT
+    d.EbayID,
+    d.Category,
+    d.Model,
+    ROUND(d.SurfacedPrice / 100, 2)  AS SurfacedPrice,
+    ROUND(d.AvgMarketPrice / 100, 2) AS AvgMarketPrice,
+    d.DiscountPct                    AS SurfacedDiscountPct,
+    d.BidCount                       AS BidCountAtSurfacing,
+    d.EndTime,
+    d.SurfacedAt,
+    ROUND(e.Price / 100, 2)          AS FinalPrice,
+    e.SoldDate,
+    ROUND((1 - (e.Price / 100) / (d.AvgMarketPrice / 100)) * 100, 1) AS ActualDiscountPct,
+    e.URL
+FROM Scraper.DealOutcomes d
+JOIN Scraper.EBAY e ON e.ID = d.EbayID
+WHERE e.SoldDate IS NOT NULL
+ORDER BY d.SurfacedAt DESC
+LIMIT 200;
+"""
+
+OUTCOMES_PENDING_QUERY = """
+SELECT
+    d.EbayID,
+    d.Category,
+    d.Model,
+    ROUND(d.SurfacedPrice / 100, 2)  AS SurfacedPrice,
+    ROUND(d.AvgMarketPrice / 100, 2) AS AvgMarketPrice,
+    d.DiscountPct                    AS SurfacedDiscountPct,
+    d.EndTime,
+    d.SurfacedAt,
+    ROUND(e.Price / 100, 2)          AS CurrentPrice,
+    e.Bids                           AS CurrentBids,
+    e.URL
+FROM Scraper.DealOutcomes d
+JOIN Scraper.EBAY e ON e.ID = d.EbayID
+WHERE e.SoldDate IS NULL
+ORDER BY d.EndTime ASC;
+"""
+
+
+def ensure_outcomes_table():
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.DealOutcomes (
+                EbayID         BIGINT       PRIMARY KEY,
+                Category       VARCHAR(10)  NOT NULL,
+                Model          VARCHAR(150),
+                SurfacedPrice  INT          NOT NULL,
+                AvgMarketPrice INT          NOT NULL,
+                DiscountPct    FLOAT        NOT NULL,
+                BidCount       INT          NOT NULL DEFAULT 0,
+                EndTime        DATETIME     NOT NULL,
+                SurfacedAt     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        log.info("DealOutcomes table ready")
+    except Exception as e:
+        log.error("Could not create DealOutcomes table: %s", e)
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_outcomes_table()
+
+
 @app.route("/")
 def index():
     return render_template("Index.html")
+
 
 @app.route("/api/deals")
 def deals():
@@ -198,6 +277,39 @@ def deals():
         cur.execute(DEALS_QUERIES[product_type])
         rows = cur.fetchall()
 
+        # Record newly surfaced deals (INSERT IGNORE = only capture first sighting)
+        if rows:
+            try:
+                for row in rows:
+                    if product_type == 'hdd':
+                        cap = row.get('CapacityGB')
+                        iface = row.get('Interface') or 'SATA'
+                        if cap and cap >= 1000:
+                            model_label = f"{cap // 1000}TB {iface}"
+                        elif cap:
+                            model_label = f"{cap}GB {iface}"
+                        else:
+                            model_label = iface
+                    else:
+                        model_label = row.get('Model')
+                    cur.execute("""
+                        INSERT IGNORE INTO Scraper.DealOutcomes
+                            (EbayID, Category, Model, SurfacedPrice, AvgMarketPrice, DiscountPct, BidCount, EndTime)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        row['ID'],
+                        product_type.upper(),
+                        model_label,
+                        int(round(row['CurrentPrice'] * 100)),
+                        int(round(row['AvgMarketPrice'] * 100)),
+                        float(row['DiscountPct']),
+                        int(row.get('Bids') or 0),
+                        row['EndTime'],
+                    ))
+                conn.commit()
+            except Exception as e:
+                log.warning("Could not record surfaced deals: %s", e)
+
         for row in rows:
             if row.get("EndTime"):
                 row["EndTime"] = row["EndTime"].isoformat()
@@ -208,6 +320,7 @@ def deals():
     finally:
         if conn:
             conn.close()
+
 
 @app.route("/api/deal-counts")
 def deal_counts():
@@ -225,6 +338,7 @@ def deal_counts():
     finally:
         if conn:
             conn.close()
+
 
 @app.route("/api/stats")
 def stats():
@@ -252,6 +366,52 @@ def stats():
     finally:
         if conn:
             conn.close()
+
+
+@app.route("/api/outcomes")
+def outcomes():
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+
+        cur.execute(OUTCOMES_RESOLVED_QUERY)
+        resolved = cur.fetchall()
+
+        cur.execute(OUTCOMES_PENDING_QUERY)
+        pending = cur.fetchall()
+
+        for row in resolved:
+            for col in ('EndTime', 'SoldDate', 'SurfacedAt'):
+                if row.get(col):
+                    row[col] = row[col].isoformat()
+
+        for row in pending:
+            for col in ('EndTime', 'SurfacedAt'):
+                if row.get(col):
+                    row[col] = row[col].isoformat()
+
+        beat_market = sum(1 for r in resolved if r['FinalPrice'] < r['AvgMarketPrice'])
+        total_resolved = len(resolved)
+        win_rate = round(beat_market / total_resolved * 100, 1) if total_resolved > 0 else 0
+
+        return jsonify({
+            "status": "ok",
+            "summary": {
+                "total_resolved": total_resolved,
+                "beat_market": beat_market,
+                "win_rate": win_rate,
+                "total_pending": len(pending),
+            },
+            "resolved": resolved,
+            "pending": pending,
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
