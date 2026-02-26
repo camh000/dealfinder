@@ -10,6 +10,7 @@
 
 ## Scraper / Data
 
+- [ ] 🔴 **Find Oxylabs alternative** — Oxylabs is expensive/unreliable; evaluate alternatives (ScraperAPI, Bright Data, Zyte, etc.)
 - [ ] **Bid count filter** — deprioritise or hide items with 5+ bids (price likely already bid up)
 - [ ] **Reserve price detection** — filter out "Reserve not met" listings
 - [ ] **Seller feedback filter** — skip listings from sellers below a configurable feedback threshold
@@ -24,4 +25,4 @@
 ## Notifications & Tracking
 
 - [ ] **Ntfy / Pushover notifications** — notify once per item ID when a deal is first detected
-- [ ] **Deal outcome tracking** — record surfaced deals and what they actually sold for to validate the algorithm
+- [x] **Deal outcome tracking** — record surfaced deals and what they actually sold for to validate the algorithm
