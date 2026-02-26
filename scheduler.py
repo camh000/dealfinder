@@ -18,7 +18,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-QUERY_LIST = [
+GPU_QUERY_LIST = [
     "NVIDIA GTX 9",
     "NVIDIA GTX 10",
     "NVIDIA RTX 20",
@@ -26,23 +26,44 @@ QUERY_LIST = [
     "NVIDIA RTX 40",
     "AMD RX 5000",
     "AMD RX 6000",
-    "AMD RX 7000"
+    "AMD RX 7000",
+]
+
+CPU_QUERY_LIST = [
+    "Intel Core i3",
+    "Intel Core i5",
+    "Intel Core i7",
+    "Intel Core i9",
+    "AMD Ryzen 3",
+    "AMD Ryzen 5",
+    "AMD Ryzen 7",
+    "AMD Ryzen 9",
+]
+
+HDD_QUERY_LIST = [
+    "SAS hard drive 1TB",
+    "SAS hard drive 2TB",
+    "SAS hard drive 4TB",
+    "SATA hard drive 1TB",
+    "SATA hard drive 2TB",
+    "SATA hard drive 4TB",
+    "SATA hard drive 8TB",
 ]
 
 def run_scraper():
     log.info("Starting scrape run...")
-    try:
-        EbayScraper.ScrapeAndUpload(
-            QUERY_LIST,
-            product_type='GPU',
-            country='uk',
-            condition='used',
-            listing_type='auction',
-            cache=False
-        )
-        log.info("Scrape run complete.")
-    except Exception as e:
-        log.error(f"Scrape run failed: {e}")
+    common = dict(country='uk', condition='used', listing_type='auction', cache=False)
+    for query_list, product_type in [
+        (GPU_QUERY_LIST, 'GPU'),
+        (CPU_QUERY_LIST, 'CPU'),
+        (HDD_QUERY_LIST, 'HDD'),
+    ]:
+        try:
+            log.info(f"Scraping {product_type}...")
+            EbayScraper.ScrapeAndUpload(query_list, product_type=product_type, **common)
+            log.info(f"{product_type} scrape complete.")
+        except Exception as e:
+            log.error(f"{product_type} scrape failed: {e}")
 
 if __name__ == "__main__":
     log.info("Scheduler starting — running immediately then every 30 minutes.")

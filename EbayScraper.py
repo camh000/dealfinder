@@ -1,4 +1,5 @@
 import re
+import logging
 import requests
 import urllib.parse
 from bs4 import BeautifulSoup
@@ -9,6 +10,8 @@ import mariadb
 import os
 from dataclasses import dataclass
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 load_dotenv("credentials.env")
 
@@ -61,7 +64,7 @@ def __GetHTML(query, country, condition='', listing_type='all', alreadySold=True
         
         parsedQuery = urllib.parse.quote(query).replace('%20', '+')
         url = f'https://www.ebay{countryDict[country]}/sch/i.html?_from=R40&_nkw=' + parsedQuery + alreadySoldString + conditionDict[condition] + typeDict[listing_type]
-        print(url)
+        log.debug("Fetching: %s", url)
 
         payload = {
             'source': 'universal',
@@ -86,47 +89,78 @@ def __GetHTML(query, country, condition='', listing_type='all', alreadySold=True
 
 def __ParseItems(soup, query, productType):
     rawItems = soup.find_all('div', {'class': 'su-card-container su-card-container--horizontal'})
+    if not rawItems:
+        log.warning("No items found for query '%s' - eBay may have changed their HTML structure", query)
     data = []
     for item in rawItems[1:]:
         
-        # Get item data
-        title = item.find(class_="s-card__title").find_all('span')
-        if title[0].get_text(strip=True) == "New listing":
-            title = title[1].get_text(strip=True)
-        else:
-            title = title[0].get_text(strip=True)
+        # Get item data — skip item entirely if critical fields can't be parsed
+        try:
+            spans = item.find(class_="s-card__title").find_all('span')
+            if spans[0].get_text(strip=True) == "New listing":
+                title = spans[1].get_text(strip=True)
+            else:
+                title = spans[0].get_text(strip=True)
+        except (AttributeError, IndexError) as e:
+            log.warning("[%s] Skipping item - could not parse title: %s", query, e)
+            continue
 
-        price = __ParseRawPrice(item.find('span', {'class': 's-card__price'}).get_text(strip=True))
+        try:
+            price = __ParseRawPrice(item.find('span', {'class': 's-card__price'}).get_text(strip=True))
+            if price is None:
+                raise ValueError("Price pattern not found in text")
+        except (AttributeError, TypeError, ValueError) as e:
+            log.warning("[%s] Skipping item '%s...' - could not parse price: %s", query, title[:40], e)
+            continue
 
         try:
             shipping = __ParseRawPrice(item.find('span', {'class': 'su-styled-text secondary large'}).find('span').get_text(strip=True))
-        except: shipping = 0
-        
-        try: timeLeft = item.find(class_="s-card__time-left").get_text(strip=True)
-        except: timeLeft = ""
-        
-        try: 
+        except (AttributeError, TypeError):
+            shipping = 0
+
+        try:
+            timeLeft = item.find(class_="s-card__time-left").get_text(strip=True)
+        except AttributeError:
+            timeLeft = ""
+
+        try:
             timeEnd = item.find(class_="s-card__time-end").get_text(strip=True)
             timeEnd = parse_ebay_endtime(timeEnd)
-        except: timeEnd = None
-        
-        try: 
+        except (AttributeError, TypeError):
+            timeEnd = None
+
+        try:
             soldDate = item.find(class_="su-styled-text positive default").get_text(strip=True)
             soldDate = soldDate.lstrip('Sold ')
             soldDate = parse_soldDate(soldDate)
-        except: soldDate = None
+        except AttributeError:
+            soldDate = None
 
-        try: 
+        try:
             bidcount = item.find(class_="su-styled-text secondary large", string=re.compile("bid")).get_text(strip=True)
             bidCount = int("".join(filter(str.isdigit, bidcount)))
-        except: bidCount = 0
-        
-        try: reviewCount = int("".join(filter(str.isdigit, item.find(class_="s-item__reviews-count").find('span').get_text(strip=True))))
-        except: reviewCount = 0
-        
-        url = item.find('a')['href']
+        except (AttributeError, TypeError, ValueError):
+            bidCount = 0
 
-        id = url.lstrip('https://www.ebay.co.uk/itm/').split('?')[0]
+        try:
+            reviewCount = int("".join(filter(str.isdigit, item.find(class_="s-item__reviews-count").find('span').get_text(strip=True))))
+        except (AttributeError, TypeError, ValueError):
+            reviewCount = 0
+        
+        try:
+            a_tag = item.find('a')
+            if a_tag is None:
+                raise ValueError("No anchor tag found")
+            url = a_tag['href']
+            id_match = re.search(r'/itm/(\d+)', url)
+            if id_match is None:
+                raise ValueError(f"Could not extract item ID from URL: {url}")
+            id = id_match.group(1)
+        except (TypeError, KeyError, ValueError) as e:
+            log.warning("[%s] Skipping item '%s...' - could not parse URL/ID: %s", query, title[:40], e)
+            continue
+
+        socket = cores = capacity_gb = interface = form_factor = rpm = None
 
         if productType == 'GPU':
 
@@ -175,11 +209,109 @@ def __ParseItems(soup, query, productType):
             model = extract_model(title)
             vram  = extract_vram(title)
             brand = extract_brand(title)
+        elif productType == 'CPU':
+
+            def extract_cpu_brand(title: str):
+                t = title.upper()
+                if 'AMD' in t:
+                    return 'AMD'
+                if 'INTEL' in t:
+                    return 'Intel'
+                return ''
+
+            amd_model_pattern   = re.compile(r'Ryzen\s*(?:Threadripper\s*(?:PRO\s*)?)?\d+\s+\d+[A-Z0-9]*', re.IGNORECASE)
+            intel_model_pattern = re.compile(r'Core\s+[iI]\d-\d{4,5}[A-Z0-9]*', re.IGNORECASE)
+
+            def extract_cpu_model(title: str):
+                m = amd_model_pattern.search(title) or intel_model_pattern.search(title)
+                return m.group(0).strip() if m else None
+
+            socket_pattern = re.compile(r'(LGA\s*\d{3,4}|AM\s*[2345]|FM[12]|TR[X]?\d+)', re.IGNORECASE)
+
+            def extract_socket(title: str):
+                m = socket_pattern.search(title)
+                if m:
+                    return re.sub(r'\s+', '', m.group(0)).upper()
+                return None
+
+            cores_num_pattern   = re.compile(r'(\d+)\s*[Cc]ore')
+            cores_named_map     = {'dual':2,'triple':3,'quad':4,'hexa':6,'octa':8,'deca':10,'dodeca':12}
+
+            def extract_cores(title: str):
+                m = cores_num_pattern.search(title)
+                if m:
+                    return int(m.group(1))
+                t = title.lower()
+                for name, count in cores_named_map.items():
+                    if name in t:
+                        return count
+                return None
+
+            brand  = extract_cpu_brand(title)
+            model  = extract_cpu_model(title)
+            vram   = None
+            socket = extract_socket(title)
+            cores  = extract_cores(title)
+
+        elif productType == 'HDD':
+
+            HDD_BRANDS = ['SEAGATE','TOSHIBA','SAMSUNG','HITACHI','HGST','FUJITSU','MAXTOR']
+
+            def extract_hdd_brand(title: str):
+                t = title.upper()
+                if 'WESTERN DIGITAL' in t or t.startswith('WD ') or ' WD ' in t:
+                    return 'Western Digital'
+                for b in HDD_BRANDS:
+                    if b in t:
+                        return b.title()
+                return ''
+
+            cap_pattern = re.compile(r'(\d+(?:\.\d+)?)\s*(TB|GB)', re.IGNORECASE)
+
+            def extract_capacity_gb(title: str):
+                m = cap_pattern.search(title)
+                if m:
+                    val, unit = float(m.group(1)), m.group(2).upper()
+                    return int(val * 1000) if unit == 'TB' else int(val)
+                return None
+
+            def extract_interface(title: str):
+                return 'SAS' if 'SAS' in title.upper() else 'SATA'
+
+            ff_pattern = re.compile(r'(3\.5|2\.5)\s*["\']?')
+
+            def extract_form_factor(title: str):
+                m = ff_pattern.search(title)
+                return f'{m.group(1)}"' if m else '3.5"'
+
+            rpm_num_pattern = re.compile(r'(\d{4,5})\s*rpm', re.IGNORECASE)
+            rpm_k_pattern   = re.compile(r'(\d+(?:\.\d+)?)\s*[Kk](?:\s*rpm|\b)', re.IGNORECASE)
+
+            def extract_rpm(title: str):
+                m = rpm_num_pattern.search(title)
+                if m:
+                    return int(m.group(1))
+                m = rpm_k_pattern.search(title)
+                if m:
+                    return int(float(m.group(1)) * 1000)
+                return None
+
+            brand       = extract_hdd_brand(title)
+            model       = None
+            vram        = None
+            socket      = None
+            cores       = None
+            capacity_gb = extract_capacity_gb(title)
+            interface   = extract_interface(title)
+            form_factor = extract_form_factor(title)
+            rpm         = extract_rpm(title)
+
         else:
-            brand = '',
-            model = '',
-            vram = ''
-        print(f"{brand} {model} {vram}")
+            brand = ''
+            model = ''
+            vram  = None
+
+        log.debug("Parsed: brand=%s model=%s vram=%s", brand, model, vram)
 
         itemData = {
             'id': id,
@@ -194,14 +326,19 @@ def __ParseItems(soup, query, productType):
             'url': url,
             'brand': brand,
             'model': model,
-            'vram': vram
-
-
+            'vram': vram,
+            'socket': socket,
+            'cores': cores,
+            'capacity-gb': capacity_gb,
+            'interface': interface,
+            'form-factor': form_factor,
+            'rpm': rpm,
         }
         
         data.append(itemData)
     
-    # Remove item with prices too high or too low
+    # Remove item with prices too high or too low (also drop any items with unparsed prices)
+    data = [item for item in data if item['price'] is not None]
     priceList = [item['price'] for item in data]
     parsedPriceList = __StDevParse(priceList)
     data = [item for item in data if item['price'] in parsedPriceList]
@@ -337,9 +474,17 @@ class Product:
     bid_count: int
     reviews_count: int
     url: str
-    brand: str
-    model: str
+    brand: Optional[str]
+    model: Optional[str]
     vram: Optional[int]
+    # CPU fields
+    socket: Optional[str] = None
+    cores: Optional[int] = None
+    # HDD fields
+    capacity_gb: Optional[int] = None
+    interface: Optional[str] = None
+    form_factor: Optional[str] = None
+    rpm: Optional[int] = None
 
 def _get_connection():
     return mariadb.connect(
@@ -353,7 +498,7 @@ def _get_connection():
 def _upload(cur, p: Product, product_type: str):
     cur.execute("""
         INSERT INTO EBAY (ID, Title, Price, Bids, EndTime, SoldDate, URL)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             Title = VALUES(Title),
             Price = VALUES(Price),
@@ -366,12 +511,35 @@ def _upload(cur, p: Product, product_type: str):
     if product_type == 'GPU':
         cur.execute("""
             INSERT INTO GPU (ID, Brand, Model, VRAM)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 Brand = VALUES(Brand),
                 Model = VALUES(Model),
                 VRAM = VALUES(VRAM);
             """, (p.id, p.brand, p.model, p.vram)
+        )
+    elif product_type == 'CPU':
+        cur.execute("""
+            INSERT INTO CPU (ID, Brand, Model, Socket, Cores)
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                Brand = VALUES(Brand),
+                Model = VALUES(Model),
+                Socket = VALUES(Socket),
+                Cores = VALUES(Cores);
+            """, (p.id, p.brand, p.model, p.socket, p.cores)
+        )
+    elif product_type == 'HDD':
+        cur.execute("""
+            INSERT INTO HDD (ID, Brand, CapacityGB, Interface, FormFactor, RPM)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                Brand = VALUES(Brand),
+                CapacityGB = VALUES(CapacityGB),
+                Interface = VALUES(Interface),
+                FormFactor = VALUES(FormFactor),
+                RPM = VALUES(RPM);
+            """, (p.id, p.brand, p.capacity_gb, p.interface, p.form_factor, p.rpm)
         )
 
 def Scrape(query, product_type, country='us', condition='all', listing_type='all', cache=False):
@@ -404,7 +572,10 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
                     time_left=d["time-left"], time_end=d["time-end"],
                     sold_date=d["sold-date"], bid_count=d["bid-count"],
                     reviews_count=d["reviews-count"], url=d["url"],
-                    brand=d["brand"], model=d["model"], vram=d["vram"]
+                    brand=d["brand"], model=d["model"], vram=d["vram"],
+                    socket=d["socket"], cores=d["cores"],
+                    capacity_gb=d["capacity-gb"], interface=d["interface"],
+                    form_factor=d["form-factor"], rpm=d["rpm"],
                 )
                 for d in items
             ]
@@ -413,10 +584,10 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
                 try:
                     _upload(cur, p, product_type)
                 except mariadb.Error as e:
-                    print(f"Error uploading {p.id}: {e}")
+                    log.error("DB error uploading item %s: %s", p.id, e)
 
         conn.commit()
-        print(f"Last inserted ID: {cur.lastrowid}")
+        log.info("Upload complete. Last inserted ID: %s", cur.lastrowid)
 
     except Exception as e:
         conn.rollback()
