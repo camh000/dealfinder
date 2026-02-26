@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPU Deal Finder</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg:       #080c10;
+            --surface:  #0d1117;
+            --border:   #1c2a3a;
+            --green:    #00e5a0;
+            --green-dim:#00704e;
+            --amber:    #f5a623;
+            --red:      #ff4d6d;
+            --text:     #c9d8e8;
+            --muted:    #4a6278;
+            --mono:     'Share Tech Mono', monospace;
+            --sans:     'Barlow Condensed', sans-serif;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--mono);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Scanline overlay */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 2px,
+                rgba(0,0,0,0.08) 2px,
+                rgba(0,0,0,0.08) 4px
+            );
+            pointer-events: none;
+            z-index: 100;
+        }
+
+        header {
+            border-bottom: 1px solid var(--border);
+            padding: 20px 40px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            background: rgba(8,12,16,0.95);
+            backdrop-filter: blur(10px);
+            z-index: 10;
+        }
+
+        .logo {
+            font-family: var(--sans);
+            font-weight: 700;
+            font-size: 22px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            color: var(--green);
+            text-shadow: 0 0 20px rgba(0,229,160,0.4);
+        }
+
+        .logo span { color: var(--muted); }
+
+        .status-bar {
+            display: flex;
+            gap: 30px;
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        .status-bar .val { color: var(--text); }
+
+        .pulse {
+            display: inline-block;
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: 0 0 8px var(--green);
+            animation: pulse 2s ease-in-out infinite;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        main { padding: 30px 40px; max-width: 1400px; margin: 0 auto; }
+
+        .section-header {
+            display: flex;
+            align-items: baseline;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .section-title {
+            font-family: var(--sans);
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 4px;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        .deal-count {
+            font-size: 11px;
+            color: var(--green);
+            background: rgba(0,229,160,0.08);
+            border: 1px solid rgba(0,229,160,0.2);
+            padding: 2px 10px;
+            border-radius: 2px;
+        }
+
+        .refresh-btn {
+            margin-left: auto;
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--muted);
+            font-family: var(--mono);
+            font-size: 11px;
+            padding: 5px 14px;
+            cursor: pointer;
+            letter-spacing: 1px;
+            transition: all 0.2s;
+        }
+
+        .refresh-btn:hover {
+            border-color: var(--green);
+            color: var(--green);
+        }
+
+        .refresh-btn.spinning { animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Table */
+        .table-wrap {
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        thead tr {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            font-family: var(--sans);
+            font-weight: 600;
+            font-size: 10px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--muted);
+            padding: 12px 16px;
+            text-align: left;
+            white-space: nowrap;
+        }
+
+        th.right { text-align: right; }
+
+        tbody tr {
+            border-bottom: 1px solid rgba(28,42,58,0.5);
+            transition: background 0.15s;
+            animation: fadeIn 0.4s ease both;
+        }
+
+        tbody tr:hover { background: rgba(255,255,255,0.02); }
+        tbody tr:last-child { border-bottom: none; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        td {
+            padding: 13px 16px;
+            vertical-align: middle;
+        }
+
+        .model-cell {
+            font-family: var(--sans);
+            font-weight: 600;
+            font-size: 15px;
+            color: #e8f0f8;
+            letter-spacing: 0.5px;
+        }
+
+        .brand-tag {
+            font-size: 10px;
+            color: var(--muted);
+            margin-top: 2px;
+        }
+
+        .price-current {
+            font-size: 15px;
+            color: var(--amber);
+            font-weight: bold;
+        }
+
+        .price-avg {
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 2px;
+        }
+
+        .gain {
+            color: var(--green);
+            font-weight: bold;
+            font-size: 14px;
+        }
+
+        .discount-badge {
+            display: inline-block;
+            background: rgba(0,229,160,0.1);
+            border: 1px solid rgba(0,229,160,0.25);
+            color: var(--green);
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 2px;
+            font-family: var(--sans);
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+
+        .discount-badge.high {
+            background: rgba(245,166,35,0.1);
+            border-color: rgba(245,166,35,0.3);
+            color: var(--amber);
+        }
+
+        .time-cell { color: var(--text); font-size: 13px; }
+        .time-cell.urgent { color: var(--red); animation: blink 1s step-end infinite; }
+        @keyframes blink { 50% { opacity: 0.4; } }
+
+        .link-btn {
+            display: inline-block;
+            border: 1px solid var(--border);
+            color: var(--muted);
+            font-family: var(--mono);
+            font-size: 11px;
+            padding: 5px 12px;
+            text-decoration: none;
+            transition: all 0.2s;
+            letter-spacing: 1px;
+        }
+
+        .link-btn:hover {
+            border-color: var(--amber);
+            color: var(--amber);
+        }
+
+        /* Empty / loading / error states */
+        .state-row td {
+            text-align: center;
+            padding: 60px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .loader {
+            display: inline-block;
+            width: 14px; height: 14px;
+            border: 2px solid var(--border);
+            border-top-color: var(--green);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+
+        footer {
+            border-top: 1px solid var(--border);
+            padding: 20px 40px;
+            font-size: 11px;
+            color: var(--muted);
+            text-align: center;
+            letter-spacing: 1px;
+            margin-top: 40px;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="logo">GPU<span>/</span>DEALS</div>
+    <div class="status-bar">
+        <span><span class="pulse"></span>LIVE</span>
+        <span>ACTIVE <span class="val" id="stat-active">—</span></span>
+        <span>SOLD <span class="val" id="stat-sold">—</span></span>
+        <span>UPDATED <span class="val" id="stat-updated">—</span></span>
+    </div>
+</header>
+
+<main>
+    <div class="section-header">
+        <span class="section-title">Active Deals</span>
+        <span class="deal-count" id="deal-count">— deals</span>
+        <button class="refresh-btn" id="refresh-btn" onclick="loadDeals()">↻ REFRESH</button>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Model</th>
+                    <th class="right">Current</th>
+                    <th class="right">Avg Market</th>
+                    <th class="right">You Save</th>
+                    <th>Discount</th>
+                    <th>Ends</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="deals-body">
+                <tr class="state-row">
+                    <td colspan="7"><span class="loader"></span> Loading deals...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</main>
+
+<footer>GPU DEAL FINDER &mdash; AUTO-REFRESHES EVERY 5 MIN &mdash; DATA VIA EBAY UK</footer>
+
+<script>
+    function timeUrgency(timeStr) {
+        if (!timeStr) return false;
+        const [h, m] = timeStr.split(':').map(Number);
+        return h === 0 && m <= 30;
+    }
+
+    function renderDeals(deals) {
+        const tbody = document.getElementById('deals-body');
+        document.getElementById('deal-count').textContent = `${deals.length} deal${deals.length !== 1 ? 's' : ''}`;
+
+        if (deals.length === 0) {
+            tbody.innerHTML = `<tr class="state-row"><td colspan="7">No deals ending within 2 hours right now. Check back soon.</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = deals.map((d, i) => {
+            const urgent = timeUrgency(d.EndTime);
+            const bigDiscount = d.DiscountPct >= 30;
+            const delay = i * 60;
+            return `
+            <tr style="animation-delay:${delay}ms">
+                <td>
+                    <div class="model-cell">${d.Model || '—'}</div>
+                    <div class="brand-tag">${d.Brand || ''} ${d.VRAM ? d.VRAM + 'GB' : ''}</div>
+                </td>
+                <td style="text-align:right">
+                    <div class="price-current">£${d.CurrentPrice.toFixed(2)}</div>
+                </td>
+                <td style="text-align:right">
+                    <div class="price-avg">£${d.AvgMarketPrice.toFixed(2)}</div>
+                </td>
+                <td style="text-align:right">
+                    <span class="gain">+£${d.PotentialGain.toFixed(2)}</span>
+                </td>
+                <td>
+                    <span class="discount-badge ${bigDiscount ? 'high' : ''}">${d.DiscountPct}% OFF</span>
+                </td>
+                <td>
+                    <span class="time-cell ${urgent ? 'urgent' : ''}">${d.EndTime || '—'}</span>
+                </td>
+                <td>
+                    <a href="${d.URL}" target="_blank" class="link-btn">VIEW →</a>
+                </td>
+            </tr>`;
+        }).join('');
+    }
+
+    async function loadStats() {
+        try {
+            const res = await fetch('/api/stats');
+            const data = await res.json();
+            document.getElementById('stat-active').textContent = data.active_listings.toLocaleString();
+            document.getElementById('stat-sold').textContent = data.sold_listings.toLocaleString();
+            const d = new Date(data.last_updated);
+            document.getElementById('stat-updated').textContent = isNaN(d) ? '—' : d.toLocaleDateString('en-GB', {day:'2-digit', month:'short'});
+        } catch {}
+    }
+
+    async function loadDeals() {
+        const btn = document.getElementById('refresh-btn');
+        btn.classList.add('spinning');
+        try {
+            const res = await fetch('/api/deals');
+            const data = await res.json();
+            if (data.status === 'ok') {
+                renderDeals(data.deals);
+            } else {
+                document.getElementById('deals-body').innerHTML =
+                    `<tr class="state-row"><td colspan="7">Error: ${data.message}</td></tr>`;
+            }
+        } catch (e) {
+            document.getElementById('deals-body').innerHTML =
+                `<tr class="state-row"><td colspan="7">Could not connect to server.</td></tr>`;
+        } finally {
+            btn.classList.remove('spinning');
+        }
+    }
+
+    loadStats();
+    loadDeals();
+    setInterval(loadDeals, 5 * 60 * 1000);
+    setInterval(loadStats, 5 * 60 * 1000);
+</script>
+</body>
+</html>

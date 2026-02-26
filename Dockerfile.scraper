@@ -1,0 +1,17 @@
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y \
+    libmariadb3 \
+    libmariadb-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY EbayScraper.py .
+COPY scheduler.py .
+
+CMD ["python", "scheduler.py"]

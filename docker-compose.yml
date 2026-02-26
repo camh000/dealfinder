@@ -1,0 +1,26 @@
+services:
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: dealfinder-web
+    ports:
+      - "5000:5000"
+    env_file:
+      - credentials.env
+    restart: unless-stopped
+    # Uses the host network so it can reach MariaDB on your Unraid IP
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile.scraper
+    container_name: dealfinder-scraper
+    env_file:
+      - credentials.env
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
