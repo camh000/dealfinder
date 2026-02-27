@@ -4,7 +4,10 @@
 
 - [ ] **Light / dark theme toggle** — light theme CSS vars + toggle button persisted to `localStorage`
 - [ ] **Last scraped timestamp** — top-right of the dashboard should display the datetime the last scrape run completed
-- [ ] **Components pricing tab** — new tab with a searchable component browser showing average market price per model; allow selecting multiple components to sum their combined value (useful for valuing a parts bundle or full build)
+- [x] **Components pricing tab** — new tab with a searchable component browser showing average market price per model; allow selecting multiple components to sum their combined value (useful for valuing a parts bundle or full build)
+- [ ] **Prices tab sortable columns** — click any column header (Cat, Model/Specs, Avg Market, Sales) to sort the price-guide table ascending/descending, consistent with the sort behaviour on the deal tables
+- [ ] **Prices tab grouping simplification** — GPUs should be grouped by Model only (drop VRAM/Brand from the GROUP BY); CPUs grouped by Model only (drop Brand/Socket/Cores); HDDs grouped by Interface + CapacityGB only (drop FormFactor/Brand); reduces fragmentation so each model has a single representative average price
+- [ ] **Outcomes resolved panel: hide Ended items + fixed-height scroll** — filter out EndedUnsold rows from the resolved table (they clutter the outcome history without useful price data); cap the panel at 7 rows tall with overflow-y scroll so it doesn't push pending items off screen
 - [x] **Sortable columns** — click any header to sort by price, discount %, or time remaining
 - [ ] **Filter panel** — filter by brand, minimum discount %, minimum £ saving
 - [ ] **Widen time window** — add a "coming up" section for auctions ending in 2–6 hours
