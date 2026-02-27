@@ -5,7 +5,7 @@
 - [ ] **Light / dark theme toggle** — light theme CSS vars + toggle button persisted to `localStorage`
 - [ ] **Last scraped timestamp** — top-right of the dashboard should display the datetime the last scrape run completed
 - [ ] **Components pricing tab** — new tab with a searchable component browser showing average market price per model; allow selecting multiple components to sum their combined value (useful for valuing a parts bundle or full build)
-- [ ] **Sortable columns** — click any header to sort by price, discount %, or time remaining
+- [x] **Sortable columns** — click any header to sort by price, discount %, or time remaining
 - [ ] **Filter panel** — filter by brand, minimum discount %, minimum £ saving
 - [ ] **Widen time window** — add a "coming up" section for auctions ending in 2–6 hours
 - [ ] **PWA / mobile install** — add `manifest.json` and service worker for home screen install
