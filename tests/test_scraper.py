@@ -399,9 +399,10 @@ class TestVerifyPendingOutcomes:
     def test_skips_when_nothing_pending(self):
         """Returns 0 and never calls _scrape_item_by_id when no pending items."""
         conn, cur = self._make_conn([])
+        cur.rowcount = 0  # Phase 1: no items gave up
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
              patch.object(EbayScraper, '_scrape_item_by_id') as mock_scrape:
-            result = EbayScraper.VerifyPendingOutcomes(hours_after=6)
+            result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
         assert result == 0
         mock_scrape.assert_not_called()
 
@@ -411,6 +412,7 @@ class TestVerifyPendingOutcomes:
         end_time = datetime(2026, 2, 27, 8, 0, 0)
         pending_row = (123456789, 'GPU', 'ASUS RTX 4090 24GB OC Gaming', end_time)
         conn, cur = self._make_conn([pending_row])
+        cur.rowcount = 0  # Phase 1: no items gave up
 
         matching_item = {
             'id': '123456789',
@@ -430,10 +432,10 @@ class TestVerifyPendingOutcomes:
 
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
              patch.object(EbayScraper, '_scrape_item_by_id', return_value=matching_item):
-            result = EbayScraper.VerifyPendingOutcomes(hours_after=6)
+            result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
 
         assert result == 1
-        # UPDATE should have been called with the correct values
+        # UPDATE should have been called with the correct values (last execute call)
         update_call = cur.execute.call_args_list[-1]
         args = update_call[0][1]          # positional tuple passed to execute
         assert args[0] == sold_dt         # SoldDate
@@ -447,16 +449,34 @@ class TestVerifyPendingOutcomes:
         end_time = datetime(2026, 2, 20, 12, 0, 0)
         pending_row = (555666777, 'CPU', 'Intel Core i9-14900K', end_time)
         conn, cur = self._make_conn([pending_row])
+        cur.rowcount = 0  # Phase 1: no items gave up
 
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
              patch.object(EbayScraper, '_scrape_item_by_id', return_value=None), \
              patch.object(EbayScraper, 'log') as mock_log:
-            result = EbayScraper.VerifyPendingOutcomes(hours_after=6)
+            result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
 
         assert result == 0
         mock_log.error.assert_called_once()
         error_args = mock_log.error.call_args[0]
         assert '555666777' in str(error_args) or 555666777 in error_args
+
+    def test_give_up_marks_old_items(self):
+        """Items past give_up_days are marked GaveUp=1, a warning is logged, and Phase 2 is skipped."""
+        conn, cur = self._make_conn([])  # Phase 2 returns no in-window items
+        cur.rowcount = 2  # Phase 1 UPDATE marked 2 items as gave-up
+
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, '_scrape_item_by_id') as mock_scrape, \
+             patch.object(EbayScraper, 'log') as mock_log:
+            result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
+
+        assert result == 0
+        mock_scrape.assert_not_called()
+        mock_log.warning.assert_called_once()
+        # Phase 1 execute should reference GaveUp
+        phase1_sql = cur.execute.call_args_list[0][0][0]
+        assert 'GaveUp' in phase1_sql
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

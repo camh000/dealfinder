@@ -760,36 +760,56 @@ def Scrape(query, product_type, country='us', condition='all', listing_type='all
 
     return sold_items + active_items
 
-def VerifyPendingOutcomes(hours_after: int = 6) -> int:
+def VerifyPendingOutcomes(hours_after: int = 6, give_up_days: int = 7) -> int:
     """Search eBay sold listings for DealOutcomes past their end time that
     still have SoldDate IS NULL in the EBAY table.
 
-    Looks up each item by its eBay ID in completed/sold results only — no
-    active-listing search, no title keyword guessing.  If the item is not
-    found in sold results an ERROR is logged with full details so the root
-    cause can be investigated.
+    Two-phase logic:
+      Phase 1 — mark give-up: any item past `give_up_days` that is still
+                unresolved is flagged GaveUp=1 and will never be retried.
+      Phase 2 — verify in-window items: items between `hours_after` hours
+                and `give_up_days` days old are looked up by ID in eBay
+                sold results.  If not found an ERROR is logged.
 
-    Runs against ALL past-threshold pending items on every call, so any
-    backlog (including items that pre-date this feature) is self-healed.
     Returns the number of outcomes successfully resolved this run.
     """
     conn = _get_connection()
     cur = conn.cursor()
     try:
+        # ── Phase 1: mark items past the give-up threshold ───────────────────
+        cur.execute("""
+            UPDATE Scraper.DealOutcomes o
+            JOIN   Scraper.EBAY e ON e.ID = o.EbayID
+            SET    o.GaveUp = 1
+            WHERE  o.GaveUp = 0
+              AND  e.SoldDate IS NULL
+              AND  o.EndTime < NOW() - INTERVAL %s DAY
+        """, (give_up_days,))
+        gave_up = cur.rowcount
+        if gave_up:
+            log.warning(
+                "Outcome verification: gave up on %d item(s) past %dd threshold",
+                gave_up, give_up_days,
+            )
+
+        # ── Phase 2: verify in-window items ──────────────────────────────────
         cur.execute("""
             SELECT o.EbayID, o.Category, e.Title, o.EndTime
             FROM   Scraper.DealOutcomes o
             JOIN   Scraper.EBAY e ON e.ID = o.EbayID
             WHERE  o.EndTime < NOW() - INTERVAL %s HOUR
+              AND  o.EndTime > NOW() - INTERVAL %s DAY
               AND  e.SoldDate IS NULL
-        """, (hours_after,))
+              AND  o.GaveUp = 0
+        """, (hours_after, give_up_days))
         pending = cur.fetchall()
 
         if not pending:
-            log.info("Outcome verification: no unresolved outcomes past %dh threshold", hours_after)
+            log.info("Outcome verification: no unresolved outcomes in window (%dh–%dd)", hours_after, give_up_days)
+            conn.commit()
             return 0
 
-        log.info("Outcome verification: checking %d item(s) past %dh threshold", len(pending), hours_after)
+        log.info("Outcome verification: checking %d item(s) in window (%dh–%dd)", len(pending), hours_after, give_up_days)
         resolved = 0
 
         for ebay_id, category, title, end_time in pending:
