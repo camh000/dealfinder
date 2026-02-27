@@ -3,6 +3,8 @@
 ## Frontend
 
 - [ ] **Light / dark theme toggle** — light theme CSS vars + toggle button persisted to `localStorage`
+- [ ] **Last scraped timestamp** — top-right of the dashboard should display the datetime the last scrape run completed
+- [ ] **Components pricing tab** — new tab with a searchable component browser showing average market price per model; allow selecting multiple components to sum their combined value (useful for valuing a parts bundle or full build)
 - [ ] **Sortable columns** — click any header to sort by price, discount %, or time remaining
 - [ ] **Filter panel** — filter by brand, minimum discount %, minimum £ saving
 - [ ] **Widen time window** — add a "coming up" section for auctions ending in 2–6 hours
@@ -13,6 +15,7 @@
 
 - [x] 🔴 **Find Oxylabs alternative** — replaced with Zyte API (pay-per-use, no subscription)
 - [ ] **Fix curl_cffi in Docker/Linux** — still returning 13KB Akamai block pages in production (`chrome120` didn't resolve it); Zyte covers it for now but fixing direct fetch would reduce proxy costs to near-zero
+- [ ] **Zyte 520 retry** — on HTTP 520 (unknown web server error), back off and retry up to N times before failing over
 - [ ] **Scrape run summary log** — at end of each category scrape, log how many items were inserted vs updated (new vs already-seen listings)
 - [ ] **Bid count filter** — deprioritise or hide items with 5+ bids (price likely already bid up)
 - [ ] **Reserve price detection** — filter out "Reserve not met" listings
@@ -35,3 +38,8 @@
 ## Security
 
 - [ ] **Cloudflare Tunnel exposure review** — assess risks of making the Flask UI publicly accessible: add HTTP basic auth or token gate, review API endpoints for input validation, consider rate limiting
+
+## Bugs
+
+- [ ] 🔴 **Price parsing drops thousands separator** — `__ParseRawPrice` does `replace(',', '.')` so `£1,740.70` → `£1.740.70`; regex then matches `1.740` = £1.74. Fix: `replace(',', '')` (`EbayScraper.py: __ParseRawPrice`)
+- [ ] **Complete PC builds classified as CPU** — titles like "HIGH END GAMING PC RYZEN 7 9800x3d, AMD Radeon RX 9070 XT" pass the system-listing filter; add `'gaming pc'`, `'custom pc'`, `'full pc'`, `'complete pc'` to `_is_system` keyword list (`EbayScraper.py: __ParseItems CPU branch`)
