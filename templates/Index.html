@@ -855,7 +855,9 @@
         }
     }
 
-    const fmtGbp = v => (v != null && !isNaN(v)) ? `£${Number(v).toFixed(2)}` : '—';
+    const fmtGbp   = v => (v != null && !isNaN(v)) ? `£${Number(v).toFixed(2)}` : '—';
+    const fmtRange = (lo, hi) =>
+        (lo != null && hi != null) ? `£${Number(lo).toFixed(2)} – £${Number(hi).toFixed(2)}` : '';
 
     function renderOutcomes(data) {
         const { summary, resolved, pending } = data;
@@ -1043,6 +1045,7 @@
                 </td>
                 <td style="text-align:right">
                     <div style="font-size:14px">£${Number(r.AvgPrice).toFixed(2)}</div>
+                    <div class="brand-tag">${fmtRange(r.MinPrice, r.MaxPrice)}</div>
                 </td>
                 <td style="text-align:right">
                     <div class="brand-tag">${r.SoldCount} sales</div>
@@ -1114,7 +1117,10 @@
         const fmt = v => (v != null && !isNaN(v)) ? Number(v).toFixed(2) : '—';
         const prices = `
             <td data-label="Current" style="text-align:right"><div class="price-current">£${fmt(d.CurrentPrice)}</div></td>
-            <td data-label="Avg" style="text-align:right"><div class="price-avg">£${fmt(d.AvgMarketPrice)}</div></td>
+            <td data-label="Avg" style="text-align:right">
+                <div class="price-avg">£${fmt(d.AvgMarketPrice)}</div>
+                <div class="brand-tag">${fmtRange(d.MinMarketPrice, d.MaxMarketPrice)}</div>
+            </td>
             <td data-label="Saving" style="text-align:right"><span class="gain">+£${fmt(d.PotentialGain)}</span></td>
             <td data-label="Discount"><span class="discount-badge ${bigDiscount ? 'high' : ''}">${d.DiscountPct}% OFF</span></td>
             <td data-label="Ends In"><span class="time-cell" data-ends="${d.EndTime || ''}"></span></td>
