@@ -24,6 +24,10 @@ log = logging.getLogger(__name__)
 # to resolve any outcomes the regular scraper missed.
 OUTCOME_VERIFY_HOURS = int(os.environ.get('OUTCOME_VERIFY_HOURS', '6'))
 
+# Days after auction end before a still-unresolved outcome is permanently
+# marked as gave-up (GaveUp=1) and excluded from future retries.
+OUTCOME_GIVE_UP_DAYS = int(os.environ.get('OUTCOME_GIVE_UP_DAYS', '7'))
+
 # Minutes between full query-list scrapes.
 FULL_SCRAPE_INTERVAL_MINUTES = int(os.environ.get('FULL_SCRAPE_INTERVAL_MINUTES', '60'))
 
@@ -96,7 +100,7 @@ def run_full_scrape():
 
     # Verify outcomes for items past their end time that are still unresolved.
     try:
-        EbayScraper.VerifyPendingOutcomes(hours_after=OUTCOME_VERIFY_HOURS)
+        EbayScraper.VerifyPendingOutcomes(hours_after=OUTCOME_VERIFY_HOURS, give_up_days=OUTCOME_GIVE_UP_DAYS)
     except Exception as e:
         log.error("Outcome verification failed: %s", e)
 

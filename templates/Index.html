@@ -727,6 +727,11 @@
             pendingWrap.style.display   = '';
             document.getElementById('outcomes-pending-body').innerHTML = pending.map((r, i) => {
                 const ended = !r.EndTime || new Date(r.EndTime) <= Date.now();
+                const statusCell = r.GaveUp
+                    ? `<span class="outcome-miss">UNRESOLVED</span>`
+                    : ended
+                        ? `<span class="time-cell urgent">AWAITING</span>`
+                        : `<span class="time-cell" data-ends="${r.EndTime}"></span>`;
                 return `<tr style="animation-delay:${i * 40}ms">
                     <td>${formatDate(r.SurfacedAt)}</td>
                     <td><span class="cat-badge">${r.Category}</span></td>
@@ -737,7 +742,7 @@
                     </td>
                     <td style="text-align:right"><div class="price-avg" style="font-size:13px">${fmt(r.AvgMarketPrice)}</div></td>
                     <td style="text-align:right"><div class="price-avg" style="font-size:13px">${fmt(r.CurrentPrice)}</div></td>
-                    <td><span class="time-cell ${ended ? 'urgent' : ''}" ${ended ? '' : `data-ends="${r.EndTime}"`}>${ended ? 'AWAITING' : ''}</span></td>
+                    <td>${statusCell}</td>
                     <td><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>
                 </tr>`;
             }).join('');

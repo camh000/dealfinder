@@ -222,6 +222,7 @@ SELECT
     d.SurfacedAt,
     ROUND(e.Price / 100, 2)          AS CurrentPrice,
     e.Bids                           AS CurrentBids,
+    d.GaveUp,
     e.URL
 FROM Scraper.DealOutcomes d
 JOIN Scraper.EBAY e ON e.ID = d.EbayID
@@ -245,10 +246,20 @@ def ensure_outcomes_table():
                 DiscountPct    FLOAT        NOT NULL,
                 BidCount       INT          NOT NULL DEFAULT 0,
                 EndTime        DATETIME     NOT NULL,
-                SurfacedAt     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
+                SurfacedAt     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                GaveUp         TINYINT(1)   NOT NULL DEFAULT 0
             )
         """)
         conn.commit()
+        # Auto-migrate existing installations that predate the GaveUp column.
+        try:
+            cur.execute(
+                "ALTER TABLE Scraper.DealOutcomes ADD COLUMN GaveUp TINYINT(1) NOT NULL DEFAULT 0"
+            )
+            conn.commit()
+            log.info("DealOutcomes: added GaveUp column")
+        except Exception:
+            pass  # column already exists (MySQL error 1060) — safe to ignore
         log.info("DealOutcomes table ready")
     except Exception as e:
         log.error("Could not create DealOutcomes table: %s", e)
