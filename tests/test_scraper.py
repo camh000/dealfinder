@@ -308,7 +308,79 @@ class TestFetchFallback:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 7. VerifyPendingOutcomes — mocked DB + Scrape
+# 7. _scrape_item_by_id — mocked __GetHTML / __ParseItems
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestScrapeItemById:
+    """Unit tests for _scrape_item_by_id — __GetHTML and __ParseItems mocked via patch.dict."""
+
+    def _make_item(self, ebay_id: str, sold_date=None) -> dict:
+        return {
+            'id': ebay_id,
+            'title': 'Test GPU',
+            'price': 500.0,
+            'shipping': 0,
+            'time-left': '',
+            'time-end': None,
+            'sold-date': sold_date,
+            'bid-count': 5,
+            'reviews-count': 0,
+            'url': f'https://www.ebay.co.uk/itm/{ebay_id}',
+            'brand': 'Test', 'model': 'RTX 9000', 'vram': 16,
+            'socket': None, 'cores': None,
+            'capacity-gb': None, 'interface': None, 'form-factor': None, 'rpm': None,
+        }
+
+    def _patch_internals(self, parse_return):
+        """Return a patch.dict context that replaces __GetHTML and __ParseItems."""
+        fake_soup = MagicMock()
+        return patch.dict(vars(EbayScraper), {
+            '__GetHTML': MagicMock(return_value=fake_soup),
+            '__ParseItems': MagicMock(return_value=parse_return),
+        })
+
+    def test_sold_returns_matching_item(self):
+        """sold=True: returns item dict when the ID matches a sold result."""
+        item = self._make_item('123456789', sold_date=datetime(2026, 2, 27))
+        with self._patch_internals([item]):
+            result = EbayScraper._scrape_item_by_id(123456789, 'GPU', sold=True)
+        assert result is not None
+        assert result['id'] == '123456789'
+
+    def test_active_returns_matching_item(self):
+        """sold=False: returns item dict when the ID matches an active result."""
+        item = self._make_item('987654321')
+        with self._patch_internals([item]):
+            result = EbayScraper._scrape_item_by_id(987654321, 'GPU', sold=False)
+        assert result is not None
+        assert result['id'] == '987654321'
+
+    def test_no_match_returns_none(self):
+        """Returns None when ParseItems returns results but none match the target ID."""
+        unrelated = self._make_item('999000111')
+        with self._patch_internals([unrelated]):
+            result = EbayScraper._scrape_item_by_id(123456789, 'GPU', sold=True)
+        assert result is None
+
+    def test_sold_flag_passed_to_get_html(self):
+        """Verifies alreadySold kwarg is forwarded correctly to __GetHTML."""
+        fake_soup = MagicMock()
+        mock_get_html = MagicMock(return_value=fake_soup)
+        with patch.dict(vars(EbayScraper), {
+            '__GetHTML': mock_get_html,
+            '__ParseItems': MagicMock(return_value=[]),
+        }):
+            EbayScraper._scrape_item_by_id(111, 'GPU', sold=True)
+            _, kwargs = mock_get_html.call_args
+            assert kwargs.get('alreadySold') is True
+
+            EbayScraper._scrape_item_by_id(111, 'GPU', sold=False)
+            _, kwargs = mock_get_html.call_args
+            assert kwargs.get('alreadySold') is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. VerifyPendingOutcomes — mocked DB + _scrape_item_by_id
 # ═══════════════════════════════════════════════════════════════════════════════
 
 from datetime import datetime
@@ -325,18 +397,19 @@ class TestVerifyPendingOutcomes:
         return conn, cur
 
     def test_skips_when_nothing_pending(self):
-        """Returns 0 and never calls Scrape when there are no pending items."""
+        """Returns 0 and never calls _scrape_item_by_id when no pending items."""
         conn, cur = self._make_conn([])
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
-             patch.object(EbayScraper, 'Scrape') as mock_scrape:
+             patch.object(EbayScraper, '_scrape_item_by_id') as mock_scrape:
             result = EbayScraper.VerifyPendingOutcomes(hours_after=6)
         assert result == 0
         mock_scrape.assert_not_called()
 
     def test_resolves_matching_item(self):
-        """When Scrape returns the target item with a sold-date, UPDATE is called."""
+        """When _scrape_item_by_id returns the item with a sold-date, UPDATE is called."""
         sold_dt = datetime(2026, 2, 27, 10, 0, 0)
-        pending_row = (123456789, 'GPU', 'ASUS RTX 4090 24GB OC Gaming')
+        end_time = datetime(2026, 2, 27, 8, 0, 0)
+        pending_row = (123456789, 'GPU', 'ASUS RTX 4090 24GB OC Gaming', end_time)
         conn, cur = self._make_conn([pending_row])
 
         matching_item = {
@@ -356,7 +429,7 @@ class TestVerifyPendingOutcomes:
         }
 
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
-             patch.object(EbayScraper, 'Scrape', return_value=[matching_item]):
+             patch.object(EbayScraper, '_scrape_item_by_id', return_value=matching_item):
             result = EbayScraper.VerifyPendingOutcomes(hours_after=6)
 
         assert result == 1
@@ -369,9 +442,25 @@ class TestVerifyPendingOutcomes:
         assert args[3] == 123456789       # ID
         conn.commit.assert_called_once()
 
+    def test_item_not_found_logs_error(self):
+        """When _scrape_item_by_id returns None, log.error is called with item details."""
+        end_time = datetime(2026, 2, 20, 12, 0, 0)
+        pending_row = (555666777, 'CPU', 'Intel Core i9-14900K', end_time)
+        conn, cur = self._make_conn([pending_row])
+
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, '_scrape_item_by_id', return_value=None), \
+             patch.object(EbayScraper, 'log') as mock_log:
+            result = EbayScraper.VerifyPendingOutcomes(hours_after=6)
+
+        assert result == 0
+        mock_log.error.assert_called_once()
+        error_args = mock_log.error.call_args[0]
+        assert '555666777' in str(error_args) or 555666777 in error_args
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 8. GetActiveDeals — mocked DB
+# 9. GetActiveDeals — mocked DB
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestGetActiveDeals:
@@ -415,7 +504,7 @@ class TestGetActiveDeals:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 9. ScrapeTargeted — mocked DB + Scrape
+# 10. ScrapeTargeted — mocked DB + _scrape_item_by_id
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestScrapeTargeted:
@@ -453,12 +542,12 @@ class TestScrapeTargeted:
         mock_conn.assert_not_called()
 
     def test_matching_item_upserted(self):
-        """When Scrape returns the target item, _upload is called and count is 1."""
+        """When _scrape_item_by_id returns the item, _upload is called and count is 1."""
         conn, cur = self._make_conn()
         item = self._make_item('111222333')
 
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
-             patch.object(EbayScraper, 'Scrape', return_value=[item]), \
+             patch.object(EbayScraper, '_scrape_item_by_id', return_value=item), \
              patch.object(EbayScraper, '_upload') as mock_upload:
             result = EbayScraper.ScrapeTargeted([(111222333, 'GPU', 'GIGABYTE RTX 3070 8GB Gaming OC')])
 
@@ -467,12 +556,11 @@ class TestScrapeTargeted:
         conn.commit.assert_called_once()
 
     def test_no_match_logs_debug_and_returns_zero(self):
-        """When Scrape returns results but none match the EbayID, returns 0."""
+        """When _scrape_item_by_id returns None (item not in active results), returns 0."""
         conn, cur = self._make_conn()
-        unrelated = self._make_item('999888777')   # different ID
 
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
-             patch.object(EbayScraper, 'Scrape', return_value=[unrelated]), \
+             patch.object(EbayScraper, '_scrape_item_by_id', return_value=None), \
              patch.object(EbayScraper, '_upload') as mock_upload:
             result = EbayScraper.ScrapeTargeted([(111222333, 'GPU', 'GIGABYTE RTX 3070 8GB')])
 

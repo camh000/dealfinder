@@ -727,6 +727,23 @@ def _upload(cur, p: Product, product_type: str):
             """, (p.id, p.brand, p.capacity_gb, p.interface, p.form_factor, p.rpm)
         )
 
+def _scrape_item_by_id(ebay_id: int, category: str, *, sold: bool) -> dict | None:
+    """Fetch a single eBay listing by its item ID.
+
+    sold=True  → searches completed/sold results  (for outcome verification)
+    sold=False → searches active listing results  (for targeted price refresh)
+
+    Uses the numeric item ID as the search term so eBay returns only that
+    specific item.  Returns the parsed item dict on a match, None if not found.
+    """
+    soup = __GetHTML(str(ebay_id), 'uk', 'all', 'all', alreadySold=sold)
+    items = __ParseItems(soup, str(ebay_id), category)
+    for item in items:
+        if str(item['id']) == str(ebay_id):
+            return item
+    return None
+
+
 def Scrape(query, product_type, country='us', condition='all', listing_type='all', cache=False):
     if country not in countryDict:
         raise Exception('Country not supported, please use one of the following: ' + ', '.join(countryDict.keys()))
@@ -747,6 +764,11 @@ def VerifyPendingOutcomes(hours_after: int = 6) -> int:
     """Search eBay sold listings for DealOutcomes past their end time that
     still have SoldDate IS NULL in the EBAY table.
 
+    Looks up each item by its eBay ID in completed/sold results only — no
+    active-listing search, no title keyword guessing.  If the item is not
+    found in sold results an ERROR is logged with full details so the root
+    cause can be investigated.
+
     Runs against ALL past-threshold pending items on every call, so any
     backlog (including items that pre-date this feature) is self-healed.
     Returns the number of outcomes successfully resolved this run.
@@ -755,7 +777,7 @@ def VerifyPendingOutcomes(hours_after: int = 6) -> int:
     cur = conn.cursor()
     try:
         cur.execute("""
-            SELECT o.EbayID, o.Category, e.Title
+            SELECT o.EbayID, o.Category, e.Title, o.EndTime
             FROM   Scraper.DealOutcomes o
             JOIN   Scraper.EBAY e ON e.ID = o.EbayID
             WHERE  o.EndTime < NOW() - INTERVAL %s HOUR
@@ -770,36 +792,30 @@ def VerifyPendingOutcomes(hours_after: int = 6) -> int:
         log.info("Outcome verification: checking %d item(s) past %dh threshold", len(pending), hours_after)
         resolved = 0
 
-        for ebay_id, category, title in pending:
+        for ebay_id, category, title, end_time in pending:
             try:
-                # Use first 80 chars of title — specific enough to surface the item,
-                # short enough to match eBay's search index reliably.
-                items = Scrape(
-                    title[:80],
-                    category,
-                    country='uk',
-                    condition='used',
-                    listing_type='auction',
-                    cache=False,
-                )
-                for item in items:
-                    if str(item['id']) == str(ebay_id) and item.get('sold-date'):
-                        cur.execute("""
-                            UPDATE Scraper.EBAY
-                            SET    SoldDate = %s,
-                                   Price    = %s,
-                                   Bids     = %s
-                            WHERE  ID       = %s
-                              AND  SoldDate IS NULL
-                        """, (item['sold-date'], int(item['price'] * 100), item['bid-count'], ebay_id))
-                        log.info(
-                            "Outcome verified: ID=%s sold for £%.2f on %s",
-                            ebay_id, item['price'], item['sold-date'],
-                        )
-                        resolved += 1
-                        break
+                item = _scrape_item_by_id(ebay_id, category, sold=True)
+                if item and item.get('sold-date'):
+                    cur.execute("""
+                        UPDATE Scraper.EBAY
+                        SET    SoldDate = %s,
+                               Price    = %s,
+                               Bids     = %s
+                        WHERE  ID       = %s
+                          AND  SoldDate IS NULL
+                    """, (item['sold-date'], int(item['price'] * 100), item['bid-count'], ebay_id))
+                    log.info(
+                        "Outcome verified: ID=%s sold for £%.2f on %s",
+                        ebay_id, item['price'], item['sold-date'],
+                    )
+                    resolved += 1
                 else:
-                    log.debug("Outcome not yet in sold results: ID=%s '%s'", ebay_id, title[:60])
+                    log.error(
+                        "Outcome NOT found in sold results — "
+                        "ID=%s category=%s end_time=%s title='%s'; "
+                        "check search params or eBay availability",
+                        ebay_id, category, end_time, title[:80],
+                    )
             except Exception as e:
                 log.warning("Outcome verification skipped for item %s: %s", ebay_id, e)
 
@@ -901,46 +917,37 @@ def ScrapeTargeted(items: list) -> int:
     try:
         for ebay_id, category, title in items:
             try:
-                results = Scrape(
-                    title[:80],
-                    category,
-                    country='uk',
-                    condition='used',
-                    listing_type='auction',
-                    cache=False,
-                )
-                for item in results:
-                    if str(item['id']) == str(ebay_id):
-                        product = Product(
-                            id=item['id'],
-                            title=item['title'],
-                            price=item['price'],
-                            time_left=item['time-left'],
-                            time_end=item['time-end'],
-                            sold_date=item['sold-date'],
-                            bid_count=item['bid-count'],
-                            reviews_count=item['reviews-count'],
-                            url=item['url'],
-                            brand=item['brand'],
-                            model=item['model'],
-                            vram=item['vram'],
-                            socket=item['socket'],
-                            cores=item['cores'],
-                            capacity_gb=item['capacity-gb'],
-                            interface=item['interface'],
-                            form_factor=item['form-factor'],
-                            rpm=item['rpm'],
-                        )
-                        _upload(cur, product, category)
-                        log.info(
-                            "Targeted scrape updated: ID=%s '%.50s' price=£%.2f bids=%d",
-                            ebay_id, title, item['price'], item['bid-count'],
-                        )
-                        updated += 1
-                        break
+                item = _scrape_item_by_id(ebay_id, category, sold=False)
+                if item:
+                    product = Product(
+                        id=item['id'],
+                        title=item['title'],
+                        price=item['price'],
+                        time_left=item['time-left'],
+                        time_end=item['time-end'],
+                        sold_date=item['sold-date'],
+                        bid_count=item['bid-count'],
+                        reviews_count=item['reviews-count'],
+                        url=item['url'],
+                        brand=item['brand'],
+                        model=item['model'],
+                        vram=item['vram'],
+                        socket=item['socket'],
+                        cores=item['cores'],
+                        capacity_gb=item['capacity-gb'],
+                        interface=item['interface'],
+                        form_factor=item['form-factor'],
+                        rpm=item['rpm'],
+                    )
+                    _upload(cur, product, category)
+                    log.info(
+                        "Targeted scrape updated: ID=%s '%.50s' price=£%.2f bids=%d",
+                        ebay_id, title, item['price'], item['bid-count'],
+                    )
+                    updated += 1
                 else:
                     log.debug(
-                        "Targeted scrape: ID=%s not found in results (may have ended)",
+                        "Targeted scrape: ID=%s not found in active results (may have ended)",
                         ebay_id,
                     )
             except Exception as e:
