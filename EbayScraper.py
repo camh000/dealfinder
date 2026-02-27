@@ -346,7 +346,9 @@ def __ParseItems(soup, query, productType):
             _tl = title.lower()
             _is_system = (
                 any(k in _tl for k in ['mini pc', 'mini-pc', ' nuc', 'barebones',
-                                        'desktop pc', 'all-in-one', 'laptop', 'notebook'])
+                                        'desktop pc', 'all-in-one', 'laptop', 'notebook',
+                                        'gaming pc', 'gaming computer', 'custom pc',
+                                        'full pc', 'complete pc', 'pc bundle', 'pc build'])
                 or (bool(re.search(r'\d+\s*gb\s*(ddr\d?|ram)', _tl))
                     and bool(re.search(r'\d+\s*(tb|gb)\s*(ssd|nvme|hdd|m\.2)', _tl)))
             )
