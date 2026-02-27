@@ -109,7 +109,11 @@ def _fetch_direct(url: str) -> str | None:
         try:
             warmup = _direct_session.get(
                 'https://www.ebay.co.uk/',
-                headers={**_DIRECT_HEADERS_BASE, 'Sec-Fetch-Site': 'none'},
+                headers={
+                    **_DIRECT_HEADERS_BASE,
+                    'Sec-Fetch-Site':  'none',
+                    'Accept-Encoding': 'gzip, deflate',  # exclude br: homepage sends brotli
+                },                                       # which fails on Windows libcurl (curl 23)
                 timeout=15,
             )
             log.info(
@@ -140,7 +144,7 @@ def _fetch_direct(url: str) -> str | None:
             )
             _direct_session = None  # session may be flagged; reset for next call
             return None
-        log.debug("Fetched via curl-cffi/chrome131 (%d chars)", len(html))
+        log.info("Direct fetch OK (curl-cffi/chrome131, %d chars)", len(html))
         return html
     except Exception as e:
         log.warning("Direct fetch failed: %s", e)
