@@ -15,4 +15,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY App.py .
 COPY templates/ templates/
 
-CMD ["python", "App.py"]
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "-w", "2", "App:app"]

@@ -1,0 +1,13 @@
+credentials.env
+.env
+.git/
+.gitignore
+.vscode/
+.claude/
+tests/
+pytest.ini
+README.md
+TODO.md
+__pycache__/
+*.pyc
+*.pyo
