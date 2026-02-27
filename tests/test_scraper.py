@@ -282,7 +282,181 @@ class TestFetchFallback:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 7. Live data-quality tests  (require internet — skipped unless -m live)
+# 7. VerifyPendingOutcomes — mocked DB + Scrape
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from datetime import datetime
+
+class TestVerifyPendingOutcomes:
+    """Unit tests for VerifyPendingOutcomes — all DB and network calls mocked."""
+
+    def _make_conn(self, rows):
+        """Return a mock connection whose cursor fetchall() returns `rows`."""
+        cur = MagicMock()
+        cur.fetchall.return_value = rows
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        return conn, cur
+
+    def test_skips_when_nothing_pending(self):
+        """Returns 0 and never calls Scrape when there are no pending items."""
+        conn, cur = self._make_conn([])
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'Scrape') as mock_scrape:
+            result = EbayScraper.VerifyPendingOutcomes(hours_after=6)
+        assert result == 0
+        mock_scrape.assert_not_called()
+
+    def test_resolves_matching_item(self):
+        """When Scrape returns the target item with a sold-date, UPDATE is called."""
+        sold_dt = datetime(2026, 2, 27, 10, 0, 0)
+        pending_row = (123456789, 'GPU', 'ASUS RTX 4090 24GB OC Gaming')
+        conn, cur = self._make_conn([pending_row])
+
+        matching_item = {
+            'id': '123456789',
+            'title': 'ASUS RTX 4090 24GB OC Gaming',
+            'price': 750.00,
+            'shipping': 0,
+            'time-left': '',
+            'time-end': None,
+            'sold-date': sold_dt,
+            'bid-count': 12,
+            'reviews-count': 0,
+            'url': 'https://www.ebay.co.uk/itm/123456789',
+            'brand': 'ASUS', 'model': 'RTX 4090', 'vram': 24,
+            'socket': None, 'cores': None,
+            'capacity-gb': None, 'interface': None, 'form-factor': None, 'rpm': None,
+        }
+
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'Scrape', return_value=[matching_item]):
+            result = EbayScraper.VerifyPendingOutcomes(hours_after=6)
+
+        assert result == 1
+        # UPDATE should have been called with the correct values
+        update_call = cur.execute.call_args_list[-1]
+        args = update_call[0][1]          # positional tuple passed to execute
+        assert args[0] == sold_dt         # SoldDate
+        assert args[1] == 75000           # Price in pence (750.00 * 100)
+        assert args[2] == 12              # Bids
+        assert args[3] == 123456789       # ID
+        conn.commit.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. GetActiveDeals — mocked DB
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestGetActiveDeals:
+    """Unit tests for GetActiveDeals — DB calls mocked."""
+
+    def _make_conn(self, rows):
+        cur = MagicMock()
+        cur.fetchall.return_value = rows
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        return conn, cur
+
+    def test_returns_tuples_with_end_time(self):
+        """When the DB returns rows, GetActiveDeals returns them as a list."""
+        end_time = datetime(2026, 3, 1, 15, 0, 0)
+        row = (987654321, 'GPU', 'ASUS RTX 3080 10GB', end_time)
+        conn, cur = self._make_conn([row])
+
+        with patch.object(EbayScraper, '_get_connection', return_value=conn):
+            result = EbayScraper.GetActiveDeals()
+
+        assert result == [row]
+        assert result[0][3] == end_time   # end_time is the 4th element
+
+    def test_returns_empty_list_on_no_rows(self):
+        """Returns [] when no active deals exist."""
+        conn, cur = self._make_conn([])
+
+        with patch.object(EbayScraper, '_get_connection', return_value=conn):
+            result = EbayScraper.GetActiveDeals()
+
+        assert result == []
+
+    def test_returns_empty_list_on_db_error(self):
+        """Returns [] (never raises) when the DB connection fails."""
+        with patch.object(EbayScraper, '_get_connection',
+                          side_effect=Exception("connection refused")):
+            result = EbayScraper.GetActiveDeals()
+
+        assert result == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 9. ScrapeTargeted — mocked DB + Scrape
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestScrapeTargeted:
+    """Unit tests for ScrapeTargeted — all DB and network calls mocked."""
+
+    def _make_conn(self):
+        cur = MagicMock()
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        return conn, cur
+
+    def _make_item(self, ebay_id: str) -> dict:
+        return {
+            'id': ebay_id,
+            'title': 'GIGABYTE RTX 3070 8GB Gaming OC',
+            'price': 290.00,
+            'shipping': 0,
+            'time-left': '2h 15m',
+            'time-end': datetime(2026, 3, 1, 15, 0, 0),
+            'sold-date': None,
+            'bid-count': 3,
+            'reviews-count': 0,
+            'url': f'https://www.ebay.co.uk/itm/{ebay_id}',
+            'brand': 'GIGABYTE', 'model': 'RTX 3070', 'vram': 8,
+            'socket': None, 'cores': None,
+            'capacity-gb': None, 'interface': None,
+            'form-factor': None, 'rpm': None,
+        }
+
+    def test_empty_list_returns_zero_without_db(self):
+        """Passing an empty items list returns 0 and never opens a DB connection."""
+        with patch.object(EbayScraper, '_get_connection') as mock_conn:
+            result = EbayScraper.ScrapeTargeted([])
+        assert result == 0
+        mock_conn.assert_not_called()
+
+    def test_matching_item_upserted(self):
+        """When Scrape returns the target item, _upload is called and count is 1."""
+        conn, cur = self._make_conn()
+        item = self._make_item('111222333')
+
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'Scrape', return_value=[item]), \
+             patch.object(EbayScraper, '_upload') as mock_upload:
+            result = EbayScraper.ScrapeTargeted([(111222333, 'GPU', 'GIGABYTE RTX 3070 8GB Gaming OC')])
+
+        assert result == 1
+        mock_upload.assert_called_once()
+        conn.commit.assert_called_once()
+
+    def test_no_match_logs_debug_and_returns_zero(self):
+        """When Scrape returns results but none match the EbayID, returns 0."""
+        conn, cur = self._make_conn()
+        unrelated = self._make_item('999888777')   # different ID
+
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'Scrape', return_value=[unrelated]), \
+             patch.object(EbayScraper, '_upload') as mock_upload:
+            result = EbayScraper.ScrapeTargeted([(111222333, 'GPU', 'GIGABYTE RTX 3070 8GB')])
+
+        assert result == 0
+        mock_upload.assert_not_called()
+        conn.commit.assert_called_once()   # commit still called even with 0 updates
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 10. Live data-quality tests  (require internet — skipped unless -m live)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.live

@@ -718,6 +718,78 @@ def Scrape(query, product_type, country='us', condition='all', listing_type='all
 
     return sold_items + active_items
 
+def VerifyPendingOutcomes(hours_after: int = 6) -> int:
+    """Search eBay sold listings for DealOutcomes past their end time that
+    still have SoldDate IS NULL in the EBAY table.
+
+    Runs against ALL past-threshold pending items on every call, so any
+    backlog (including items that pre-date this feature) is self-healed.
+    Returns the number of outcomes successfully resolved this run.
+    """
+    conn = _get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT o.EbayID, o.Category, e.Title
+            FROM   Scraper.DealOutcomes o
+            JOIN   Scraper.EBAY e ON e.ID = o.EbayID
+            WHERE  o.EndTime < NOW() - INTERVAL %s HOUR
+              AND  e.SoldDate IS NULL
+        """, (hours_after,))
+        pending = cur.fetchall()
+
+        if not pending:
+            log.info("Outcome verification: no unresolved outcomes past %dh threshold", hours_after)
+            return 0
+
+        log.info("Outcome verification: checking %d item(s) past %dh threshold", len(pending), hours_after)
+        resolved = 0
+
+        for ebay_id, category, title in pending:
+            try:
+                # Use first 80 chars of title — specific enough to surface the item,
+                # short enough to match eBay's search index reliably.
+                items = Scrape(
+                    title[:80],
+                    category,
+                    country='uk',
+                    condition='used',
+                    listing_type='auction',
+                    cache=False,
+                )
+                for item in items:
+                    if str(item['id']) == str(ebay_id) and item.get('sold-date'):
+                        cur.execute("""
+                            UPDATE Scraper.EBAY
+                            SET    SoldDate = %s,
+                                   Price    = %s,
+                                   Bids     = %s
+                            WHERE  ID       = %s
+                              AND  SoldDate IS NULL
+                        """, (item['sold-date'], int(item['price'] * 100), item['bid-count'], ebay_id))
+                        log.info(
+                            "Outcome verified: ID=%s sold for £%.2f on %s",
+                            ebay_id, item['price'], item['sold-date'],
+                        )
+                        resolved += 1
+                        break
+                else:
+                    log.debug("Outcome not yet in sold results: ID=%s '%s'", ebay_id, title[:60])
+            except Exception as e:
+                log.warning("Outcome verification skipped for item %s: %s", ebay_id, e)
+
+        conn.commit()
+        log.info("Outcome verification complete: %d/%d resolved", resolved, len(pending))
+        return resolved
+
+    except Exception as e:
+        log.error("Outcome verification error: %s", e)
+        conn.rollback()
+        return 0
+    finally:
+        conn.close()
+
+
 def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', condition='all', listing_type='all', cache=False):
     conn = _get_connection()
     cur = conn.cursor()
@@ -752,5 +824,109 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
     except Exception as e:
         conn.rollback()
         raise e
+    finally:
+        conn.close()
+
+
+def GetActiveDeals() -> list:
+    """Return active tracked deals that haven't sold and haven't ended yet.
+
+    Returns a list of (ebay_id, category, title, end_time) tuples, one per
+    row in DealOutcomes that is still live.  Returns [] on any error so a
+    transient DB failure never breaks the scheduler loop.
+    """
+    try:
+        conn = _get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT o.EbayID, o.Category, e.Title, o.EndTime
+                FROM   DealOutcomes o
+                JOIN   EBAY e ON e.ID = o.EbayID
+                WHERE  o.EndTime > NOW()
+                  AND  e.SoldDate IS NULL
+            """)
+            rows = cur.fetchall()
+            log.info("Active deals: %d item(s) currently tracked", len(rows))
+            return list(rows)
+        finally:
+            conn.close()
+    except Exception as e:
+        log.error("GetActiveDeals failed: %s", e)
+        return []
+
+
+def ScrapeTargeted(items: list) -> int:
+    """Scrape specific tracked items by title and upsert results to the DB.
+
+    `items` is a list of (ebay_id, category, title) tuples — the same
+    three-element prefix returned by GetActiveDeals (end_time is dropped
+    by the caller before passing here).
+
+    Returns the number of items successfully found and upserted.
+    """
+    if not items:
+        return 0
+
+    conn = _get_connection()
+    cur = conn.cursor()
+    updated = 0
+
+    try:
+        for ebay_id, category, title in items:
+            try:
+                results = Scrape(
+                    title[:80],
+                    category,
+                    country='uk',
+                    condition='used',
+                    listing_type='auction',
+                    cache=False,
+                )
+                for item in results:
+                    if str(item['id']) == str(ebay_id):
+                        product = Product(
+                            id=item['id'],
+                            title=item['title'],
+                            price=item['price'],
+                            time_left=item['time-left'],
+                            time_end=item['time-end'],
+                            sold_date=item['sold-date'],
+                            bid_count=item['bid-count'],
+                            reviews_count=item['reviews-count'],
+                            url=item['url'],
+                            brand=item['brand'],
+                            model=item['model'],
+                            vram=item['vram'],
+                            socket=item['socket'],
+                            cores=item['cores'],
+                            capacity_gb=item['capacity-gb'],
+                            interface=item['interface'],
+                            form_factor=item['form-factor'],
+                            rpm=item['rpm'],
+                        )
+                        _upload(cur, product, category)
+                        log.info(
+                            "Targeted scrape updated: ID=%s '%.50s' price=£%.2f bids=%d",
+                            ebay_id, title, item['price'], item['bid-count'],
+                        )
+                        updated += 1
+                        break
+                else:
+                    log.debug(
+                        "Targeted scrape: ID=%s not found in results (may have ended)",
+                        ebay_id,
+                    )
+            except Exception as e:
+                log.warning("Targeted scrape failed for item %s: %s", ebay_id, e)
+
+        conn.commit()
+        log.info("Targeted scrape complete: %d/%d item(s) updated", updated, len(items))
+        return updated
+
+    except Exception as e:
+        log.error("ScrapeTargeted DB error: %s", e)
+        conn.rollback()
+        return 0
     finally:
         conn.close()

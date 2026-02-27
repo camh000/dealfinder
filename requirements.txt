@@ -9,7 +9,6 @@ mariadb
 python-dotenv
 requests
 beautifulsoup4
-apscheduler
 
 # HTTP client with browser TLS fingerprinting (primary fetcher)
 curl-cffi
