@@ -10,12 +10,13 @@
 - [ ] **Widen time window** — add a "coming up" section for auctions ending in 2–6 hours
 - [ ] **PWA / mobile install** — add `manifest.json` and service worker for home screen install
 - [ ] **Align OUTCOMES panel columns** — stat cards in the top panel are slightly offset from the resolved/pending table columns below
+- [ ] **Outcomes surfaced timestamp** — the OUTCOMES tab "Surfaced" column currently shows only a date (e.g. "27 Feb"); include the time of day so items surfaced on the same day can be distinguished
 
 ## Scraper / Data
 
 - [x] 🔴 **Find Oxylabs alternative** — replaced with Zyte API (pay-per-use, no subscription)
 - [ ] **Monitor curl_cffi stability in Docker/Linux** — `chrome120` appears to be working across recent full scrape runs; keep an eye on whether it holds or regresses intermittently (Zyte still covers any failures)
-- [ ] **Zyte 520 retry** — on HTTP 520 (unknown web server error), back off and retry up to N times before failing over
+- [x] **Zyte 520 retry** — on HTTP 520 (unknown web server error), back off and retry up to N times before failing over
 - [ ] **Scrape run summary log** — at end of each category scrape, log how many items were inserted vs updated (new vs already-seen listings)
 - [x] **Adaptive scheduler** — replace fixed 30-min interval with dynamic logic: default to hourly full scrape; when active deals are approaching their end time, launch targeted scrapes (by item title) at increasing frequency as the clock runs down (e.g. 15 min → 5 min → 1 min out)
 - [ ] **Bid count filter** — deprioritise or hide items with 5+ bids (price likely already bid up)
@@ -35,6 +36,7 @@
 - [ ] **Auto-bid button** — one-click to place a max bid on a deal listing as the auction nears its end (requires eBay OAuth integration)
 - [x] **Deal outcome tracking** — record surfaced deals and what they actually sold for to validate the algorithm
 - [x] **Outcome verification scrape** — a configurable number of hours after a tracked deal's end time, search eBay sold listings by the item title to confirm the final sale price is captured in the resolved panel (handles cases where the scheduler misses the sold listing)
+- [ ] **Fix outcome verification + give-up threshold** — `VerifyPendingOutcomes` is not resolving items as expected; investigate why (wrong search params? eBay not returning sold results for that title?); also add a configurable give-up threshold (e.g. 7 days after EndTime) after which an item is marked as permanently unresolvable rather than retried forever
 
 ## Security
 
@@ -42,5 +44,6 @@
 
 ## Bugs
 
-- [ ] 🔴 **Price parsing drops thousands separator** — `__ParseRawPrice` does `replace(',', '.')` so `£1,740.70` → `£1.740.70`; regex then matches `1.740` = £1.74. Fix: `replace(',', '')` (`EbayScraper.py: __ParseRawPrice`)
-- [ ] **Complete PC builds classified as CPU** — titles like "HIGH END GAMING PC RYZEN 7 9800x3d, AMD Radeon RX 9070 XT" pass the system-listing filter; add `'gaming pc'`, `'custom pc'`, `'full pc'`, `'complete pc'` to `_is_system` keyword list (`EbayScraper.py: __ParseItems CPU branch`)
+- [x] 🔴 **Price parsing drops thousands separator** — `__ParseRawPrice` does `replace(',', '.')` so `£1,740.70` → `£1.740.70`; regex then matches `1.740` = £1.74. Fix: `replace(',', '')` (`EbayScraper.py: __ParseRawPrice`); after fixing, run a backfill query to find and correct suspicious prices already in the DB (any active/sold GPU or CPU listing under £10 is a candidate)
+- [x] **Suppress zero active-deals log** — `GetActiveDeals()` logs "Active deals: 0 item(s) currently tracked" every scheduler tick when there are no tracked deals; only log when count > 0 (`EbayScraper.py: GetActiveDeals`)
+- [x] **Complete PC builds classified as CPU** — titles like "HIGH END GAMING PC RYZEN 7 9800x3d, AMD Radeon RX 9070 XT" pass the system-listing filter; add `'gaming pc'`, `'custom pc'`, `'full pc'`, `'complete pc'` to `_is_system` keyword list (`EbayScraper.py: __ParseItems CPU branch`)

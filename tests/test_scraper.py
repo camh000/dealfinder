@@ -41,11 +41,11 @@ class TestParseRawPrice:
         assert _parse_raw_price("£180") == 180.0
 
     def test_price_with_comma(self):
-        # Known limitation: __ParseRawPrice replaces ',' with '.' so
-        # "£1,234.56" → "£1.234.56" → regex matches 1.234, not 1234.56.
-        # This only affects prices ≥ £1,000 which are rare in our categories.
-        result = _parse_raw_price("£1,234.56")
-        assert result is not None   # does parse something (just not 1234.56)
+        assert _parse_raw_price("£1,234.56") == 1234.56
+
+    def test_thousands_with_comma(self):
+        """£1,740.70 must not be truncated to £1.74 (thousands separator fix)."""
+        assert _parse_raw_price("£1,740.70") == 1740.70
 
     def test_free_postage_returns_none(self):
         assert _parse_raw_price("Free postage") is None
@@ -242,6 +242,32 @@ class TestFetchZyte:
             with patch("requests.post", return_value=bad_resp):
                 result = EbayScraper._fetch_zyte("https://example.com")
         assert result is None
+
+    def _mock_520(self):
+        r = MagicMock()
+        r.status_code = 520
+        r.raise_for_status = MagicMock()
+        return r
+
+    def test_520_retries_then_succeeds(self):
+        """First call returns 520; second succeeds — result is HTML, sleep called once with 2s."""
+        env = {**self.ZYTE_CREDS, "ZYTE_MAX_RETRIES": "3"}
+        with patch.dict(os.environ, env):
+            with patch("requests.post", side_effect=[self._mock_520(), self._mock_resp()]):
+                with patch("time.sleep") as mock_sleep:
+                    result = EbayScraper._fetch_zyte("https://example.com")
+        assert result == LARGE_HTML
+        mock_sleep.assert_called_once_with(2)
+
+    def test_520_exhausts_retries_returns_none(self):
+        """All 3 attempts return 520 — gives up, returns None; sleep called twice (not after last)."""
+        env = {**self.ZYTE_CREDS, "ZYTE_MAX_RETRIES": "3"}
+        with patch.dict(os.environ, env):
+            with patch("requests.post", return_value=self._mock_520()):
+                with patch("time.sleep") as mock_sleep:
+                    result = EbayScraper._fetch_zyte("https://example.com")
+        assert result is None
+        assert mock_sleep.call_count == 2  # sleeps after attempt 1 (2s) and 2 (4s); not after 3
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
