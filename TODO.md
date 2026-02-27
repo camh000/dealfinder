@@ -10,7 +10,8 @@
 
 ## Scraper / Data
 
-- [ ] 🔴 **Find Oxylabs alternative** — Oxylabs is expensive/unreliable; evaluate alternatives (ScraperAPI, Bright Data, Zyte, etc.)
+- [x] 🔴 **Find Oxylabs alternative** — replaced with Zyte API (pay-per-use, no subscription)
+- [ ] **Scrape run summary log** — at end of each category scrape, log how many items were inserted vs updated (new vs already-seen listings)
 - [ ] **Bid count filter** — deprioritise or hide items with 5+ bids (price likely already bid up)
 - [ ] **Reserve price detection** — filter out "Reserve not met" listings
 - [ ] **Seller feedback filter** — skip listings from sellers below a configurable feedback threshold
