@@ -397,14 +397,16 @@ class TestVerifyPendingOutcomes:
         return conn, cur
 
     def test_skips_when_nothing_pending(self):
-        """Returns 0 and never calls _scrape_item_by_id when no pending items."""
+        """Returns 0 and never calls scrape helpers when no pending items."""
         conn, cur = self._make_conn([])
         cur.rowcount = 0  # Phase 1: no items gave up
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
-             patch.object(EbayScraper, '_scrape_item_by_id') as mock_scrape:
+             patch.object(EbayScraper, '_scrape_item_by_id') as mock_scrape, \
+             patch.object(EbayScraper, '_scrape_item_completed') as mock_completed:
             result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
         assert result == 0
         mock_scrape.assert_not_called()
+        mock_completed.assert_not_called()
 
     def test_resolves_matching_item(self):
         """When _scrape_item_by_id returns the item with a sold-date, UPDATE is called."""
@@ -445,7 +447,7 @@ class TestVerifyPendingOutcomes:
         conn.commit.assert_called_once()
 
     def test_item_not_found_logs_error(self):
-        """When _scrape_item_by_id returns None, log.error is called with item details."""
+        """When both sold and completed searches return None, log.error is called."""
         end_time = datetime(2026, 2, 20, 12, 0, 0)
         pending_row = (555666777, 'CPU', 'Intel Core i9-14900K', end_time)
         conn, cur = self._make_conn([pending_row])
@@ -453,6 +455,7 @@ class TestVerifyPendingOutcomes:
 
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
              patch.object(EbayScraper, '_scrape_item_by_id', return_value=None), \
+             patch.object(EbayScraper, '_scrape_item_completed', return_value=None), \
              patch.object(EbayScraper, 'log') as mock_log:
             result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
 
@@ -460,6 +463,52 @@ class TestVerifyPendingOutcomes:
         mock_log.error.assert_called_once()
         error_args = mock_log.error.call_args[0]
         assert '555666777' in str(error_args) or 555666777 in error_args
+
+    def test_ended_unsold_marks_outcome(self):
+        """When sold search finds nothing but completed search does, EndedUnsold=1 is set."""
+        end_time = datetime(2026, 2, 20, 18, 0, 0)
+        pending_row = (777888999, 'GPU', 'MSI RTX 3080 Gaming X Trio', end_time)
+        conn, cur = self._make_conn([pending_row])
+        cur.rowcount = 0  # Phase 1: no items gave up
+
+        # Item appears in all-completed results (ended unsold) but not in sold-only
+        completed_item = {
+            'id': '777888999',
+            'title': 'MSI RTX 3080 Gaming X Trio',
+            'price': 320.00,
+            'shipping': 0,
+            'time-left': '',
+            'time-end': end_time,
+            'sold-date': None,   # no sold-date — it ended without a sale
+            'bid-count': 3,
+            'reviews-count': 0,
+            'url': 'https://www.ebay.co.uk/itm/777888999',
+            'brand': 'MSI', 'model': 'RTX 3080', 'vram': 10,
+            'socket': None, 'cores': None,
+            'capacity-gb': None, 'interface': None, 'form-factor': None, 'rpm': None,
+        }
+
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, '_scrape_item_by_id', return_value=None), \
+             patch.object(EbayScraper, '_scrape_item_completed', return_value=completed_item), \
+             patch.object(EbayScraper, 'log') as mock_log:
+            result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
+
+        assert result == 1
+        # Should NOT log an error
+        mock_log.error.assert_not_called()
+        # Two UPDATE statements should have been executed (EBAY + DealOutcomes)
+        execute_calls = cur.execute.call_args_list
+        sql_calls = [call[0][0] for call in execute_calls]
+        ebay_update = any('EBAY' in s and 'SoldDate' in s for s in sql_calls)
+        outcome_update = any('DealOutcomes' in s and 'EndedUnsold' in s for s in sql_calls)
+        assert ebay_update, "Expected UPDATE on EBAY table for SoldDate"
+        assert outcome_update, "Expected UPDATE on DealOutcomes table for EndedUnsold"
+        # Price is hardcoded NULL in the SQL (not passed as a param), verify it's in the query
+        ebay_call = next(c for c in execute_calls if 'EBAY' in c[0][0] and 'SoldDate' in c[0][0])
+        ebay_sql = ebay_call[0][0]
+        assert 'NULL' in ebay_sql, "Price should be set to NULL in EBAY UPDATE SQL"
+        conn.commit.assert_called_once()
 
     def test_give_up_marks_old_items(self):
         """Items past give_up_days are marked GaveUp=1, a warning is logged, and Phase 2 is skipped."""

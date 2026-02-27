@@ -438,6 +438,19 @@
             border-radius: 2px;
         }
 
+        .outcome-ended {
+            display: inline-block;
+            background: rgba(150,150,150,0.1);
+            border: 1px solid rgba(150,150,150,0.3);
+            color: #888;
+            font-family: var(--sans);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            padding: 3px 8px;
+            border-radius: 2px;
+        }
+
         /* Scrollbar */
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: var(--bg); }
@@ -697,6 +710,22 @@
             resolvedBody.innerHTML = '<tr class="state-row"><td colspan="8">No resolved deals yet — they appear here once auctions end and the scraper picks them up as sold.</td></tr>';
         } else {
             resolvedBody.innerHTML = resolved.map((r, i) => {
+                if (r.EndedUnsold) {
+                    // Auction ended without a sale — no final price to compare
+                    return `<tr style="animation-delay:${i * 40}ms">
+                        <td>${formatDate(r.SurfacedAt)}</td>
+                        <td><span class="cat-badge">${r.Category}</span></td>
+                        <td><div class="model-cell" style="font-size:14px">${r.Model || '—'}</div></td>
+                        <td style="text-align:right">
+                            <div class="price-current" style="font-size:13px">${fmt(r.SurfacedPrice)}</div>
+                            <div class="price-avg">${r.SurfacedDiscountPct}% off</div>
+                        </td>
+                        <td style="text-align:right"><div class="price-avg" style="font-size:13px">${fmt(r.AvgMarketPrice)}</div></td>
+                        <td style="text-align:right"><div class="price-avg" style="font-size:13px">—</div></td>
+                        <td><span class="outcome-ended">ENDED</span></td>
+                        <td><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>
+                    </tr>`;
+                }
                 const win = r.FinalPrice < r.AvgMarketPrice;
                 const pctLabel = r.ActualDiscountPct > 0
                     ? `${r.ActualDiscountPct}% off mkt`

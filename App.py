@@ -202,6 +202,7 @@ SELECT
     ROUND(e.Price / 100, 2)          AS FinalPrice,
     e.SoldDate,
     ROUND((1 - (e.Price / 100) / (d.AvgMarketPrice / 100)) * 100, 1) AS ActualDiscountPct,
+    d.EndedUnsold,
     e.URL
 FROM Scraper.DealOutcomes d
 JOIN Scraper.EBAY e ON e.ID = d.EbayID
@@ -247,19 +248,23 @@ def ensure_outcomes_table():
                 BidCount       INT          NOT NULL DEFAULT 0,
                 EndTime        DATETIME     NOT NULL,
                 SurfacedAt     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                GaveUp         TINYINT(1)   NOT NULL DEFAULT 0
+                GaveUp         TINYINT(1)   NOT NULL DEFAULT 0,
+                EndedUnsold    TINYINT(1)   NOT NULL DEFAULT 0
             )
         """)
         conn.commit()
-        # Auto-migrate existing installations that predate the GaveUp column.
-        try:
-            cur.execute(
-                "ALTER TABLE Scraper.DealOutcomes ADD COLUMN GaveUp TINYINT(1) NOT NULL DEFAULT 0"
-            )
-            conn.commit()
-            log.info("DealOutcomes: added GaveUp column")
-        except Exception:
-            pass  # column already exists (MySQL error 1060) — safe to ignore
+        # Auto-migrate existing installations that predate optional columns.
+        for col_sql in [
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN GaveUp TINYINT(1) NOT NULL DEFAULT 0",
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN EndedUnsold TINYINT(1) NOT NULL DEFAULT 0",
+        ]:
+            try:
+                cur.execute(col_sql)
+                conn.commit()
+                col_name = col_sql.split("ADD COLUMN ")[1].split()[0]
+                log.info("DealOutcomes: added %s column", col_name)
+            except Exception:
+                pass  # column already exists (MySQL error 1060) — safe to ignore
         log.info("DealOutcomes table ready")
     except Exception as e:
         log.error("Could not create DealOutcomes table: %s", e)
