@@ -463,6 +463,54 @@
         }
         th.sorted .sort-icon { opacity: 1; color: var(--accent); }
 
+        /* Price guide controls */
+        .price-controls { display:flex; gap:12px; align-items:center; padding:12px 0 8px; flex-wrap:wrap; }
+        .price-search-input {
+            flex:1; min-width:200px;
+            background:var(--surface); border:1px solid var(--border); color:var(--text);
+            padding:6px 10px; border-radius:4px; font-size:13px;
+        }
+        .price-search-input:focus { outline:none; border-color:var(--accent); }
+        .price-search-input::placeholder { color:var(--text-dim); }
+        .price-cat-filter { display:flex; gap:6px; }
+        .pcat-btn {
+            background:none; border:1px solid var(--border); color:var(--text-dim);
+            padding:4px 12px; border-radius:3px; cursor:pointer;
+            font-family:var(--sans); font-size:12px; font-weight:700; letter-spacing:.5px;
+        }
+        .pcat-btn.active, .pcat-btn:hover { border-color:var(--accent); color:var(--accent); }
+
+        /* Build basket */
+        #basket { margin-top:20px; border:1px solid var(--border); border-radius:4px; overflow:hidden; }
+        .basket-header {
+            display:flex; justify-content:space-between; align-items:center;
+            padding:8px 14px; background:var(--surface); border-bottom:1px solid var(--border);
+        }
+        .basket-title { font-family:var(--sans); font-size:12px; font-weight:700; letter-spacing:1px; }
+        .basket-clear-btn {
+            background:none; border:1px solid var(--border); color:var(--text-dim);
+            padding:3px 8px; border-radius:2px; cursor:pointer; font-size:11px;
+        }
+        .basket-clear-btn:hover { border-color:var(--red); color:var(--red); }
+        .basket-item {
+            display:flex; justify-content:space-between; align-items:center;
+            padding:7px 14px; border-bottom:1px solid var(--border); font-size:13px;
+        }
+        .basket-item-label { color:var(--text); flex:1; }
+        .basket-item-price { color:var(--accent); font-weight:600; margin:0 16px; }
+        .basket-remove {
+            background:none; border:none; color:var(--text-dim);
+            cursor:pointer; font-size:15px; padding:0 2px; line-height:1;
+        }
+        .basket-remove:hover { color:var(--red); }
+        .basket-footer {
+            display:flex; justify-content:space-between;
+            padding:10px 14px; background:var(--surface);
+        }
+        .basket-label { font-family:var(--sans); font-size:11px; font-weight:700; letter-spacing:1px; color:var(--text-dim); }
+        .basket-total { font-size:18px; font-weight:700; color:var(--accent); }
+        tr.low-confidence { opacity:0.55; }
+
         /* Scrollbar */
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: var(--bg); }
@@ -563,6 +611,7 @@
     <button class="tab-btn" data-type="cpu" onclick="switchTab('cpu')">CPU<span class="tab-badge" id="badge-cpu"></span></button>
     <button class="tab-btn" data-type="hdd" onclick="switchTab('hdd')">HDD<span class="tab-badge" id="badge-hdd"></span></button>
     <button class="tab-btn" data-type="outcomes" onclick="switchTab('outcomes')">OUTCOMES</button>
+    <button class="tab-btn" data-type="prices"   onclick="switchTab('prices')">PRICES</button>
 </div>
 
 <main>
@@ -606,12 +655,59 @@
             </table>
         </div>
     </div>
+
+    <div id="panel-prices" style="display:none">
+        <div class="section-header">
+            <span class="section-title">Component Price Guide</span>
+            <button class="refresh-btn" id="prices-refresh-btn" onclick="loadPriceGuide(true)">↻ REFRESH</button>
+        </div>
+        <div class="price-controls">
+            <input type="text" id="price-search" class="price-search-input"
+                   placeholder="Search models, brands, specs…" oninput="filterPriceGuide()">
+            <div class="price-cat-filter">
+                <button class="pcat-btn active" data-cat="all" onclick="setPriceCat('all')">All</button>
+                <button class="pcat-btn" data-cat="gpu" onclick="setPriceCat('gpu')">GPU</button>
+                <button class="pcat-btn" data-cat="cpu" onclick="setPriceCat('cpu')">CPU</button>
+                <button class="pcat-btn" data-cat="hdd" onclick="setPriceCat('hdd')">HDD</button>
+            </div>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr>
+                    <th>Cat</th>
+                    <th>Model / Specs</th>
+                    <th class="right">Avg Market</th>
+                    <th class="right">Sales</th>
+                    <th></th>
+                </tr></thead>
+                <tbody id="price-guide-body">
+                    <tr class="state-row"><td colspan="5"><span class="loader"></span> Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div id="basket" style="display:none">
+            <div class="basket-header">
+                <span class="basket-title">Build Basket</span>
+                <button class="basket-clear-btn" onclick="clearBasket()">CLEAR</button>
+            </div>
+            <div id="basket-items"></div>
+            <div class="basket-footer">
+                <span class="basket-label">TOTAL</span>
+                <span class="basket-total" id="basket-total">£0.00</span>
+            </div>
+        </div>
+    </div>
 </main>
 
 <footer>PC DEAL FINDER &mdash; AUTO-REFRESHES EVERY 5 MIN &mdash; DATA VIA EBAY UK</footer>
 
 <script>
     let activeType = 'gpu';
+
+    // ── Price guide state ────────────────────────────────────────────────────
+    let priceGuideData = null;   // cached {gpu:[...], cpu:[...], hdd:[...]}
+    let activePriceCat = 'all';
+    let basket         = [];     // [{label, price}, ...]
 
     // ── Sort state ──────────────────────────────────────────────────────────
     let dealsData    = [], dealsType    = '';
@@ -725,14 +821,15 @@
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.type === type);
         });
+        const isPrices   = type === 'prices';
         const isOutcomes = type === 'outcomes';
-        document.getElementById('panel-deals').style.display    = isOutcomes ? 'none' : '';
+        const isDeals    = !isPrices && !isOutcomes;
+        document.getElementById('panel-deals').style.display    = isDeals    ? '' : 'none';
         document.getElementById('panel-outcomes').style.display = isOutcomes ? '' : 'none';
-        if (isOutcomes) {
-            loadOutcomes();
-        } else {
-            loadDeals();
-        }
+        document.getElementById('panel-prices').style.display   = isPrices   ? '' : 'none';
+        if (isOutcomes)    loadOutcomes();
+        else if (isPrices) loadPriceGuide();
+        else               loadDeals();
     }
 
     function formatDate(isoStr) {
@@ -860,6 +957,127 @@
             </tr>`;
         }).join('');
         tickCountdowns();
+    }
+
+    // ── Price guide & basket ─────────────────────────────────────────────────
+
+    async function loadPriceGuide(force = false) {
+        if (priceGuideData && !force) { renderPriceGuide(); return; }
+        const btn = document.getElementById('prices-refresh-btn');
+        btn.classList.add('spinning');
+        document.getElementById('price-guide-body').innerHTML =
+            '<tr class="state-row"><td colspan="5"><span class="loader"></span> Loading…</td></tr>';
+        try {
+            const res  = await fetch('/api/price-guide');
+            const data = await res.json();
+            if (data.status !== 'ok') throw new Error(data.message);
+            priceGuideData = data.components;
+            renderPriceGuide();
+        } catch (err) {
+            document.getElementById('price-guide-body').innerHTML =
+                `<tr class="state-row"><td colspan="5">Error: ${err.message}</td></tr>`;
+        } finally {
+            btn.classList.remove('spinning');
+        }
+    }
+
+    function setPriceCat(cat) {
+        activePriceCat = cat;
+        document.querySelectorAll('.pcat-btn').forEach(b =>
+            b.classList.toggle('active', b.dataset.cat === cat));
+        renderPriceGuide();
+    }
+
+    function filterPriceGuide() { renderPriceGuide(); }
+
+    function renderPriceGuide() {
+        if (!priceGuideData) return;
+        const q    = document.getElementById('price-search').value.trim().toLowerCase();
+        const body = document.getElementById('price-guide-body');
+        const cats = activePriceCat === 'all' ? ['gpu', 'cpu', 'hdd'] : [activePriceCat];
+
+        // Flatten + tag rows
+        let rows = [];
+        for (const cat of cats)
+            for (const r of (priceGuideData[cat] || []))
+                rows.push({ ...r, _cat: cat });
+
+        // Build a searchable label per row
+        const rowLabel = r => {
+            if (r._cat === 'gpu')
+                return `${r.Model || ''} ${r.Brand || ''} ${r.VRAM ? r.VRAM + 'GB' : ''}`.trim();
+            if (r._cat === 'cpu')
+                return `${r.Model || ''} ${r.Brand || ''} ${r.Socket || ''} ${r.Cores ? r.Cores + ' cores' : ''}`.trim();
+            const cap = r.CapacityGB >= 1000
+                ? (r.CapacityGB / 1000).toFixed(r.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
+                : r.CapacityGB + 'GB';
+            return `${cap} ${r.Interface || ''} ${r.FormFactor || ''} ${r.Brand || ''}`.trim();
+        };
+
+        if (q) rows = rows.filter(r => rowLabel(r).toLowerCase().includes(q));
+
+        if (rows.length === 0) {
+            body.innerHTML = '<tr class="state-row"><td colspan="5">No components match.</td></tr>';
+            return;
+        }
+
+        body.innerHTML = rows.map(r => {
+            const lbl = rowLabel(r);
+            const modelName = r._cat === 'hdd'
+                ? (r.CapacityGB >= 1000
+                    ? (r.CapacityGB / 1000).toFixed(r.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
+                    : r.CapacityGB + 'GB')
+                : (r.Model || '—');
+            const specLine = r._cat === 'gpu'
+                ? [r.VRAM ? r.VRAM + 'GB VRAM' : '', r.Brand].filter(Boolean).join(' · ')
+                : r._cat === 'cpu'
+                    ? [r.Socket, r.Cores ? r.Cores + ' cores' : '', r.Brand].filter(Boolean).join(' · ')
+                    : [r.Interface, r.FormFactor, r.Brand].filter(Boolean).join(' · ');
+            const low = r.SoldCount < 5;
+            const escapedLbl = lbl.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            return `<tr class="${low ? 'low-confidence' : ''}">
+                <td><span class="cat-badge">${r._cat.toUpperCase()}</span></td>
+                <td>
+                    <div class="model-cell" style="font-size:14px">${modelName}</div>
+                    ${specLine ? `<div class="brand-tag">${specLine}</div>` : ''}
+                </td>
+                <td style="text-align:right">
+                    <div style="font-size:14px">£${Number(r.AvgPrice).toFixed(2)}</div>
+                </td>
+                <td style="text-align:right">
+                    <div class="brand-tag">${r.SoldCount} sales</div>
+                </td>
+                <td>
+                    <button class="link-btn" onclick="addToBasket('${escapedLbl}', ${r.AvgPrice})">+ ADD</button>
+                </td>
+            </tr>`;
+        }).join('');
+    }
+
+    function addToBasket(label, price) {
+        basket.push({ label, price: Number(price) });
+        renderBasket();
+    }
+
+    function removeFromBasket(i) {
+        basket.splice(i, 1);
+        renderBasket();
+    }
+
+    function clearBasket() { basket = []; renderBasket(); }
+
+    function renderBasket() {
+        const el = document.getElementById('basket');
+        if (!basket.length) { el.style.display = 'none'; return; }
+        el.style.display = '';
+        document.getElementById('basket-total').textContent =
+            `£${basket.reduce((s, x) => s + x.price, 0).toFixed(2)}`;
+        document.getElementById('basket-items').innerHTML = basket.map((x, i) => `
+            <div class="basket-item">
+                <span class="basket-item-label">${x.label}</span>
+                <span class="basket-item-price">£${x.price.toFixed(2)}</span>
+                <button class="basket-remove" onclick="removeFromBasket(${i})">×</button>
+            </div>`).join('');
     }
 
     function formatCountdown(isoStr) {

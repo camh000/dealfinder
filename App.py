@@ -182,6 +182,48 @@ WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
   AND e.EndTime > NOW() AND e.EndTime < NOW() + INTERVAL 2 HOUR;
 """
 
+PRICE_GUIDE_GPU_QUERY = """
+SELECT g.Model, g.Brand, g.VRAM,
+       ROUND(AVG(e.Price / 100), 2) AS AvgPrice,
+       COUNT(*) AS SoldCount
+FROM   Scraper.GPU g
+JOIN   Scraper.EBAY e ON e.ID = g.ID
+WHERE  e.SoldDate IS NOT NULL
+  AND  g.Model IS NOT NULL
+  AND  e.Price IS NOT NULL
+GROUP  BY g.Model, g.Brand, g.VRAM
+HAVING COUNT(*) >= 3
+ORDER  BY AvgPrice DESC;
+"""
+
+PRICE_GUIDE_CPU_QUERY = """
+SELECT c.Model, c.Brand, c.Socket, c.Cores,
+       ROUND(AVG(e.Price / 100), 2) AS AvgPrice,
+       COUNT(*) AS SoldCount
+FROM   Scraper.CPU c
+JOIN   Scraper.EBAY e ON e.ID = c.ID
+WHERE  e.SoldDate IS NOT NULL
+  AND  c.Model IS NOT NULL
+  AND  e.Price IS NOT NULL
+GROUP  BY c.Model, c.Brand, c.Socket, c.Cores
+HAVING COUNT(*) >= 3
+ORDER  BY AvgPrice DESC;
+"""
+
+PRICE_GUIDE_HDD_QUERY = """
+SELECT h.CapacityGB, h.Interface, h.FormFactor, h.Brand,
+       ROUND(AVG(e.Price / 100), 2) AS AvgPrice,
+       COUNT(*) AS SoldCount
+FROM   Scraper.HDD h
+JOIN   Scraper.EBAY e ON e.ID = h.ID
+WHERE  e.SoldDate IS NOT NULL
+  AND  h.CapacityGB IS NOT NULL
+  AND  e.Price IS NOT NULL
+GROUP  BY h.CapacityGB, h.Interface, h.FormFactor, h.Brand
+HAVING COUNT(*) >= 3
+ORDER  BY h.CapacityGB DESC, AvgPrice DESC;
+"""
+
 COUNT_QUERIES = {
     'gpu': GPU_COUNT_QUERY,
     'cpu': CPU_COUNT_QUERY,
@@ -424,6 +466,27 @@ def outcomes():
         })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route("/api/price-guide")
+def price_guide():
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        result = {}
+        for cat, query in [('gpu', PRICE_GUIDE_GPU_QUERY),
+                            ('cpu', PRICE_GUIDE_CPU_QUERY),
+                            ('hdd', PRICE_GUIDE_HDD_QUERY)]:
+            cur.execute(query)
+            result[cat] = cur.fetchall()
+        return jsonify({"status": "ok", "components": result})
+    except Exception as e:
+        log.error("price_guide error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
     finally:
         if conn:
             conn.close()
