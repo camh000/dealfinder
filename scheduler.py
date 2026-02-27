@@ -47,6 +47,8 @@ HDD_QUERY_LIST = [
 
 def run_scraper():
     log.info("Starting scrape run...")
+    # Fresh curl-cffi session per run so Akamai cookies are re-established.
+    EbayScraper.reset_direct_session()
     common = dict(country='uk', condition='used', listing_type='auction', cache=False)
     for query_list, product_type in [
         (GPU_QUERY_LIST, 'GPU'),

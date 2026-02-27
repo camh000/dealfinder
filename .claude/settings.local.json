@@ -3,7 +3,19 @@
     "allow": [
       "Bash(git add TODO.md)",
       "Bash(git commit:*)",
-      "Bash(git push origin claude/eager-nightingale)"
+      "Bash(git push origin claude/eager-nightingale)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(git add App.py TODO.md templates/Index.html)",
+      "Bash(git push -u origin claude/brave-gould)",
+      "Bash(gh pr:*)",
+      "WebFetch(domain:scrapeops.io)",
+      "WebFetch(domain:webscrapingapi.com)",
+      "WebFetch(domain:zyte.com)",
+      "WebFetch(domain:scraperapi.com)",
+      "WebFetch(domain:www.zyte.com)",
+      "WebFetch(domain:www.scraperapi.com)",
+      "WebFetch(domain:www.webscrapingapi.com)",
+      "Bash(python -m pytest tests/ -m \"not live\" -v)"
     ]
   }
 }

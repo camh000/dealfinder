@@ -150,29 +150,41 @@ LARGE_HTML = "<html>" + "x" * 60_000 + "</html>"   # passes the 50 KB sanity che
 
 
 class TestFetchDirect:
-    def _mock_resp(self, status=200, text=LARGE_HTML):
-        r = MagicMock()
-        r.status_code = status
-        r.text = text
-        return r
+    def setup_method(self):
+        # Each test gets a clean module-level session so tests don't bleed into each other.
+        EbayScraper.reset_direct_session()
+
+    def _mock_session(self, status=200, text=LARGE_HTML):
+        """Return a mock curl_cffi Session whose .get() yields the given response."""
+        session = MagicMock()
+        session.cookies = {}
+        resp = MagicMock()
+        resp.status_code = status
+        resp.text = text
+        session.get.return_value = resp
+        return session
 
     def test_success_returns_html(self):
-        with patch("curl_cffi.requests.get", return_value=self._mock_resp()):
+        with patch("curl_cffi.requests.Session", return_value=self._mock_session()):
             result = EbayScraper._fetch_direct("https://example.com")
         assert result == LARGE_HTML
 
     def test_http_403_returns_none(self):
-        with patch("curl_cffi.requests.get", return_value=self._mock_resp(status=403)):
+        with patch("curl_cffi.requests.Session", return_value=self._mock_session(status=403)):
             result = EbayScraper._fetch_direct("https://example.com")
         assert result is None
 
     def test_response_too_small_returns_none(self):
-        with patch("curl_cffi.requests.get", return_value=self._mock_resp(text="<html>blocked</html>")):
+        with patch("curl_cffi.requests.Session",
+                   return_value=self._mock_session(text="<html>blocked</html>")):
             result = EbayScraper._fetch_direct("https://example.com")
         assert result is None
 
     def test_connection_error_returns_none(self):
-        with patch("curl_cffi.requests.get", side_effect=ConnectionError("timed out")):
+        session = MagicMock()
+        session.cookies = {}
+        session.get.side_effect = ConnectionError("timed out")
+        with patch("curl_cffi.requests.Session", return_value=session):
             result = EbayScraper._fetch_direct("https://example.com")
         assert result is None
 
