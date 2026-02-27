@@ -40,7 +40,9 @@
 
 ## Security
 
-- [ ] **Cloudflare Tunnel exposure review** — assess risks of making the Flask UI publicly accessible: add HTTP basic auth or token gate, review API endpoints for input validation, consider rate limiting
+- [ ] **HTTP Basic Auth gate** — all 5 Flask routes are unauthenticated (including `/api/deals` which writes to `DealOutcomes` on every page load); add configurable Basic Auth via `HTTP_USER` + `HTTP_PASS` env vars enforced in a `before_request` hook — no extra library needed (`App.py`)
+- [ ] **API rate limiting** — no per-IP throttling on any endpoint; add Flask-Limiter with a sensible default (e.g. 60 req/min) configurable via a `RATE_LIMIT` env var; most critical for `/api/deals` which inserts rows on each call (`App.py`, `requirements.txt`)
+- [ ] **Sanitise 500 error responses** — all five route error handlers return `str(e)` in the JSON body, which can expose internal detail (DB host, file paths); replace with a generic `"internal error"` message and log the real exception server-side (`App.py`)
 
 ## Bugs
 
