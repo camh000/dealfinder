@@ -7,6 +7,7 @@
 - [ ] **Filter panel** — filter by brand, minimum discount %, minimum £ saving
 - [ ] **Widen time window** — add a "coming up" section for auctions ending in 2–6 hours
 - [ ] **PWA / mobile install** — add `manifest.json` and service worker for home screen install
+- [ ] **Align OUTCOMES panel columns** — stat cards in the top panel are slightly offset from the resolved/pending table columns below
 
 ## Scraper / Data
 
@@ -28,3 +29,8 @@
 
 - [ ] **Ntfy / Pushover notifications** — notify once per item ID when a deal is first detected
 - [x] **Deal outcome tracking** — record surfaced deals and what they actually sold for to validate the algorithm
+- [ ] **Outcome verification scrape** — a configurable number of hours after a tracked deal's end time, search eBay sold listings by the item title to confirm the final sale price is captured in the resolved panel (handles cases where the scheduler misses the sold listing)
+
+## Security
+
+- [ ] **Cloudflare Tunnel exposure review** — assess risks of making the Flask UI publicly accessible: add HTTP basic auth or token gate, review API endpoints for input validation, consider rate limiting
