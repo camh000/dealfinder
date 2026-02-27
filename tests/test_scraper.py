@@ -195,51 +195,52 @@ class TestFetchDirect:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 5. _fetch_oxylabs — mocked, no network
+# 5. _fetch_zyte — mocked, no network
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestFetchOxylabs:
-    OXYLABS_CREDS = {"OXYLABS_USER": "test_user", "OXYLABS_PASSWORD": "test_pass"}
+class TestFetchZyte:
+    import base64 as _b64
 
-    def _mock_resp(self, html="<html>content</html>"):
+    ZYTE_CREDS = {"ZYTE_API_KEY": "test_api_key"}
+
+    def _mock_resp(self, html=LARGE_HTML):
+        import base64
         r = MagicMock()
-        r.json.return_value = {"results": [{"content": html}]}
+        r.json.return_value = {"httpResponseBody": base64.b64encode(html.encode()).decode()}
         r.raise_for_status = MagicMock()
         return r
 
     def test_success_returns_html(self):
-        with patch.dict(os.environ, self.OXYLABS_CREDS):
-            with patch("requests.post", return_value=self._mock_resp("<html>ok</html>")):
-                result = EbayScraper._fetch_oxylabs("https://example.com")
-        assert result == "<html>ok</html>"
+        with patch.dict(os.environ, self.ZYTE_CREDS):
+            with patch("requests.post", return_value=self._mock_resp()):
+                result = EbayScraper._fetch_zyte("https://example.com")
+        assert result == LARGE_HTML
 
-    def test_missing_user_returns_none(self):
-        clean_env = {k: v for k, v in os.environ.items()
-                     if k not in ("OXYLABS_USER", "OXYLABS_PASSWORD")}
+    def test_missing_key_returns_none(self):
+        clean_env = {k: v for k, v in os.environ.items() if k != "ZYTE_API_KEY"}
         with patch.dict(os.environ, clean_env, clear=True):
-            result = EbayScraper._fetch_oxylabs("https://example.com")
+            result = EbayScraper._fetch_zyte("https://example.com")
         assert result is None
 
-    def test_missing_password_returns_none(self):
-        with patch.dict(os.environ, {"OXYLABS_USER": "u"}, clear=False):
-            # Remove password if present
-            env = {k: v for k, v in os.environ.items() if k != "OXYLABS_PASSWORD"}
-            with patch.dict(os.environ, env, clear=True):
-                result = EbayScraper._fetch_oxylabs("https://example.com")
+    def test_small_response_returns_none(self):
+        """Zyte returning <50k chars should be treated as a block page."""
+        with patch.dict(os.environ, self.ZYTE_CREDS):
+            with patch("requests.post", return_value=self._mock_resp("<html>tiny</html>")):
+                result = EbayScraper._fetch_zyte("https://example.com")
         assert result is None
 
     def test_request_exception_returns_none(self):
-        with patch.dict(os.environ, self.OXYLABS_CREDS):
+        with patch.dict(os.environ, self.ZYTE_CREDS):
             with patch("requests.post", side_effect=Exception("connection refused")):
-                result = EbayScraper._fetch_oxylabs("https://example.com")
+                result = EbayScraper._fetch_zyte("https://example.com")
         assert result is None
 
     def test_http_error_returns_none(self):
         bad_resp = MagicMock()
         bad_resp.raise_for_status.side_effect = Exception("403 Forbidden")
-        with patch.dict(os.environ, self.OXYLABS_CREDS):
+        with patch.dict(os.environ, self.ZYTE_CREDS):
             with patch("requests.post", return_value=bad_resp):
-                result = EbayScraper._fetch_oxylabs("https://example.com")
+                result = EbayScraper._fetch_zyte("https://example.com")
         assert result is None
 
 
@@ -248,34 +249,33 @@ class TestFetchOxylabs:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestFetchFallback:
-    """Verify __GetHTML tries direct first and only calls Oxylabs on failure."""
+    """Verify __GetHTML tries direct first and only calls Zyte on failure."""
 
     def test_direct_used_when_available(self):
         with patch.object(EbayScraper, "_fetch_direct", return_value=LARGE_HTML) as mock_direct, \
-             patch.object(EbayScraper, "_fetch_oxylabs") as mock_oxy:
-            # cache=True so we can intercept before the cache write
+             patch.object(EbayScraper, "_fetch_zyte") as mock_zyte:
             try:
                 EbayScraper.Scrape("test query", "GPU", country="uk",
                                    condition="used", listing_type="auction", cache=False)
             except Exception:
                 pass  # ParseItems may fail on fake HTML — that's fine
             mock_direct.assert_called()
-            mock_oxy.assert_not_called()
+            mock_zyte.assert_not_called()
 
-    def test_oxylabs_called_when_direct_fails(self):
+    def test_zyte_called_when_direct_fails(self):
         with patch.object(EbayScraper, "_fetch_direct", return_value=None) as mock_direct, \
-             patch.object(EbayScraper, "_fetch_oxylabs", return_value=LARGE_HTML) as mock_oxy:
+             patch.object(EbayScraper, "_fetch_zyte", return_value=LARGE_HTML) as mock_zyte:
             try:
                 EbayScraper.Scrape("test query", "GPU", country="uk",
                                    condition="used", listing_type="auction", cache=False)
             except Exception:
                 pass
             mock_direct.assert_called()
-            mock_oxy.assert_called()
+            mock_zyte.assert_called()
 
     def test_raises_when_both_fail(self):
         with patch.object(EbayScraper, "_fetch_direct", return_value=None), \
-             patch.object(EbayScraper, "_fetch_oxylabs", return_value=None):
+             patch.object(EbayScraper, "_fetch_zyte", return_value=None):
             with pytest.raises(RuntimeError, match="All fetch methods failed"):
                 EbayScraper.Scrape("test query", "GPU", country="uk",
                                    condition="used", listing_type="auction", cache=False)

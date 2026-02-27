@@ -105,7 +105,7 @@ def _fetch_direct(url: str) -> str | None:
 
     # Initialise session + homepage warmup once per scrape run.
     if _direct_session is None:
-        _direct_session = cffi_requests.Session(impersonate='chrome131')
+        _direct_session = cffi_requests.Session(impersonate='chrome120')
         try:
             warmup = _direct_session.get(
                 'https://www.ebay.co.uk/',
@@ -152,38 +152,43 @@ def _fetch_direct(url: str) -> str | None:
         return None
 
 
-def _fetch_oxylabs(url: str) -> str | None:
-    """Fetch URL via Oxylabs realtime proxy (fallback when direct fetch fails).
+def _fetch_zyte(url: str) -> str | None:
+    """Fetch URL via Zyte API — pay-per-use fallback when direct fetch is blocked.
 
-    Returns HTML string on success, or None if credentials are missing or
-    the request fails.
+    Uses httpResponseBody mode (raw HTTP response, no JS rendering).
+    eBay search pages are server-rendered HTML so JS execution is not required.
+    Approx cost: $1.8 per 1,000 successful requests (no monthly fee).
+
+    If Akamai still blocks via Zyte (response too small), switch the payload to:
+        {"url": url, "browserHtml": True, "geolocation": "GB"}
+    and decode with resp.json()["browserHtml"] (no base64). Cost ~$9/1k.
     """
-    oxylabs_user = os.environ.get("OXYLABS_USER")
-    oxylabs_pass = os.environ.get("OXYLABS_PASSWORD")
-    if not oxylabs_user or not oxylabs_pass:
-        log.warning("Oxylabs credentials not configured — skipping proxy fallback")
+    import base64
+    api_key = os.environ.get("ZYTE_API_KEY")
+    if not api_key:
+        log.warning("Zyte API key not configured — skipping Zyte fetch")
         return None
     try:
-        log.info("Fetching via Oxylabs: %s", url)
-        payload = {
-            'source': 'universal',
-            'user_agent_type': 'desktop',
-            'url': url,
-            'render': 'html',
-            'geo_location': 'United Kingdom',
-        }
+        log.info("Fetching via Zyte API: %s", url)
         resp = requests.post(
-            'https://realtime.oxylabs.io/v1/queries',
-            auth=(oxylabs_user, oxylabs_pass),
-            json=payload,
+            "https://api.zyte.com/v1/extract",
+            auth=(api_key, ""),
+            json={
+                "url": url,
+                "httpResponseBody": True,
+                "geolocation": "GB",
+            },
             timeout=60,
         )
         resp.raise_for_status()
-        html = resp.json()['results'][0]['content']
-        log.debug("Fetched via Oxylabs (%d chars)", len(html))
+        html = base64.b64decode(resp.json()["httpResponseBody"]).decode("utf-8", errors="replace")
+        if len(html) < 50_000:
+            log.warning("Zyte response too small (%d chars) — possible block page", len(html))
+            return None
+        log.info("Fetched via Zyte (%d chars)", len(html))
         return html
     except Exception as e:
-        log.error("Oxylabs fetch failed: %s", e)
+        log.error("Zyte fetch failed: %s", e)
         return None
 
 
@@ -203,7 +208,7 @@ def __GetHTML(query, country, condition='', listing_type='all', alreadySold=True
         )
         log.debug("Fetching: %s", url)
 
-        responseHTML = _fetch_direct(url) or _fetch_oxylabs(url)
+        responseHTML = _fetch_direct(url) or _fetch_zyte(url)
         if responseHTML is None:
             raise RuntimeError(f"All fetch methods failed for: {url}")
 
