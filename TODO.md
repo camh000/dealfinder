@@ -14,7 +14,7 @@
 ## Scraper / Data
 
 - [x] 🔴 **Find Oxylabs alternative** — replaced with Zyte API (pay-per-use, no subscription)
-- [ ] **Fix curl_cffi in Docker/Linux** — still returning 13KB Akamai block pages in production (`chrome120` didn't resolve it); Zyte covers it for now but fixing direct fetch would reduce proxy costs to near-zero
+- [ ] **Monitor curl_cffi stability in Docker/Linux** — `chrome120` appears to be working across recent full scrape runs; keep an eye on whether it holds or regresses intermittently (Zyte still covers any failures)
 - [ ] **Zyte 520 retry** — on HTTP 520 (unknown web server error), back off and retry up to N times before failing over
 - [ ] **Scrape run summary log** — at end of each category scrape, log how many items were inserted vs updated (new vs already-seen listings)
 - [ ] **Adaptive scheduler** — replace fixed 30-min interval with dynamic logic: default to hourly full scrape; when active deals are approaching their end time, launch targeted scrapes (by item title) at increasing frequency as the clock runs down (e.g. 15 min → 5 min → 1 min out)
