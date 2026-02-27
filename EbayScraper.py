@@ -1,4 +1,5 @@
 import re
+import time
 import logging
 import requests
 import urllib.parse
@@ -159,6 +160,9 @@ def _fetch_zyte(url: str) -> str | None:
     eBay search pages are server-rendered HTML so JS execution is not required.
     Approx cost: $1.8 per 1,000 successful requests (no monthly fee).
 
+    HTTP 520 (Zyte transient error) is retried with exponential back-off up to
+    ZYTE_MAX_RETRIES attempts (default 3, sleeps 2 s / 4 s / 8 s between tries).
+
     If Akamai still blocks via Zyte (response too small), switch the payload to:
         {"url": url, "browserHtml": True, "geolocation": "GB"}
     and decode with resp.json()["browserHtml"] (no base64). Cost ~$9/1k.
@@ -168,28 +172,47 @@ def _fetch_zyte(url: str) -> str | None:
     if not api_key:
         log.warning("Zyte API key not configured — skipping Zyte fetch")
         return None
-    try:
-        log.info("Fetching via Zyte API: %s", url)
-        resp = requests.post(
-            "https://api.zyte.com/v1/extract",
-            auth=(api_key, ""),
-            json={
-                "url": url,
-                "httpResponseBody": True,
-                "geolocation": "GB",
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        html = base64.b64decode(resp.json()["httpResponseBody"]).decode("utf-8", errors="replace")
-        if len(html) < 50_000:
-            log.warning("Zyte response too small (%d chars) — possible block page", len(html))
+
+    max_retries = int(os.environ.get('ZYTE_MAX_RETRIES', '3'))
+
+    for attempt in range(max_retries):
+        try:
+            log.info("Fetching via Zyte API: %s", url)
+            resp = requests.post(
+                "https://api.zyte.com/v1/extract",
+                auth=(api_key, ""),
+                json={
+                    "url": url,
+                    "httpResponseBody": True,
+                    "geolocation": "GB",
+                },
+                timeout=60,
+            )
+
+            if resp.status_code == 520:
+                backoff = 2 ** (attempt + 1)
+                log.warning(
+                    "Zyte HTTP 520 (attempt %d/%d) — backing off %ds before retry",
+                    attempt + 1, max_retries, backoff,
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(backoff)
+                continue
+
+            resp.raise_for_status()
+            html = base64.b64decode(resp.json()["httpResponseBody"]).decode("utf-8", errors="replace")
+            if len(html) < 50_000:
+                log.warning("Zyte response too small (%d chars) — possible block page", len(html))
+                return None
+            log.info("Fetched via Zyte (%d chars)", len(html))
+            return html
+
+        except Exception as e:
+            log.error("Zyte fetch failed: %s", e)
             return None
-        log.info("Fetched via Zyte (%d chars)", len(html))
-        return html
-    except Exception as e:
-        log.error("Zyte fetch failed: %s", e)
-        return None
+
+    log.error("Zyte fetch failed: HTTP 520 persisted after %d attempt(s)", max_retries)
+    return None
 
 
 def __GetHTML(query, country, condition='', listing_type='all', alreadySold=True, cache=False):

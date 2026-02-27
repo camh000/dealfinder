@@ -243,6 +243,32 @@ class TestFetchZyte:
                 result = EbayScraper._fetch_zyte("https://example.com")
         assert result is None
 
+    def _mock_520(self):
+        r = MagicMock()
+        r.status_code = 520
+        r.raise_for_status = MagicMock()
+        return r
+
+    def test_520_retries_then_succeeds(self):
+        """First call returns 520; second succeeds — result is HTML, sleep called once with 2s."""
+        env = {**self.ZYTE_CREDS, "ZYTE_MAX_RETRIES": "3"}
+        with patch.dict(os.environ, env):
+            with patch("requests.post", side_effect=[self._mock_520(), self._mock_resp()]):
+                with patch("time.sleep") as mock_sleep:
+                    result = EbayScraper._fetch_zyte("https://example.com")
+        assert result == LARGE_HTML
+        mock_sleep.assert_called_once_with(2)
+
+    def test_520_exhausts_retries_returns_none(self):
+        """All 3 attempts return 520 — gives up, returns None; sleep called twice (not after last)."""
+        env = {**self.ZYTE_CREDS, "ZYTE_MAX_RETRIES": "3"}
+        with patch.dict(os.environ, env):
+            with patch("requests.post", return_value=self._mock_520()):
+                with patch("time.sleep") as mock_sleep:
+                    result = EbayScraper._fetch_zyte("https://example.com")
+        assert result is None
+        assert mock_sleep.call_count == 2  # sleeps after attempt 1 (2s) and 2 (4s); not after 3
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 6. Fetch fallback chain — verified via Scrape() with mocked fetchers
