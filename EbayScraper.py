@@ -847,7 +847,8 @@ def GetActiveDeals() -> list:
                   AND  e.SoldDate IS NULL
             """)
             rows = cur.fetchall()
-            log.info("Active deals: %d item(s) currently tracked", len(rows))
+            if rows:
+                log.info("Active deals: %d item(s) currently tracked", len(rows))
             return list(rows)
         finally:
             conn.close()
