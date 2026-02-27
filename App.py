@@ -449,7 +449,8 @@ def outcomes():
                 if row.get(col):
                     row[col] = row[col].isoformat()
 
-        beat_market = sum(1 for r in resolved if r['FinalPrice'] < r['AvgMarketPrice'])
+        beat_market = sum(1 for r in resolved if r['FinalPrice'] is not None
+                          and r['FinalPrice'] < r['AvgMarketPrice'])
         total_resolved = len(resolved)
         win_rate = round(beat_market / total_resolved * 100, 1) if total_resolved > 0 else 0
 
