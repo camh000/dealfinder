@@ -675,7 +675,10 @@
     function formatDate(isoStr) {
         if (!isoStr) return '—';
         const d = new Date(isoStr);
-        return isNaN(d) ? '—' : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+        if (isNaN(d)) return '—';
+        const date = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+        const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+        return `${date} ${time}`;
     }
 
     async function loadOutcomes() {

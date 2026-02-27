@@ -10,7 +10,7 @@
 - [ ] **Widen time window** — add a "coming up" section for auctions ending in 2–6 hours
 - [ ] **PWA / mobile install** — add `manifest.json` and service worker for home screen install
 - [ ] **Align OUTCOMES panel columns** — stat cards in the top panel are slightly offset from the resolved/pending table columns below
-- [ ] **Outcomes surfaced timestamp** — the OUTCOMES tab "Surfaced" column currently shows only a date (e.g. "27 Feb"); include the time of day so items surfaced on the same day can be distinguished
+- [x] **Outcomes surfaced timestamp** — the OUTCOMES tab "Surfaced" column currently shows only a date (e.g. "27 Feb"); include the time of day so items surfaced on the same day can be distinguished
 
 ## Scraper / Data
 
