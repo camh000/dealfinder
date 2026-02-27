@@ -282,7 +282,70 @@ class TestFetchFallback:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 7. Live data-quality tests  (require internet — skipped unless -m live)
+# 7. VerifyPendingOutcomes — mocked DB + Scrape
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from datetime import datetime
+
+class TestVerifyPendingOutcomes:
+    """Unit tests for VerifyPendingOutcomes — all DB and network calls mocked."""
+
+    def _make_conn(self, rows):
+        """Return a mock connection whose cursor fetchall() returns `rows`."""
+        cur = MagicMock()
+        cur.fetchall.return_value = rows
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        return conn, cur
+
+    def test_skips_when_nothing_pending(self):
+        """Returns 0 and never calls Scrape when there are no pending items."""
+        conn, cur = self._make_conn([])
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'Scrape') as mock_scrape:
+            result = EbayScraper.VerifyPendingOutcomes(hours_after=6)
+        assert result == 0
+        mock_scrape.assert_not_called()
+
+    def test_resolves_matching_item(self):
+        """When Scrape returns the target item with a sold-date, UPDATE is called."""
+        sold_dt = datetime(2026, 2, 27, 10, 0, 0)
+        pending_row = (123456789, 'GPU', 'ASUS RTX 4090 24GB OC Gaming')
+        conn, cur = self._make_conn([pending_row])
+
+        matching_item = {
+            'id': '123456789',
+            'title': 'ASUS RTX 4090 24GB OC Gaming',
+            'price': 750.00,
+            'shipping': 0,
+            'time-left': '',
+            'time-end': None,
+            'sold-date': sold_dt,
+            'bid-count': 12,
+            'reviews-count': 0,
+            'url': 'https://www.ebay.co.uk/itm/123456789',
+            'brand': 'ASUS', 'model': 'RTX 4090', 'vram': 24,
+            'socket': None, 'cores': None,
+            'capacity-gb': None, 'interface': None, 'form-factor': None, 'rpm': None,
+        }
+
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'Scrape', return_value=[matching_item]):
+            result = EbayScraper.VerifyPendingOutcomes(hours_after=6)
+
+        assert result == 1
+        # UPDATE should have been called with the correct values
+        update_call = cur.execute.call_args_list[-1]
+        args = update_call[0][1]          # positional tuple passed to execute
+        assert args[0] == sold_dt         # SoldDate
+        assert args[1] == 75000           # Price in pence (750.00 * 100)
+        assert args[2] == 12              # Bids
+        assert args[3] == 123456789       # ID
+        conn.commit.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. Live data-quality tests  (require internet — skipped unless -m live)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.live

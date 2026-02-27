@@ -18,6 +18,10 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Hours after auction end before a targeted sold-listing search is run
+# to resolve any outcomes the regular scraper missed. Configurable via env var.
+OUTCOME_VERIFY_HOURS = int(os.environ.get('OUTCOME_VERIFY_HOURS', '6'))
+
 GPU_QUERY_LIST = [
     "NVIDIA GTX 9",
     "NVIDIA GTX 10",
@@ -61,6 +65,12 @@ def run_scraper():
             log.info(f"{product_type} scrape complete.")
         except Exception as e:
             log.error(f"{product_type} scrape failed: {e}")
+
+    # Verify outcomes for items past their end time that are still unresolved.
+    try:
+        EbayScraper.VerifyPendingOutcomes(hours_after=OUTCOME_VERIFY_HOURS)
+    except Exception as e:
+        log.error("Outcome verification failed: %s", e)
 
 if __name__ == "__main__":
     log.info("Scheduler starting — running immediately then every 30 minutes.")
