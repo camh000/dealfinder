@@ -41,11 +41,11 @@ class TestParseRawPrice:
         assert _parse_raw_price("£180") == 180.0
 
     def test_price_with_comma(self):
-        # Known limitation: __ParseRawPrice replaces ',' with '.' so
-        # "£1,234.56" → "£1.234.56" → regex matches 1.234, not 1234.56.
-        # This only affects prices ≥ £1,000 which are rare in our categories.
-        result = _parse_raw_price("£1,234.56")
-        assert result is not None   # does parse something (just not 1234.56)
+        assert _parse_raw_price("£1,234.56") == 1234.56
+
+    def test_thousands_with_comma(self):
+        """£1,740.70 must not be truncated to £1.74 (thousands separator fix)."""
+        assert _parse_raw_price("£1,740.70") == 1740.70
 
     def test_free_postage_returns_none(self):
         assert _parse_raw_price("Free postage") is None

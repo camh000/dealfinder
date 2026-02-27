@@ -552,7 +552,7 @@ def __ParsePrices(soup):
     return data
 
 def __ParseRawPrice(string):
-    parsedPrice = re.search(r'(\d+(\.\d+)?)', string.replace(',', '.'))
+    parsedPrice = re.search(r'(\d+(\.\d+)?)', string.replace(',', ''))
     if (parsedPrice):
         return float(parsedPrice.group())
     else:
