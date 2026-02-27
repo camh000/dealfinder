@@ -826,3 +826,107 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
         raise e
     finally:
         conn.close()
+
+
+def GetActiveDeals() -> list:
+    """Return active tracked deals that haven't sold and haven't ended yet.
+
+    Returns a list of (ebay_id, category, title, end_time) tuples, one per
+    row in DealOutcomes that is still live.  Returns [] on any error so a
+    transient DB failure never breaks the scheduler loop.
+    """
+    try:
+        conn = _get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT o.EbayID, o.Category, e.Title, o.EndTime
+                FROM   DealOutcomes o
+                JOIN   EBAY e ON e.ID = o.EbayID
+                WHERE  o.EndTime > NOW()
+                  AND  e.SoldDate IS NULL
+            """)
+            rows = cur.fetchall()
+            log.info("Active deals: %d item(s) currently tracked", len(rows))
+            return list(rows)
+        finally:
+            conn.close()
+    except Exception as e:
+        log.error("GetActiveDeals failed: %s", e)
+        return []
+
+
+def ScrapeTargeted(items: list) -> int:
+    """Scrape specific tracked items by title and upsert results to the DB.
+
+    `items` is a list of (ebay_id, category, title) tuples — the same
+    three-element prefix returned by GetActiveDeals (end_time is dropped
+    by the caller before passing here).
+
+    Returns the number of items successfully found and upserted.
+    """
+    if not items:
+        return 0
+
+    conn = _get_connection()
+    cur = conn.cursor()
+    updated = 0
+
+    try:
+        for ebay_id, category, title in items:
+            try:
+                results = Scrape(
+                    title[:80],
+                    category,
+                    country='uk',
+                    condition='used',
+                    listing_type='auction',
+                    cache=False,
+                )
+                for item in results:
+                    if str(item['id']) == str(ebay_id):
+                        product = Product(
+                            id=item['id'],
+                            title=item['title'],
+                            price=item['price'],
+                            time_left=item['time-left'],
+                            time_end=item['time-end'],
+                            sold_date=item['sold-date'],
+                            bid_count=item['bid-count'],
+                            reviews_count=item['reviews-count'],
+                            url=item['url'],
+                            brand=item['brand'],
+                            model=item['model'],
+                            vram=item['vram'],
+                            socket=item['socket'],
+                            cores=item['cores'],
+                            capacity_gb=item['capacity-gb'],
+                            interface=item['interface'],
+                            form_factor=item['form-factor'],
+                            rpm=item['rpm'],
+                        )
+                        _upload(cur, product, category)
+                        log.info(
+                            "Targeted scrape updated: ID=%s '%.50s' price=£%.2f bids=%d",
+                            ebay_id, title, item['price'], item['bid-count'],
+                        )
+                        updated += 1
+                        break
+                else:
+                    log.debug(
+                        "Targeted scrape: ID=%s not found in results (may have ended)",
+                        ebay_id,
+                    )
+            except Exception as e:
+                log.warning("Targeted scrape failed for item %s: %s", ebay_id, e)
+
+        conn.commit()
+        log.info("Targeted scrape complete: %d/%d item(s) updated", updated, len(items))
+        return updated
+
+    except Exception as e:
+        log.error("ScrapeTargeted DB error: %s", e)
+        conn.rollback()
+        return 0
+    finally:
+        conn.close()
