@@ -216,14 +216,26 @@ def _fetch_zyte(url: str) -> str | None:
 
 
 def __GetHTML(query, country, condition='', listing_type='all', alreadySold=True, cache=False):
+    # alreadySold values:
+    #   True        → sold listings only       (&LH_Complete=1&LH_Sold=1)
+    #   'completed' → all completed listings   (&LH_Complete=1)   sold + ended-unsold
+    #   False       → active listings          (&_sop=1)
+    if alreadySold == 'completed':
+        cache_suffix = 'completed'
+        alreadySoldString = '&LH_Complete=1'
+    elif alreadySold:
+        cache_suffix = 'sold'
+        alreadySoldString = '&LH_Complete=1&LH_Sold=1'
+    else:
+        cache_suffix = 'active'
+        alreadySoldString = '&_sop=1'
 
-    cache_file = f"{query}_{'sold' if alreadySold else 'active'}.txt"
+    cache_file = f"{query}_{cache_suffix}.txt"
 
     if cache and os.path.isfile(cache_file):
         with open(cache_file, "r", encoding="utf-8") as f:
             responseHTML = f.read()
     else:
-        alreadySoldString = '&LH_Complete=1&LH_Sold=1' if alreadySold else '&_sop=1'
         parsedQuery = urllib.parse.quote(query).replace('%20', '+')
         url = (
             f'https://www.ebay{countryDict[country]}/sch/i.html?_from=R40&_nkw={parsedQuery}'
@@ -744,6 +756,23 @@ def _scrape_item_by_id(ebay_id: int, category: str, *, sold: bool) -> dict | Non
     return None
 
 
+def _scrape_item_completed(ebay_id: int, category: str) -> dict | None:
+    """Fetch a single eBay listing from all-completed results (sold + ended-unsold).
+
+    Used as a fallback in VerifyPendingOutcomes when _scrape_item_by_id(sold=True)
+    finds nothing.  Items that ended without selling appear in LH_Complete=1 results
+    but NOT in LH_Complete=1&LH_Sold=1 results — this function catches those.
+
+    Returns the parsed item dict on a match, None if not found.
+    """
+    soup = __GetHTML(str(ebay_id), 'uk', 'all', 'all', alreadySold='completed')
+    items = __ParseItems(soup, str(ebay_id), category)
+    for item in items:
+        if str(item['id']) == str(ebay_id):
+            return item
+    return None
+
+
 def Scrape(query, product_type, country='us', condition='all', listing_type='all', cache=False):
     if country not in countryDict:
         raise Exception('Country not supported, please use one of the following: ' + ', '.join(countryDict.keys()))
@@ -814,6 +843,7 @@ def VerifyPendingOutcomes(hours_after: int = 6, give_up_days: int = 7) -> int:
 
         for ebay_id, category, title, end_time in pending:
             try:
+                # ── Pass 1: sold-only search ──────────────────────────────────
                 item = _scrape_item_by_id(ebay_id, category, sold=True)
                 if item and item.get('sold-date'):
                     cur.execute("""
@@ -829,9 +859,35 @@ def VerifyPendingOutcomes(hours_after: int = 6, give_up_days: int = 7) -> int:
                         ebay_id, item['price'], item['sold-date'],
                     )
                     resolved += 1
+                    continue
+
+                # ── Pass 2: all-completed search (sold + ended-unsold) ────────
+                completed_item = _scrape_item_completed(ebay_id, category)
+                if completed_item:
+                    # Found in completed results but NOT in sold results →
+                    # the auction ended without a buyer.  Record the end time
+                    # and NULL the price so it is excluded from market-price
+                    # averages.
+                    cur.execute("""
+                        UPDATE Scraper.EBAY
+                        SET    SoldDate = %s,
+                               Price    = NULL
+                        WHERE  ID       = %s
+                          AND  SoldDate IS NULL
+                    """, (end_time, ebay_id))
+                    cur.execute("""
+                        UPDATE Scraper.DealOutcomes
+                        SET    EndedUnsold = 1
+                        WHERE  EbayID = %s
+                    """, (ebay_id,))
+                    log.info(
+                        "Outcome ended unsold: ID=%s category=%s end_time=%s title='%s'",
+                        ebay_id, category, end_time, title[:80],
+                    )
+                    resolved += 1
                 else:
                     log.error(
-                        "Outcome NOT found in sold results — "
+                        "Outcome NOT found in sold or completed results — "
                         "ID=%s category=%s end_time=%s title='%s'; "
                         "check search params or eBay availability",
                         ebay_id, category, end_time, title[:80],

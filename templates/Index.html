@@ -438,6 +438,79 @@
             border-radius: 2px;
         }
 
+        .outcome-ended {
+            display: inline-block;
+            background: rgba(150,150,150,0.1);
+            border: 1px solid rgba(150,150,150,0.3);
+            color: #888;
+            font-family: var(--sans);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            padding: 3px 8px;
+            border-radius: 2px;
+        }
+
+        /* Sortable column headers */
+        th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+        th.sortable:hover { opacity: 0.75; }
+        .sort-icon {
+            display: inline-block;
+            margin-left: 3px;
+            font-size: 10px;
+            opacity: 0.3;
+            vertical-align: middle;
+        }
+        th.sorted .sort-icon { opacity: 1; color: var(--accent); }
+
+        /* Price guide controls */
+        .price-controls { display:flex; gap:12px; align-items:center; padding:12px 0 8px; flex-wrap:wrap; }
+        .price-search-input {
+            flex:1; min-width:200px;
+            background:var(--surface); border:1px solid var(--border); color:var(--text);
+            padding:6px 10px; border-radius:4px; font-size:13px;
+        }
+        .price-search-input:focus { outline:none; border-color:var(--accent); }
+        .price-search-input::placeholder { color:var(--text-dim); }
+        .price-cat-filter { display:flex; gap:6px; }
+        .pcat-btn {
+            background:none; border:1px solid var(--border); color:var(--text-dim);
+            padding:4px 12px; border-radius:3px; cursor:pointer;
+            font-family:var(--sans); font-size:12px; font-weight:700; letter-spacing:.5px;
+        }
+        .pcat-btn.active, .pcat-btn:hover { border-color:var(--accent); color:var(--accent); }
+
+        /* Build basket */
+        #basket { margin-top:20px; border:1px solid var(--border); border-radius:4px; overflow:hidden; }
+        .basket-header {
+            display:flex; justify-content:space-between; align-items:center;
+            padding:8px 14px; background:var(--surface); border-bottom:1px solid var(--border);
+        }
+        .basket-title { font-family:var(--sans); font-size:12px; font-weight:700; letter-spacing:1px; }
+        .basket-clear-btn {
+            background:none; border:1px solid var(--border); color:var(--text-dim);
+            padding:3px 8px; border-radius:2px; cursor:pointer; font-size:11px;
+        }
+        .basket-clear-btn:hover { border-color:var(--red); color:var(--red); }
+        .basket-item {
+            display:flex; justify-content:space-between; align-items:center;
+            padding:7px 14px; border-bottom:1px solid var(--border); font-size:13px;
+        }
+        .basket-item-label { color:var(--text); flex:1; }
+        .basket-item-price { color:var(--accent); font-weight:600; margin:0 16px; }
+        .basket-remove {
+            background:none; border:none; color:var(--text-dim);
+            cursor:pointer; font-size:15px; padding:0 2px; line-height:1;
+        }
+        .basket-remove:hover { color:var(--red); }
+        .basket-footer {
+            display:flex; justify-content:space-between;
+            padding:10px 14px; background:var(--surface);
+        }
+        .basket-label { font-family:var(--sans); font-size:11px; font-weight:700; letter-spacing:1px; color:var(--text-dim); }
+        .basket-total { font-size:18px; font-weight:700; color:var(--accent); }
+        tr.low-confidence { opacity:0.55; }
+
         /* Scrollbar */
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: var(--bg); }
@@ -538,6 +611,7 @@
     <button class="tab-btn" data-type="cpu" onclick="switchTab('cpu')">CPU<span class="tab-badge" id="badge-cpu"></span></button>
     <button class="tab-btn" data-type="hdd" onclick="switchTab('hdd')">HDD<span class="tab-badge" id="badge-hdd"></span></button>
     <button class="tab-btn" data-type="outcomes" onclick="switchTab('outcomes')">OUTCOMES</button>
+    <button class="tab-btn" data-type="prices"   onclick="switchTab('prices')">PRICES</button>
 </div>
 
 <main>
@@ -566,18 +640,7 @@
         <div class="subsection-header">Resolved</div>
         <div class="table-wrap">
             <table>
-                <thead>
-                    <tr>
-                        <th>Surfaced</th>
-                        <th>Cat</th>
-                        <th>Model</th>
-                        <th class="right">Surfaced @</th>
-                        <th class="right">Market Avg</th>
-                        <th class="right">Final Sale</th>
-                        <th>Outcome</th>
-                        <th></th>
-                    </tr>
-                </thead>
+                <thead id="outcomes-resolved-head"></thead>
                 <tbody id="outcomes-resolved-body">
                     <tr class="state-row"><td colspan="8"><span class="loader"></span> Loading...</td></tr>
                 </tbody>
@@ -587,20 +650,51 @@
         <div class="subsection-header" id="pending-header" style="display:none">Pending / Awaiting Result</div>
         <div class="table-wrap" id="pending-wrap" style="display:none">
             <table>
-                <thead>
-                    <tr>
-                        <th>Surfaced</th>
-                        <th>Cat</th>
-                        <th>Model</th>
-                        <th class="right">Surfaced @</th>
-                        <th class="right">Market Avg</th>
-                        <th class="right">Current</th>
-                        <th>Ends</th>
-                        <th></th>
-                    </tr>
-                </thead>
+                <thead id="outcomes-pending-head"></thead>
                 <tbody id="outcomes-pending-body"></tbody>
             </table>
+        </div>
+    </div>
+
+    <div id="panel-prices" style="display:none">
+        <div class="section-header">
+            <span class="section-title">Component Price Guide</span>
+            <button class="refresh-btn" id="prices-refresh-btn" onclick="loadPriceGuide(true)">↻ REFRESH</button>
+        </div>
+        <div class="price-controls">
+            <input type="text" id="price-search" class="price-search-input"
+                   placeholder="Search models, brands, specs…" oninput="filterPriceGuide()">
+            <div class="price-cat-filter">
+                <button class="pcat-btn active" data-cat="all" onclick="setPriceCat('all')">All</button>
+                <button class="pcat-btn" data-cat="gpu" onclick="setPriceCat('gpu')">GPU</button>
+                <button class="pcat-btn" data-cat="cpu" onclick="setPriceCat('cpu')">CPU</button>
+                <button class="pcat-btn" data-cat="hdd" onclick="setPriceCat('hdd')">HDD</button>
+            </div>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr>
+                    <th>Cat</th>
+                    <th>Model / Specs</th>
+                    <th class="right">Avg Market</th>
+                    <th class="right">Sales</th>
+                    <th></th>
+                </tr></thead>
+                <tbody id="price-guide-body">
+                    <tr class="state-row"><td colspan="5"><span class="loader"></span> Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div id="basket" style="display:none">
+            <div class="basket-header">
+                <span class="basket-title">Build Basket</span>
+                <button class="basket-clear-btn" onclick="clearBasket()">CLEAR</button>
+            </div>
+            <div id="basket-items"></div>
+            <div class="basket-footer">
+                <span class="basket-label">TOTAL</span>
+                <span class="basket-total" id="basket-total">£0.00</span>
+            </div>
         </div>
     </div>
 </main>
@@ -610,37 +704,115 @@
 <script>
     let activeType = 'gpu';
 
-    const HEADERS = {
-        gpu: `<tr>
+    // ── Price guide state ────────────────────────────────────────────────────
+    let priceGuideData = null;   // cached {gpu:[...], cpu:[...], hdd:[...]}
+    let activePriceCat = 'all';
+    let basket         = [];     // [{label, price}, ...]
+
+    // ── Sort state ──────────────────────────────────────────────────────────
+    let dealsData    = [], dealsType    = '';
+    let resolvedData = [], pendingData  = [];
+    let dealsSort    = { col: null,         asc: true  };
+    let resolvedSort = { col: 'SurfacedAt', asc: false }; // newest-first
+    let pendingSort  = { col: 'EndTime',    asc: true  }; // soonest-first
+
+    // Generic sort — handles numbers, strings and ISO date strings
+    function sortData(arr, col, asc) {
+        if (!col) return arr;
+        return [...arr].sort((a, b) => {
+            const va = a[col], vb = b[col];
+            if (va == null && vb == null) return 0;
+            if (va == null) return 1;
+            if (vb == null) return -1;
+            const cmp = (typeof va === 'number' && typeof vb === 'number')
+                ? va - vb
+                : String(va).localeCompare(String(vb));
+            return asc ? cmp : -cmp;
+        });
+    }
+
+    // Sort-direction indicator rendered inside each sortable <th>
+    function sortIcon(col, state) {
+        const active = state.col === col;
+        return `<span class="sort-icon">${active ? (state.asc ? '↑' : '↓') : '⇅'}</span>`;
+    }
+
+    // ── Deals header (rebuilt on every sort change) ─────────────────────────
+    function dealsHeader(type) {
+        const si  = col => sortIcon(col, dealsSort);
+        const cls = col => `sortable${dealsSort.col === col ? ' sorted' : ''}`;
+        const th  = (label, col, extra = '') =>
+            `<th class="${cls(col)}${extra}" onclick="sortDeals('${col}')">${label}${si(col)}</th>`;
+        const prices = `
+            ${th('Current',    'CurrentPrice',   ' right')}
+            ${th('Avg Market', 'AvgMarketPrice', ' right')}
+            ${th('You Save',   'PotentialGain',  ' right')}
+            ${th('Discount',   'DiscountPct')}
+            ${th('Ends In',    'EndTime')}
+            <th></th>`;
+        if (type === 'gpu') return `<tr><th>Model</th>${prices}</tr>`;
+        if (type === 'cpu') return `<tr><th>Model</th><th>Socket / Cores</th>${prices}</tr>`;
+        if (type === 'hdd') return `<tr><th>Capacity</th><th>Details</th>${prices}</tr>`;
+        return '';
+    }
+
+    function sortDeals(col) {
+        // First click on a new column: EndTime → asc (soonest first); else desc (biggest first)
+        dealsSort = dealsSort.col === col
+            ? { col, asc: !dealsSort.asc }
+            : { col, asc: col === 'EndTime' };
+        renderDeals(dealsData, dealsType);
+    }
+
+    // ── Outcomes headers ────────────────────────────────────────────────────
+    function resolvedHeader() {
+        const si  = col => sortIcon(col, resolvedSort);
+        const cls = col => `sortable${resolvedSort.col === col ? ' sorted' : ''}`;
+        const th  = (label, col, extra = '') =>
+            `<th class="${cls(col)}${extra}" onclick="sortResolved('${col}')">${label}${si(col)}</th>`;
+        return `<tr>
+            ${th('Surfaced',    'SurfacedAt')}
+            <th>Cat</th>
             <th>Model</th>
-            <th class="right">Current</th>
-            <th class="right">Avg Market</th>
-            <th class="right">You Save</th>
-            <th>Discount</th>
-            <th>Ends In</th>
+            ${th('Surfaced @',  'SurfacedPrice',    ' right')}
+            ${th('Market Avg',  'AvgMarketPrice',   ' right')}
+            ${th('Final Sale',  'FinalPrice',       ' right')}
+            <th>Outcome</th>
             <th></th>
-        </tr>`,
-        cpu: `<tr>
+        </tr>`;
+    }
+
+    function pendingHeader() {
+        const si  = col => sortIcon(col, pendingSort);
+        const cls = col => `sortable${pendingSort.col === col ? ' sorted' : ''}`;
+        const th  = (label, col, extra = '') =>
+            `<th class="${cls(col)}${extra}" onclick="sortPending('${col}')">${label}${si(col)}</th>`;
+        return `<tr>
+            ${th('Surfaced',   'SurfacedAt')}
+            <th>Cat</th>
             <th>Model</th>
-            <th>Socket / Cores</th>
-            <th class="right">Current</th>
-            <th class="right">Avg Market</th>
-            <th class="right">You Save</th>
-            <th>Discount</th>
-            <th>Ends In</th>
+            ${th('Surfaced @', 'SurfacedPrice',  ' right')}
+            ${th('Market Avg', 'AvgMarketPrice', ' right')}
+            ${th('Current',    'CurrentPrice',   ' right')}
+            ${th('Ends',       'EndTime')}
             <th></th>
-        </tr>`,
-        hdd: `<tr>
-            <th>Capacity</th>
-            <th>Details</th>
-            <th class="right">Current</th>
-            <th class="right">Avg Market</th>
-            <th class="right">You Save</th>
-            <th>Discount</th>
-            <th>Ends In</th>
-            <th></th>
-        </tr>`,
-    };
+        </tr>`;
+    }
+
+    function sortResolved(col) {
+        // First click: SurfacedAt → desc (newest first); prices → desc (highest first)
+        resolvedSort = resolvedSort.col === col
+            ? { col, asc: !resolvedSort.asc }
+            : { col, asc: false };
+        renderResolvedTable();
+    }
+
+    function sortPending(col) {
+        pendingSort = pendingSort.col === col
+            ? { col, asc: !pendingSort.asc }
+            : { col, asc: col === 'EndTime' };
+        renderPendingTable();
+    }
 
     const COLS = { gpu: 7, cpu: 8, hdd: 8 };
 
@@ -649,20 +821,24 @@
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.type === type);
         });
+        const isPrices   = type === 'prices';
         const isOutcomes = type === 'outcomes';
-        document.getElementById('panel-deals').style.display    = isOutcomes ? 'none' : '';
+        const isDeals    = !isPrices && !isOutcomes;
+        document.getElementById('panel-deals').style.display    = isDeals    ? '' : 'none';
         document.getElementById('panel-outcomes').style.display = isOutcomes ? '' : 'none';
-        if (isOutcomes) {
-            loadOutcomes();
-        } else {
-            loadDeals();
-        }
+        document.getElementById('panel-prices').style.display   = isPrices   ? '' : 'none';
+        if (isOutcomes)    loadOutcomes();
+        else if (isPrices) loadPriceGuide();
+        else               loadDeals();
     }
 
     function formatDate(isoStr) {
         if (!isoStr) return '—';
         const d = new Date(isoStr);
-        return isNaN(d) ? '—' : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+        if (isNaN(d)) return '—';
+        const date = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+        const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+        return `${date} ${time}`;
     }
 
     async function loadOutcomes() {
@@ -679,11 +855,14 @@
         }
     }
 
+    const fmtGbp = v => (v != null && !isNaN(v)) ? `£${Number(v).toFixed(2)}` : '—';
+
     function renderOutcomes(data) {
         const { summary, resolved, pending } = data;
-        const fmt = v => (v != null && !isNaN(v)) ? `£${Number(v).toFixed(2)}` : '—';
-        const total = summary.total_resolved + summary.total_pending;
+        resolvedData = resolved;
+        pendingData  = pending;
 
+        const total = summary.total_resolved + summary.total_pending;
         document.getElementById('outcome-stats').innerHTML = `
             <div class="stat-card"><div class="stat-label">Tracked</div><div class="stat-value">${total}</div></div>
             <div class="stat-card"><div class="stat-label">Resolved</div><div class="stat-value">${summary.total_resolved}</div></div>
@@ -692,65 +871,213 @@
             <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value">${summary.total_pending}</div></div>
         `;
 
-        const resolvedBody = document.getElementById('outcomes-resolved-body');
-        if (resolved.length === 0) {
-            resolvedBody.innerHTML = '<tr class="state-row"><td colspan="8">No resolved deals yet — they appear here once auctions end and the scraper picks them up as sold.</td></tr>';
+        renderResolvedTable();
+
+        const ph = document.getElementById('pending-header');
+        const pw = document.getElementById('pending-wrap');
+        if (pending.length > 0) {
+            ph.style.display = '';
+            pw.style.display = '';
+            renderPendingTable();
         } else {
-            resolvedBody.innerHTML = resolved.map((r, i) => {
-                const win = r.FinalPrice < r.AvgMarketPrice;
-                const pctLabel = r.ActualDiscountPct > 0
-                    ? `${r.ActualDiscountPct}% off mkt`
-                    : `${Math.abs(r.ActualDiscountPct).toFixed(1)}% over mkt`;
+            ph.style.display = 'none';
+            pw.style.display = 'none';
+        }
+    }
+
+    function renderResolvedTable() {
+        document.getElementById('outcomes-resolved-head').innerHTML = resolvedHeader();
+        const body = document.getElementById('outcomes-resolved-body');
+        if (resolvedData.length === 0) {
+            body.innerHTML = '<tr class="state-row"><td colspan="8">No resolved deals yet — they appear here once auctions end and the scraper picks them up as sold.</td></tr>';
+            return;
+        }
+        const sorted = sortData(resolvedData, resolvedSort.col, resolvedSort.asc);
+        body.innerHTML = sorted.map((r, i) => {
+            if (r.EndedUnsold) {
                 return `<tr style="animation-delay:${i * 40}ms">
                     <td>${formatDate(r.SurfacedAt)}</td>
                     <td><span class="cat-badge">${r.Category}</span></td>
                     <td><div class="model-cell" style="font-size:14px">${r.Model || '—'}</div></td>
                     <td style="text-align:right">
-                        <div class="price-current" style="font-size:13px">${fmt(r.SurfacedPrice)}</div>
+                        <div class="price-current" style="font-size:13px">${fmtGbp(r.SurfacedPrice)}</div>
                         <div class="price-avg">${r.SurfacedDiscountPct}% off</div>
                     </td>
-                    <td style="text-align:right"><div class="price-avg" style="font-size:13px">${fmt(r.AvgMarketPrice)}</div></td>
-                    <td style="text-align:right">
-                        <div class="${win ? 'gain' : 'price-current'}" style="font-size:13px">${fmt(r.FinalPrice)}</div>
-                        <div class="price-avg">${pctLabel}</div>
-                    </td>
-                    <td><span class="${win ? 'outcome-win' : 'outcome-miss'}">${win ? 'DEAL' : 'MISS'}</span></td>
+                    <td style="text-align:right"><div class="price-avg" style="font-size:13px">${fmtGbp(r.AvgMarketPrice)}</div></td>
+                    <td style="text-align:right"><div class="price-avg" style="font-size:13px">—</div></td>
+                    <td><span class="outcome-ended">ENDED</span></td>
                     <td><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>
                 </tr>`;
-            }).join('');
+            }
+            const win = r.FinalPrice < r.AvgMarketPrice;
+            const pctLabel = r.ActualDiscountPct > 0
+                ? `${r.ActualDiscountPct}% off mkt`
+                : `${Math.abs(r.ActualDiscountPct).toFixed(1)}% over mkt`;
+            return `<tr style="animation-delay:${i * 40}ms">
+                <td>${formatDate(r.SurfacedAt)}</td>
+                <td><span class="cat-badge">${r.Category}</span></td>
+                <td><div class="model-cell" style="font-size:14px">${r.Model || '—'}</div></td>
+                <td style="text-align:right">
+                    <div class="price-current" style="font-size:13px">${fmtGbp(r.SurfacedPrice)}</div>
+                    <div class="price-avg">${r.SurfacedDiscountPct}% off</div>
+                </td>
+                <td style="text-align:right"><div class="price-avg" style="font-size:13px">${fmtGbp(r.AvgMarketPrice)}</div></td>
+                <td style="text-align:right">
+                    <div class="${win ? 'gain' : 'price-current'}" style="font-size:13px">${fmtGbp(r.FinalPrice)}</div>
+                    <div class="price-avg">${pctLabel}</div>
+                </td>
+                <td><span class="${win ? 'outcome-win' : 'outcome-miss'}">${win ? 'DEAL' : 'MISS'}</span></td>
+                <td><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>
+            </tr>`;
+        }).join('');
+    }
+
+    function renderPendingTable() {
+        document.getElementById('outcomes-pending-head').innerHTML = pendingHeader();
+        const sorted = sortData(pendingData, pendingSort.col, pendingSort.asc);
+        document.getElementById('outcomes-pending-body').innerHTML = sorted.map((r, i) => {
+            const ended = !r.EndTime || new Date(r.EndTime) <= Date.now();
+            const statusCell = r.GaveUp
+                ? `<span class="outcome-miss">UNRESOLVED</span>`
+                : ended
+                    ? `<span class="time-cell urgent">AWAITING</span>`
+                    : `<span class="time-cell" data-ends="${r.EndTime}"></span>`;
+            return `<tr style="animation-delay:${i * 40}ms">
+                <td>${formatDate(r.SurfacedAt)}</td>
+                <td><span class="cat-badge">${r.Category}</span></td>
+                <td><div class="model-cell" style="font-size:14px">${r.Model || '—'}</div></td>
+                <td style="text-align:right">
+                    <div class="price-current" style="font-size:13px">${fmtGbp(r.SurfacedPrice)}</div>
+                    <div class="price-avg">${r.SurfacedDiscountPct}% off</div>
+                </td>
+                <td style="text-align:right"><div class="price-avg" style="font-size:13px">${fmtGbp(r.AvgMarketPrice)}</div></td>
+                <td style="text-align:right"><div class="price-avg" style="font-size:13px">${fmtGbp(r.CurrentPrice)}</div></td>
+                <td>${statusCell}</td>
+                <td><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>
+            </tr>`;
+        }).join('');
+        tickCountdowns();
+    }
+
+    // ── Price guide & basket ─────────────────────────────────────────────────
+
+    async function loadPriceGuide(force = false) {
+        if (priceGuideData && !force) { renderPriceGuide(); return; }
+        const btn = document.getElementById('prices-refresh-btn');
+        btn.classList.add('spinning');
+        document.getElementById('price-guide-body').innerHTML =
+            '<tr class="state-row"><td colspan="5"><span class="loader"></span> Loading…</td></tr>';
+        try {
+            const res  = await fetch('/api/price-guide');
+            const data = await res.json();
+            if (data.status !== 'ok') throw new Error(data.message);
+            priceGuideData = data.components;
+            renderPriceGuide();
+        } catch (err) {
+            document.getElementById('price-guide-body').innerHTML =
+                `<tr class="state-row"><td colspan="5">Error: ${err.message}</td></tr>`;
+        } finally {
+            btn.classList.remove('spinning');
+        }
+    }
+
+    function setPriceCat(cat) {
+        activePriceCat = cat;
+        document.querySelectorAll('.pcat-btn').forEach(b =>
+            b.classList.toggle('active', b.dataset.cat === cat));
+        renderPriceGuide();
+    }
+
+    function filterPriceGuide() { renderPriceGuide(); }
+
+    function renderPriceGuide() {
+        if (!priceGuideData) return;
+        const q    = document.getElementById('price-search').value.trim().toLowerCase();
+        const body = document.getElementById('price-guide-body');
+        const cats = activePriceCat === 'all' ? ['gpu', 'cpu', 'hdd'] : [activePriceCat];
+
+        // Flatten + tag rows
+        let rows = [];
+        for (const cat of cats)
+            for (const r of (priceGuideData[cat] || []))
+                rows.push({ ...r, _cat: cat });
+
+        // Build a searchable label per row
+        const rowLabel = r => {
+            if (r._cat === 'gpu')
+                return `${r.Model || ''} ${r.Brand || ''} ${r.VRAM ? r.VRAM + 'GB' : ''}`.trim();
+            if (r._cat === 'cpu')
+                return `${r.Model || ''} ${r.Brand || ''} ${r.Socket || ''} ${r.Cores ? r.Cores + ' cores' : ''}`.trim();
+            const cap = r.CapacityGB >= 1000
+                ? (r.CapacityGB / 1000).toFixed(r.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
+                : r.CapacityGB + 'GB';
+            return `${cap} ${r.Interface || ''} ${r.FormFactor || ''} ${r.Brand || ''}`.trim();
+        };
+
+        if (q) rows = rows.filter(r => rowLabel(r).toLowerCase().includes(q));
+
+        if (rows.length === 0) {
+            body.innerHTML = '<tr class="state-row"><td colspan="5">No components match.</td></tr>';
+            return;
         }
 
-        const pendingHeader = document.getElementById('pending-header');
-        const pendingWrap   = document.getElementById('pending-wrap');
-        if (pending.length > 0) {
-            pendingHeader.style.display = '';
-            pendingWrap.style.display   = '';
-            document.getElementById('outcomes-pending-body').innerHTML = pending.map((r, i) => {
-                const ended = !r.EndTime || new Date(r.EndTime) <= Date.now();
-                const statusCell = r.GaveUp
-                    ? `<span class="outcome-miss">UNRESOLVED</span>`
-                    : ended
-                        ? `<span class="time-cell urgent">AWAITING</span>`
-                        : `<span class="time-cell" data-ends="${r.EndTime}"></span>`;
-                return `<tr style="animation-delay:${i * 40}ms">
-                    <td>${formatDate(r.SurfacedAt)}</td>
-                    <td><span class="cat-badge">${r.Category}</span></td>
-                    <td><div class="model-cell" style="font-size:14px">${r.Model || '—'}</div></td>
-                    <td style="text-align:right">
-                        <div class="price-current" style="font-size:13px">${fmt(r.SurfacedPrice)}</div>
-                        <div class="price-avg">${r.SurfacedDiscountPct}% off</div>
-                    </td>
-                    <td style="text-align:right"><div class="price-avg" style="font-size:13px">${fmt(r.AvgMarketPrice)}</div></td>
-                    <td style="text-align:right"><div class="price-avg" style="font-size:13px">${fmt(r.CurrentPrice)}</div></td>
-                    <td>${statusCell}</td>
-                    <td><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>
-                </tr>`;
-            }).join('');
-            tickCountdowns();
-        } else {
-            pendingHeader.style.display = 'none';
-            pendingWrap.style.display   = 'none';
-        }
+        body.innerHTML = rows.map(r => {
+            const lbl = rowLabel(r);
+            const modelName = r._cat === 'hdd'
+                ? (r.CapacityGB >= 1000
+                    ? (r.CapacityGB / 1000).toFixed(r.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
+                    : r.CapacityGB + 'GB')
+                : (r.Model || '—');
+            const specLine = r._cat === 'gpu'
+                ? [r.VRAM ? r.VRAM + 'GB VRAM' : '', r.Brand].filter(Boolean).join(' · ')
+                : r._cat === 'cpu'
+                    ? [r.Socket, r.Cores ? r.Cores + ' cores' : '', r.Brand].filter(Boolean).join(' · ')
+                    : [r.Interface, r.FormFactor, r.Brand].filter(Boolean).join(' · ');
+            const low = r.SoldCount < 5;
+            const escapedLbl = lbl.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            return `<tr class="${low ? 'low-confidence' : ''}">
+                <td><span class="cat-badge">${r._cat.toUpperCase()}</span></td>
+                <td>
+                    <div class="model-cell" style="font-size:14px">${modelName}</div>
+                    ${specLine ? `<div class="brand-tag">${specLine}</div>` : ''}
+                </td>
+                <td style="text-align:right">
+                    <div style="font-size:14px">£${Number(r.AvgPrice).toFixed(2)}</div>
+                </td>
+                <td style="text-align:right">
+                    <div class="brand-tag">${r.SoldCount} sales</div>
+                </td>
+                <td>
+                    <button class="link-btn" onclick="addToBasket('${escapedLbl}', ${r.AvgPrice})">+ ADD</button>
+                </td>
+            </tr>`;
+        }).join('');
+    }
+
+    function addToBasket(label, price) {
+        basket.push({ label, price: Number(price) });
+        renderBasket();
+    }
+
+    function removeFromBasket(i) {
+        basket.splice(i, 1);
+        renderBasket();
+    }
+
+    function clearBasket() { basket = []; renderBasket(); }
+
+    function renderBasket() {
+        const el = document.getElementById('basket');
+        if (!basket.length) { el.style.display = 'none'; return; }
+        el.style.display = '';
+        document.getElementById('basket-total').textContent =
+            `£${basket.reduce((s, x) => s + x.price, 0).toFixed(2)}`;
+        document.getElementById('basket-items').innerHTML = basket.map((x, i) => `
+            <div class="basket-item">
+                <span class="basket-item-label">${x.label}</span>
+                <span class="basket-item-price">£${x.price.toFixed(2)}</span>
+                <button class="basket-remove" onclick="removeFromBasket(${i})">×</button>
+            </div>`).join('');
     }
 
     function formatCountdown(isoStr) {
@@ -833,11 +1160,13 @@
     }
 
     function renderDeals(deals, type) {
+        dealsData = deals;
+        dealsType = type;
         const thead = document.getElementById('deals-head');
         const tbody = document.getElementById('deals-body');
         const cols  = COLS[type];
 
-        thead.innerHTML = HEADERS[type];
+        thead.innerHTML = dealsHeader(type);
         document.getElementById('deal-count').textContent = `${deals.length} deal${deals.length !== 1 ? 's' : ''}`;
 
         if (deals.length === 0) {
@@ -845,7 +1174,8 @@
             return;
         }
 
-        tbody.innerHTML = deals.map((d, i) => renderRow(d, type, i)).join('');
+        const sorted = sortData(deals, dealsSort.col, dealsSort.asc);
+        tbody.innerHTML = sorted.map((d, i) => renderRow(d, type, i)).join('');
         tickCountdowns();
     }
 
@@ -882,7 +1212,7 @@
         const btn  = document.getElementById('refresh-btn');
         const cols = COLS[activeType];
         btn.classList.add('spinning');
-        document.getElementById('deals-head').innerHTML = HEADERS[activeType];
+        document.getElementById('deals-head').innerHTML = dealsHeader(activeType);
         document.getElementById('deals-body').innerHTML =
             `<tr class="state-row"><td colspan="${cols}"><span class="loader"></span> Loading deals...</td></tr>`;
         try {

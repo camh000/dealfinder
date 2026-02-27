@@ -5,12 +5,12 @@
 - [ ] **Light / dark theme toggle** — light theme CSS vars + toggle button persisted to `localStorage`
 - [ ] **Last scraped timestamp** — top-right of the dashboard should display the datetime the last scrape run completed
 - [ ] **Components pricing tab** — new tab with a searchable component browser showing average market price per model; allow selecting multiple components to sum their combined value (useful for valuing a parts bundle or full build)
-- [ ] **Sortable columns** — click any header to sort by price, discount %, or time remaining
+- [x] **Sortable columns** — click any header to sort by price, discount %, or time remaining
 - [ ] **Filter panel** — filter by brand, minimum discount %, minimum £ saving
 - [ ] **Widen time window** — add a "coming up" section for auctions ending in 2–6 hours
 - [ ] **PWA / mobile install** — add `manifest.json` and service worker for home screen install
 - [ ] **Align OUTCOMES panel columns** — stat cards in the top panel are slightly offset from the resolved/pending table columns below
-- [ ] **Outcomes surfaced timestamp** — the OUTCOMES tab "Surfaced" column currently shows only a date (e.g. "27 Feb"); include the time of day so items surfaced on the same day can be distinguished
+- [x] **Outcomes surfaced timestamp** — the OUTCOMES tab "Surfaced" column currently shows only a date (e.g. "27 Feb"); include the time of day so items surfaced on the same day can be distinguished
 
 ## Scraper / Data
 
