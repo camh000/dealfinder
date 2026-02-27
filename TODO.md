@@ -34,7 +34,7 @@
 - [ ] **Ntfy / Pushover notifications** — notify once per item ID when a deal is first detected
 - [ ] **Auto-bid button** — one-click to place a max bid on a deal listing as the auction nears its end (requires eBay OAuth integration)
 - [x] **Deal outcome tracking** — record surfaced deals and what they actually sold for to validate the algorithm
-- [ ] **Outcome verification scrape** — a configurable number of hours after a tracked deal's end time, search eBay sold listings by the item title to confirm the final sale price is captured in the resolved panel (handles cases where the scheduler misses the sold listing)
+- [x] **Outcome verification scrape** — a configurable number of hours after a tracked deal's end time, search eBay sold listings by the item title to confirm the final sale price is captured in the resolved panel (handles cases where the scheduler misses the sold listing)
 
 ## Security
 
