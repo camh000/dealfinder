@@ -11,6 +11,7 @@
 ## Scraper / Data
 
 - [x] 🔴 **Find Oxylabs alternative** — replaced with Zyte API (pay-per-use, no subscription)
+- [ ] **Fix curl_cffi in Docker/Linux** — still returning 13KB Akamai block pages in production (`chrome120` didn't resolve it); Zyte covers it for now but fixing direct fetch would reduce proxy costs to near-zero
 - [ ] **Scrape run summary log** — at end of each category scrape, log how many items were inserted vs updated (new vs already-seen listings)
 - [ ] **Bid count filter** — deprioritise or hide items with 5+ bids (price likely already bid up)
 - [ ] **Reserve price detection** — filter out "Reserve not met" listings
