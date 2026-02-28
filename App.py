@@ -224,110 +224,106 @@ WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
 
 PRICE_GUIDE_GPU_QUERY = """
 WITH RawStats AS (
-    SELECT g.Model, g.Brand, g.VRAM,
+    SELECT g.Model,
            AVG(e.Price / 100)    AS RawAvg,
            STDDEV(e.Price / 100) AS StdDev,
            COUNT(*)              AS SoldCount
     FROM   Scraper.GPU g
     JOIN   Scraper.EBAY e ON e.ID = g.ID
     WHERE  e.SoldDate IS NOT NULL AND g.Model IS NOT NULL AND e.Price IS NOT NULL
-    GROUP  BY g.Model, g.Brand, g.VRAM
+    GROUP  BY g.Model
     HAVING COUNT(*) >= 3
 ),
 CleanStats AS (
-    SELECT g.Model, g.Brand, g.VRAM,
+    SELECT g.Model,
            ROUND(AVG(e.Price / 100), 2) AS AvgPrice,
            ROUND(MIN(e.Price / 100), 2) AS MinPrice,
            ROUND(MAX(e.Price / 100), 2) AS MaxPrice
     FROM   Scraper.GPU g
     JOIN   Scraper.EBAY e ON e.ID = g.ID
-    JOIN   RawStats rs ON rs.Model = g.Model AND rs.Brand <=> g.Brand AND rs.VRAM <=> g.VRAM
+    JOIN   RawStats rs ON rs.Model = g.Model
     WHERE  e.SoldDate IS NOT NULL AND g.Model IS NOT NULL AND e.Price IS NOT NULL
       AND  (e.Price / 100) BETWEEN rs.RawAvg - 2 * rs.StdDev
                                 AND rs.RawAvg + 2 * rs.StdDev
-    GROUP  BY g.Model, g.Brand, g.VRAM
+    GROUP  BY g.Model
 )
-SELECT rs.Model, rs.Brand, rs.VRAM,
+SELECT rs.Model,
        cs.AvgPrice,
        cs.MinPrice,
        cs.MaxPrice,
        rs.SoldCount
 FROM   RawStats rs
-JOIN   CleanStats cs ON cs.Model = rs.Model AND cs.Brand <=> rs.Brand AND cs.VRAM <=> rs.VRAM
+JOIN   CleanStats cs ON cs.Model = rs.Model
 ORDER  BY cs.AvgPrice DESC;
 """
 
 PRICE_GUIDE_CPU_QUERY = """
 WITH RawStats AS (
-    SELECT c.Model, c.Brand, c.Socket, c.Cores,
+    SELECT c.Model,
            AVG(e.Price / 100)    AS RawAvg,
            STDDEV(e.Price / 100) AS StdDev,
            COUNT(*)              AS SoldCount
     FROM   Scraper.CPU c
     JOIN   Scraper.EBAY e ON e.ID = c.ID
     WHERE  e.SoldDate IS NOT NULL AND c.Model IS NOT NULL AND e.Price IS NOT NULL
-    GROUP  BY c.Model, c.Brand, c.Socket, c.Cores
+    GROUP  BY c.Model
     HAVING COUNT(*) >= 3
 ),
 CleanStats AS (
-    SELECT c.Model, c.Brand, c.Socket, c.Cores,
+    SELECT c.Model,
            ROUND(AVG(e.Price / 100), 2) AS AvgPrice,
            ROUND(MIN(e.Price / 100), 2) AS MinPrice,
            ROUND(MAX(e.Price / 100), 2) AS MaxPrice
     FROM   Scraper.CPU c
     JOIN   Scraper.EBAY e ON e.ID = c.ID
-    JOIN   RawStats rs ON rs.Model = c.Model AND rs.Brand <=> c.Brand
-                      AND rs.Socket <=> c.Socket AND rs.Cores <=> c.Cores
+    JOIN   RawStats rs ON rs.Model = c.Model
     WHERE  e.SoldDate IS NOT NULL AND c.Model IS NOT NULL AND e.Price IS NOT NULL
       AND  (e.Price / 100) BETWEEN rs.RawAvg - 2 * rs.StdDev
                                 AND rs.RawAvg + 2 * rs.StdDev
-    GROUP  BY c.Model, c.Brand, c.Socket, c.Cores
+    GROUP  BY c.Model
 )
-SELECT rs.Model, rs.Brand, rs.Socket, rs.Cores,
+SELECT rs.Model,
        cs.AvgPrice,
        cs.MinPrice,
        cs.MaxPrice,
        rs.SoldCount
 FROM   RawStats rs
-JOIN   CleanStats cs ON cs.Model = rs.Model AND cs.Brand <=> rs.Brand
-                    AND cs.Socket <=> rs.Socket AND cs.Cores <=> rs.Cores
+JOIN   CleanStats cs ON cs.Model = rs.Model
 ORDER  BY cs.AvgPrice DESC;
 """
 
 PRICE_GUIDE_HDD_QUERY = """
 WITH RawStats AS (
-    SELECT h.CapacityGB, h.Interface, h.FormFactor, h.Brand,
+    SELECT h.CapacityGB, h.Interface,
            AVG(e.Price / 100)    AS RawAvg,
            STDDEV(e.Price / 100) AS StdDev,
            COUNT(*)              AS SoldCount
     FROM   Scraper.HDD h
     JOIN   Scraper.EBAY e ON e.ID = h.ID
     WHERE  e.SoldDate IS NOT NULL AND h.CapacityGB IS NOT NULL AND e.Price IS NOT NULL
-    GROUP  BY h.CapacityGB, h.Interface, h.FormFactor, h.Brand
+    GROUP  BY h.CapacityGB, h.Interface
     HAVING COUNT(*) >= 3
 ),
 CleanStats AS (
-    SELECT h.CapacityGB, h.Interface, h.FormFactor, h.Brand,
+    SELECT h.CapacityGB, h.Interface,
            ROUND(AVG(e.Price / 100), 2) AS AvgPrice,
            ROUND(MIN(e.Price / 100), 2) AS MinPrice,
            ROUND(MAX(e.Price / 100), 2) AS MaxPrice
     FROM   Scraper.HDD h
     JOIN   Scraper.EBAY e ON e.ID = h.ID
     JOIN   RawStats rs ON rs.CapacityGB = h.CapacityGB AND rs.Interface <=> h.Interface
-                      AND rs.FormFactor <=> h.FormFactor AND rs.Brand <=> h.Brand
     WHERE  e.SoldDate IS NOT NULL AND h.CapacityGB IS NOT NULL AND e.Price IS NOT NULL
       AND  (e.Price / 100) BETWEEN rs.RawAvg - 2 * rs.StdDev
                                 AND rs.RawAvg + 2 * rs.StdDev
-    GROUP  BY h.CapacityGB, h.Interface, h.FormFactor, h.Brand
+    GROUP  BY h.CapacityGB, h.Interface
 )
-SELECT rs.CapacityGB, rs.Interface, rs.FormFactor, rs.Brand,
+SELECT rs.CapacityGB, rs.Interface,
        cs.AvgPrice,
        cs.MinPrice,
        cs.MaxPrice,
        rs.SoldCount
 FROM   RawStats rs
 JOIN   CleanStats cs ON cs.CapacityGB = rs.CapacityGB AND cs.Interface <=> rs.Interface
-                    AND cs.FormFactor <=> rs.FormFactor AND cs.Brand <=> rs.Brand
 ORDER  BY rs.CapacityGB DESC, cs.AvgPrice DESC;
 """
 

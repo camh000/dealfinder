@@ -1005,15 +1005,13 @@
                 rows.push({ ...r, _cat: cat });
 
         // Build a searchable label per row
+        const capStr = r => r.CapacityGB >= 1000
+            ? (r.CapacityGB / 1000).toFixed(r.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
+            : r.CapacityGB + 'GB';
         const rowLabel = r => {
-            if (r._cat === 'gpu')
-                return `${r.Model || ''} ${r.Brand || ''} ${r.VRAM ? r.VRAM + 'GB' : ''}`.trim();
-            if (r._cat === 'cpu')
-                return `${r.Model || ''} ${r.Brand || ''} ${r.Socket || ''} ${r.Cores ? r.Cores + ' cores' : ''}`.trim();
-            const cap = r.CapacityGB >= 1000
-                ? (r.CapacityGB / 1000).toFixed(r.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
-                : r.CapacityGB + 'GB';
-            return `${cap} ${r.Interface || ''} ${r.FormFactor || ''} ${r.Brand || ''}`.trim();
+            if (r._cat === 'gpu') return r.Model || '';
+            if (r._cat === 'cpu') return r.Model || '';
+            return `${capStr(r)} ${r.Interface || ''}`.trim();
         };
 
         if (q) rows = rows.filter(r => rowLabel(r).toLowerCase().includes(q));
@@ -1025,16 +1023,8 @@
 
         body.innerHTML = rows.map(r => {
             const lbl = rowLabel(r);
-            const modelName = r._cat === 'hdd'
-                ? (r.CapacityGB >= 1000
-                    ? (r.CapacityGB / 1000).toFixed(r.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
-                    : r.CapacityGB + 'GB')
-                : (r.Model || '—');
-            const specLine = r._cat === 'gpu'
-                ? [r.VRAM ? r.VRAM + 'GB VRAM' : '', r.Brand].filter(Boolean).join(' · ')
-                : r._cat === 'cpu'
-                    ? [r.Socket, r.Cores ? r.Cores + ' cores' : '', r.Brand].filter(Boolean).join(' · ')
-                    : [r.Interface, r.FormFactor, r.Brand].filter(Boolean).join(' · ');
+            const modelName = r._cat === 'hdd' ? capStr(r) : (r.Model || '—');
+            const specLine  = r._cat === 'hdd' ? (r.Interface || '') : '';
             const low = r.SoldCount < 5;
             const escapedLbl = lbl.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
             return `<tr class="${low ? 'low-confidence' : ''}">
