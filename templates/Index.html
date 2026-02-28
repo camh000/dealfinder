@@ -675,13 +675,7 @@
         </div>
         <div class="table-wrap">
             <table>
-                <thead><tr>
-                    <th>Cat</th>
-                    <th>Model / Specs</th>
-                    <th class="right">Avg Market</th>
-                    <th class="right">Sales</th>
-                    <th></th>
-                </tr></thead>
+                <thead id="price-guide-head"></thead>
                 <tbody id="price-guide-body">
                     <tr class="state-row"><td colspan="5"><span class="loader"></span> Loading…</td></tr>
                 </tbody>
@@ -714,9 +708,10 @@
     // ── Sort state ──────────────────────────────────────────────────────────
     let dealsData    = [], dealsType    = '';
     let resolvedData = [], pendingData  = [];
-    let dealsSort    = { col: null,         asc: true  };
-    let resolvedSort = { col: 'SurfacedAt', asc: false }; // newest-first
-    let pendingSort  = { col: 'EndTime',    asc: true  }; // soonest-first
+    let dealsSort      = { col: null,         asc: true  };
+    let resolvedSort   = { col: 'SurfacedAt', asc: false }; // newest-first
+    let pendingSort    = { col: 'EndTime',    asc: true  }; // soonest-first
+    let priceGuideSort = { col: 'AvgPrice',   asc: false }; // highest-first
 
     // Generic sort — handles numbers, strings and ISO date strings
     function sortData(arr, col, asc) {
@@ -765,6 +760,28 @@
             ? { col, asc: !dealsSort.asc }
             : { col, asc: col === 'EndTime' };
         renderDeals(dealsData, dealsType);
+    }
+
+    function priceGuideHeader() {
+        const si  = col => sortIcon(col, priceGuideSort);
+        const cls = col => `sortable${priceGuideSort.col === col ? ' sorted' : ''}`;
+        const th  = (label, col, extra = '') =>
+            `<th class="${cls(col)}${extra}" onclick="sortPriceGuide('${col}')">${label}${si(col)}</th>`;
+        return `<tr>
+            <th>Cat</th>
+            ${th('Model / Specs', '_label')}
+            ${th('Avg Market',    'AvgPrice',  ' right')}
+            ${th('Sales',         'SoldCount', ' right')}
+            <th></th>
+        </tr>`;
+    }
+
+    function sortPriceGuide(col) {
+        const defaultAsc = col === '_label';  // text → asc; numbers → desc
+        priceGuideSort = priceGuideSort.col === col
+            ? { col, asc: !priceGuideSort.asc }
+            : { col, asc: defaultAsc };
+        renderPriceGuide();
     }
 
     // ── Outcomes headers ────────────────────────────────────────────────────
@@ -997,6 +1014,7 @@
 
     function renderPriceGuide() {
         if (!priceGuideData) return;
+        document.getElementById('price-guide-head').innerHTML = priceGuideHeader();
         const q    = document.getElementById('price-search').value.trim().toLowerCase();
         const body = document.getElementById('price-guide-body');
         const cats = activePriceCat === 'all' ? ['gpu', 'cpu', 'hdd', 'ram'] : [activePriceCat];
@@ -1018,15 +1036,25 @@
             return `${capStr(r)} ${r.Interface || ''}`.trim();
         };
 
-        if (q) rows = rows.filter(r => rowLabel(r).toLowerCase().includes(q));
+        // Coerce decimal strings → numbers and attach sortable label
+        rows = rows.map(r => ({
+            ...r,
+            _label:   rowLabel(r),
+            AvgPrice: Number(r.AvgPrice),
+            MinPrice: Number(r.MinPrice),
+            MaxPrice: Number(r.MaxPrice),
+        }));
+
+        if (q) rows = rows.filter(r => r._label.toLowerCase().includes(q));
 
         if (rows.length === 0) {
             body.innerHTML = '<tr class="state-row"><td colspan="5">No components match.</td></tr>';
             return;
         }
 
-        body.innerHTML = rows.map(r => {
-            const lbl = rowLabel(r);
+        const sorted = sortData(rows, priceGuideSort.col, priceGuideSort.asc);
+        body.innerHTML = sorted.map(r => {
+            const lbl = r._label;
             const modelName = r._cat === 'hdd' ? capStr(r)
                             : r._cat === 'ram' ? `${r.CapacityGB}GB`
                             : (r.Model || '—');
