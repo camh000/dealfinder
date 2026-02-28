@@ -499,7 +499,8 @@ def deals():
 
         return jsonify({"status": "ok", "deals": rows})
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        log.error("deals error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
     finally:
         if conn:
             conn.close()
@@ -517,7 +518,8 @@ def deal_counts():
             counts[key] = cur.fetchone()['cnt']
         return jsonify({"status": "ok", "counts": counts})
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        log.error("deal_counts error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
     finally:
         if conn:
             conn.close()
@@ -548,7 +550,8 @@ def stats():
             "last_scrape_at": last_scrape.isoformat() if last_scrape else None,
         })
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        log.error("stats error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
     finally:
         if conn:
             conn.close()
@@ -594,7 +597,8 @@ def outcomes():
             "pending": pending,
         })
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        log.error("outcomes error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
     finally:
         if conn:
             conn.close()
