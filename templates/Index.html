@@ -1199,8 +1199,7 @@
             const data = await res.json();
             document.getElementById('stat-active').textContent = data.active_listings.toLocaleString();
             document.getElementById('stat-sold').textContent = data.sold_listings.toLocaleString();
-            const d = new Date(data.last_updated);
-            document.getElementById('stat-updated').textContent = isNaN(d) ? '—' : d.toLocaleDateString('en-GB', {day:'2-digit', month:'short'});
+            document.getElementById('stat-updated').textContent = formatDate(data.last_scrape_at) || '—';
         } catch {}
     }
 

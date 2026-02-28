@@ -3,7 +3,7 @@
 ## Frontend
 
 - [ ] **Light / dark theme toggle** — light theme CSS vars + toggle button persisted to `localStorage`
-- [ ] **Last scraped timestamp** — top-right of the dashboard should display the datetime the last scrape run completed
+- [x] **Last scraped timestamp** — top-right of the dashboard should display the datetime the last scrape run completed
 - [x] **Components pricing tab** — new tab with a searchable component browser showing average market price per model; allow selecting multiple components to sum their combined value (useful for valuing a parts bundle or full build)
 - [ ] **Prices tab sortable columns** — click any column header (Cat, Model/Specs, Avg Market, Sales) to sort the price-guide table ascending/descending, consistent with the sort behaviour on the deal tables
 - [x] **Prices tab grouping simplification** — GPUs should be grouped by Model only (drop VRAM/Brand from the GROUP BY); CPUs grouped by Model only (drop Brand/Socket/Cores); HDDs grouped by Interface + CapacityGB only (drop FormFactor/Brand); reduces fragmentation so each model has a single representative average price

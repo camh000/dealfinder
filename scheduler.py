@@ -105,6 +105,10 @@ def run_full_scrape():
         log.error("Outcome verification failed: %s", e)
 
     _last_full_scrape = datetime.now()
+    try:
+        EbayScraper.RecordScrapeCompleted()
+    except Exception as e:
+        log.error("Failed to record scrape timestamp: %s", e)
     log.info("Full scrape run complete.")
 
 

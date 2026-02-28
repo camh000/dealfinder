@@ -953,6 +953,26 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
         conn.close()
 
 
+def RecordScrapeCompleted():
+    """Persist the current UTC timestamp as the last full-scrape completion time."""
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.ScrapeMeta (
+                id          TINYINT  NOT NULL DEFAULT 1 PRIMARY KEY,
+                LastScrapeAt DATETIME NULL
+            )
+        """)
+        cur.execute("""
+            INSERT INTO Scraper.ScrapeMeta (id, LastScrapeAt) VALUES (1, NOW())
+            ON DUPLICATE KEY UPDATE LastScrapeAt = NOW()
+        """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def GetActiveDeals() -> list:
     """Return active tracked deals that haven't sold and haven't ended yet.
 

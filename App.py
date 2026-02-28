@@ -421,6 +421,28 @@ def ensure_outcomes_table():
 ensure_outcomes_table()
 
 
+def ensure_scrape_meta():
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.ScrapeMeta (
+                id           TINYINT  NOT NULL DEFAULT 1 PRIMARY KEY,
+                LastScrapeAt DATETIME NULL
+            )
+        """)
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_scrape_meta()
+
+
 @app.route("/")
 def index():
     return render_template("Index.html")
@@ -514,13 +536,16 @@ def stats():
         cur.execute("SELECT COUNT(*) AS total FROM Scraper.EBAY WHERE SoldDate IS NOT NULL")
         sold = cur.fetchone()["total"]
 
-        cur.execute("SELECT MAX(SoldDate) AS last_update FROM Scraper.EBAY")
-        last = cur.fetchone()["last_update"]
+        cur.execute("""
+            SELECT LastScrapeAt FROM Scraper.ScrapeMeta WHERE id = 1
+        """)
+        row = cur.fetchone()
+        last_scrape = row["LastScrapeAt"] if row else None
 
         return jsonify({
             "active_listings": active,
             "sold_listings": sold,
-            "last_updated": str(last) if last else "Never"
+            "last_scrape_at": last_scrape.isoformat() if last_scrape else None,
         })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
