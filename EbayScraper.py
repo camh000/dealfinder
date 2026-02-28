@@ -692,7 +692,8 @@ def _get_connection():
         database=os.environ["DB_NAME"]
     )
 
-def _upload(cur, p: Product, product_type: str):
+def _upload(cur, p: Product, product_type: str) -> int:
+    """Returns the EBAY rowcount: 1 = inserted, 2 = updated, 0 = no change."""
     cur.execute("""
         INSERT INTO EBAY (ID, Title, Price, Bids, EndTime, SoldDate, URL)
         VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -705,6 +706,7 @@ def _upload(cur, p: Product, product_type: str):
             URL = VALUES(URL);
         """, (p.id, p.title, p.price * 100, p.bid_count, p.time_end, p.sold_date, p.url)
     )
+    ebay_rc = cur.rowcount
     if product_type == 'GPU':
         cur.execute("""
             INSERT INTO GPU (ID, Brand, Model, VRAM)
@@ -738,6 +740,7 @@ def _upload(cur, p: Product, product_type: str):
                 RPM = VALUES(RPM);
             """, (p.id, p.brand, p.capacity_gb, p.interface, p.form_factor, p.rpm)
         )
+    return ebay_rc
 
 def _scrape_item_by_id(ebay_id: int, category: str, *, sold: bool) -> dict | None:
     """Fetch a single eBay listing by its item ID.
@@ -912,6 +915,7 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
     cur = conn.cursor()
 
     try:
+        inserted = updated = 0
         for query in query_list:
             items = Scrape(query, product_type, country, condition, listing_type, cache=cache)
 
@@ -931,12 +935,16 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
 
             for p in products:
                 try:
-                    _upload(cur, p, product_type)
+                    rc = _upload(cur, p, product_type)
+                    if rc == 1:
+                        inserted += 1
+                    elif rc >= 2:
+                        updated += 1
                 except mariadb.Error as e:
                     log.error("DB error uploading item %s: %s", p.id, e)
 
         conn.commit()
-        log.info("Upload complete. Last inserted ID: %s", cur.lastrowid)
+        log.info("Scrape complete [%s]: %d new, %d updated", product_type, inserted, updated)
 
     except Exception as e:
         conn.rollback()
