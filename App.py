@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, make_response, send_from_directory
 import mariadb
 import os
 import logging
@@ -573,6 +573,14 @@ def ensure_ram_table():
 
 
 ensure_ram_table()
+
+
+@app.route('/sw.js')
+def service_worker():
+    resp = make_response(send_from_directory('static', 'sw.js'))
+    resp.headers['Content-Type'] = 'application/javascript'
+    resp.headers['Service-Worker-Allowed'] = '/'
+    return resp
 
 
 @app.route("/")

@@ -4,6 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PC Deal Finder</title>
+    <!-- PWA -->
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta name="theme-color" content="#00e5a0">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="PCDeals">
+    <meta name="description" content="Live eBay auction deal finder for PC components">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700&display=swap" rel="stylesheet">
     <style>
@@ -198,6 +208,17 @@
             border: 1px solid var(--border);
             border-radius: 4px;
             overflow: hidden;
+        }
+
+        /* Resolved outcomes panel — fixed height so it doesn't push pending off screen */
+        #resolved-wrap {
+            max-height: 480px;   /* ~7 rows */
+            overflow-y: auto;
+        }
+        #resolved-wrap thead tr {
+            position: sticky;
+            top: 0;
+            z-index: 1;
         }
 
         table {
@@ -639,7 +660,7 @@
         <div id="outcome-stats" class="outcome-stats"></div>
 
         <div class="subsection-header">Resolved</div>
-        <div class="table-wrap">
+        <div class="table-wrap" id="resolved-wrap">
             <table>
                 <thead id="outcomes-resolved-head"></thead>
                 <tbody id="outcomes-resolved-body">
@@ -910,27 +931,14 @@
     function renderResolvedTable() {
         document.getElementById('outcomes-resolved-head').innerHTML = resolvedHeader();
         const body = document.getElementById('outcomes-resolved-body');
-        if (resolvedData.length === 0) {
+        // Filter out EndedUnsold rows — no final price data, clutter the history
+        const visible = resolvedData.filter(r => !r.EndedUnsold);
+        if (visible.length === 0) {
             body.innerHTML = '<tr class="state-row"><td colspan="8">No resolved deals yet — they appear here once auctions end and the scraper picks them up as sold.</td></tr>';
             return;
         }
-        const sorted = sortData(resolvedData, resolvedSort.col, resolvedSort.asc);
+        const sorted = sortData(visible, resolvedSort.col, resolvedSort.asc);
         body.innerHTML = sorted.map((r, i) => {
-            if (r.EndedUnsold) {
-                return `<tr style="animation-delay:${i * 40}ms">
-                    <td>${formatDate(r.SurfacedAt)}</td>
-                    <td><span class="cat-badge">${r.Category}</span></td>
-                    <td><div class="model-cell" style="font-size:14px">${r.Model || '—'}</div></td>
-                    <td style="text-align:right">
-                        <div class="price-current" style="font-size:13px">${fmtGbp(r.SurfacedPrice)}</div>
-                        <div class="price-avg">${r.SurfacedDiscountPct}% off</div>
-                    </td>
-                    <td style="text-align:right"><div class="price-avg" style="font-size:13px">${fmtGbp(r.AvgMarketPrice)}</div></td>
-                    <td style="text-align:right"><div class="price-avg" style="font-size:13px">—</div></td>
-                    <td><span class="outcome-ended">ENDED</span></td>
-                    <td><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>
-                </tr>`;
-            }
             const win = r.FinalPrice < r.AvgMarketPrice;
             const pctLabel = r.ActualDiscountPct > 0
                 ? `${r.ActualDiscountPct}% off mkt`
@@ -1284,6 +1292,11 @@
     setInterval(loadDeals, 5 * 60 * 1000);
     setInterval(loadStats, 5 * 60 * 1000);
     setInterval(loadTabCounts, 5 * 60 * 1000);
+
+    // Service worker registration
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(e => console.warn('SW:', e));
+    }
 </script>
 </body>
 </html>
