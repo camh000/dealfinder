@@ -9,6 +9,9 @@
 - [x] **Last scraped timestamp** — top-right of the dashboard should display the datetime the last scrape run completed
 - [x] **Prices tab sortable columns** — click any column header (Cat, Model/Specs, Avg Market, Sales) to sort the price-guide table ascending/descending, consistent with the sort behaviour on the deal tables
 - [x] **Outcomes resolved panel: hide Ended items + fixed-height scroll** — filter out EndedUnsold rows from the resolved table (they clutter the outcome history without useful price data); cap the panel at 7 rows tall with overflow-y scroll so it doesn't push pending items off screen
+- [ ] **Outcomes resolved: show ended-at timestamp** — replace the "Surfaced" column in the resolved table with (or add alongside it) the auction end time (`EndTime`); the ended-at date is more useful for history — "when did this sell?" — than when the scraper first spotted it
+- [ ] **Outcomes £ saving column** — in the resolved outcomes table, add a column (or sub-line on the Final Sale cell) showing the absolute £ difference between FinalPrice and AvgMarketPrice (e.g. "−£47 vs market"); positive = saved, negative = overpaid; complements the existing % label
+- [ ] **Bid count on deal panels** — show the current bid count on each deal row in the GPU / CPU / HDD / RAM panels; requires scraping `bidCount` from the eBay listing and storing it; surface as a small muted sub-line below the price
 - [ ] **Filter panel** — filter by brand, minimum discount %, minimum £ saving
 - [ ] **Widen time window** — add a "coming up" section for auctions ending in 2–6 hours
 - [ ] **Align OUTCOMES panel columns** — stat cards in the top panel are slightly offset from the resolved/pending table columns below
@@ -21,6 +24,7 @@
 - [x] **Zyte 520 retry** — on HTTP 520 (unknown web server error), back off and retry up to N times before failing over
 - [x] **Adaptive scheduler** — replace fixed 30-min interval with dynamic logic: default to hourly full scrape; when active deals are approaching their end time, launch targeted scrapes (by item title) at increasing frequency as the clock runs down (e.g. 15 min → 5 min → 1 min out)
 - [x] **Scrape run summary log** — at end of each category scrape, log how many items were inserted vs updated (new vs already-seen listings)
+- [ ] **Bid count scraping** — scrape and persist `bidCount` from each eBay listing to support the bid count display on deal panels and the future bid-count filter / deal-score features
 - [ ] **Bid count filter** — deprioritise or hide items with 5+ bids (price likely already bid up)
 - [ ] **Reserve price detection** — filter out "Reserve not met" listings
 - [ ] **Seller feedback filter** — skip listings from sellers below a configurable feedback threshold

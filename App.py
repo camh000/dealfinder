@@ -270,7 +270,7 @@ WITH ModelStats AS (
 SELECT COUNT(*) AS cnt
 FROM Scraper.EBAY e
 JOIN Scraper.HDD h ON h.ID = e.ID
-JOIN ModelStats ms ON ms.CapacityGB = h.CapacityGB AND ms.Interface = h.Interface
+JOIN ModelStats ms ON ms.CapacityGB = h.CapacityGB AND ms.Interface <=> h.Interface
 WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
   AND e.EndTime > NOW() AND e.EndTime < NOW() + INTERVAL 2 HOUR;
 """
