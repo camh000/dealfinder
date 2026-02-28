@@ -13,7 +13,7 @@
 - [ ] **Widen time window** — add a "coming up" section for auctions ending in 2–6 hours
 - [ ] **Align OUTCOMES panel columns** — stat cards in the top panel are slightly offset from the resolved/pending table columns below
 - [ ] **Light / dark theme toggle** — light theme CSS vars + toggle button persisted to `localStorage`
-- [ ] **PWA / mobile install** — add `manifest.json` and service worker for home screen install
+- [x] **PWA / mobile install** — add `manifest.json` and service worker for home screen install
 
 ## Scraper / Data
 
