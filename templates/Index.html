@@ -610,6 +610,7 @@
     <button class="tab-btn active" data-type="gpu" onclick="switchTab('gpu')">GPU<span class="tab-badge" id="badge-gpu"></span></button>
     <button class="tab-btn" data-type="cpu" onclick="switchTab('cpu')">CPU<span class="tab-badge" id="badge-cpu"></span></button>
     <button class="tab-btn" data-type="hdd" onclick="switchTab('hdd')">HDD<span class="tab-badge" id="badge-hdd"></span></button>
+    <button class="tab-btn" data-type="ram" onclick="switchTab('ram')">RAM<span class="tab-badge" id="badge-ram"></span></button>
     <button class="tab-btn" data-type="outcomes" onclick="switchTab('outcomes')">OUTCOMES</button>
     <button class="tab-btn" data-type="prices"   onclick="switchTab('prices')">PRICES</button>
 </div>
@@ -669,17 +670,12 @@
                 <button class="pcat-btn" data-cat="gpu" onclick="setPriceCat('gpu')">GPU</button>
                 <button class="pcat-btn" data-cat="cpu" onclick="setPriceCat('cpu')">CPU</button>
                 <button class="pcat-btn" data-cat="hdd" onclick="setPriceCat('hdd')">HDD</button>
+                <button class="pcat-btn" data-cat="ram" onclick="setPriceCat('ram')">RAM</button>
             </div>
         </div>
         <div class="table-wrap">
             <table>
-                <thead><tr>
-                    <th>Cat</th>
-                    <th>Model / Specs</th>
-                    <th class="right">Avg Market</th>
-                    <th class="right">Sales</th>
-                    <th></th>
-                </tr></thead>
+                <thead id="price-guide-head"></thead>
                 <tbody id="price-guide-body">
                     <tr class="state-row"><td colspan="5"><span class="loader"></span> Loading…</td></tr>
                 </tbody>
@@ -712,9 +708,10 @@
     // ── Sort state ──────────────────────────────────────────────────────────
     let dealsData    = [], dealsType    = '';
     let resolvedData = [], pendingData  = [];
-    let dealsSort    = { col: null,         asc: true  };
-    let resolvedSort = { col: 'SurfacedAt', asc: false }; // newest-first
-    let pendingSort  = { col: 'EndTime',    asc: true  }; // soonest-first
+    let dealsSort      = { col: null,         asc: true  };
+    let resolvedSort   = { col: 'SurfacedAt', asc: false }; // newest-first
+    let pendingSort    = { col: 'EndTime',    asc: true  }; // soonest-first
+    let priceGuideSort = { col: 'AvgPrice',   asc: false }; // highest-first
 
     // Generic sort — handles numbers, strings and ISO date strings
     function sortData(arr, col, asc) {
@@ -753,6 +750,7 @@
         if (type === 'gpu') return `<tr><th>Model</th>${prices}</tr>`;
         if (type === 'cpu') return `<tr><th>Model</th><th>Socket / Cores</th>${prices}</tr>`;
         if (type === 'hdd') return `<tr><th>Capacity</th><th>Details</th>${prices}</tr>`;
+        if (type === 'ram') return `<tr><th>Type / Capacity</th><th>Brand / Speed</th>${prices}</tr>`;
         return '';
     }
 
@@ -762,6 +760,28 @@
             ? { col, asc: !dealsSort.asc }
             : { col, asc: col === 'EndTime' };
         renderDeals(dealsData, dealsType);
+    }
+
+    function priceGuideHeader() {
+        const si  = col => sortIcon(col, priceGuideSort);
+        const cls = col => `sortable${priceGuideSort.col === col ? ' sorted' : ''}`;
+        const th  = (label, col, extra = '') =>
+            `<th class="${cls(col)}${extra}" onclick="sortPriceGuide('${col}')">${label}${si(col)}</th>`;
+        return `<tr>
+            <th>Cat</th>
+            ${th('Model / Specs', '_label')}
+            ${th('Avg Market',    'AvgPrice',  ' right')}
+            ${th('Sales',         'SoldCount', ' right')}
+            <th></th>
+        </tr>`;
+    }
+
+    function sortPriceGuide(col) {
+        const defaultAsc = col === '_label';  // text → asc; numbers → desc
+        priceGuideSort = priceGuideSort.col === col
+            ? { col, asc: !priceGuideSort.asc }
+            : { col, asc: defaultAsc };
+        renderPriceGuide();
     }
 
     // ── Outcomes headers ────────────────────────────────────────────────────
@@ -814,7 +834,7 @@
         renderPendingTable();
     }
 
-    const COLS = { gpu: 7, cpu: 8, hdd: 8 };
+    const COLS = { gpu: 7, cpu: 8, hdd: 8, ram: 8 };
 
     function switchTab(type) {
         activeType = type;
@@ -855,7 +875,9 @@
         }
     }
 
-    const fmtGbp = v => (v != null && !isNaN(v)) ? `£${Number(v).toFixed(2)}` : '—';
+    const fmtGbp   = v => (v != null && !isNaN(v)) ? `£${Number(v).toFixed(2)}` : '—';
+    const fmtRange = (lo, hi) =>
+        (lo != null && hi != null) ? `£${Number(lo).toFixed(2)} – £${Number(hi).toFixed(2)}` : '';
 
     function renderOutcomes(data) {
         const { summary, resolved, pending } = data;
@@ -992,9 +1014,10 @@
 
     function renderPriceGuide() {
         if (!priceGuideData) return;
+        document.getElementById('price-guide-head').innerHTML = priceGuideHeader();
         const q    = document.getElementById('price-search').value.trim().toLowerCase();
         const body = document.getElementById('price-guide-body');
-        const cats = activePriceCat === 'all' ? ['gpu', 'cpu', 'hdd'] : [activePriceCat];
+        const cats = activePriceCat === 'all' ? ['gpu', 'cpu', 'hdd', 'ram'] : [activePriceCat];
 
         // Flatten + tag rows
         let rows = [];
@@ -1003,36 +1026,41 @@
                 rows.push({ ...r, _cat: cat });
 
         // Build a searchable label per row
+        const capStr = r => r.CapacityGB >= 1000
+            ? (r.CapacityGB / 1000).toFixed(r.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
+            : r.CapacityGB + 'GB';
         const rowLabel = r => {
-            if (r._cat === 'gpu')
-                return `${r.Model || ''} ${r.Brand || ''} ${r.VRAM ? r.VRAM + 'GB' : ''}`.trim();
-            if (r._cat === 'cpu')
-                return `${r.Model || ''} ${r.Brand || ''} ${r.Socket || ''} ${r.Cores ? r.Cores + ' cores' : ''}`.trim();
-            const cap = r.CapacityGB >= 1000
-                ? (r.CapacityGB / 1000).toFixed(r.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
-                : r.CapacityGB + 'GB';
-            return `${cap} ${r.Interface || ''} ${r.FormFactor || ''} ${r.Brand || ''}`.trim();
+            if (r._cat === 'gpu') return r.Model || '';
+            if (r._cat === 'cpu') return r.Model || '';
+            if (r._cat === 'ram') return `${r.Type || ''} ${r.CapacityGB}GB`.trim();
+            return `${capStr(r)} ${r.Interface || ''}`.trim();
         };
 
-        if (q) rows = rows.filter(r => rowLabel(r).toLowerCase().includes(q));
+        // Coerce decimal strings → numbers and attach sortable label
+        rows = rows.map(r => ({
+            ...r,
+            _label:   rowLabel(r),
+            AvgPrice: Number(r.AvgPrice),
+            MinPrice: Number(r.MinPrice),
+            MaxPrice: Number(r.MaxPrice),
+        }));
+
+        if (q) rows = rows.filter(r => r._label.toLowerCase().includes(q));
 
         if (rows.length === 0) {
             body.innerHTML = '<tr class="state-row"><td colspan="5">No components match.</td></tr>';
             return;
         }
 
-        body.innerHTML = rows.map(r => {
-            const lbl = rowLabel(r);
-            const modelName = r._cat === 'hdd'
-                ? (r.CapacityGB >= 1000
-                    ? (r.CapacityGB / 1000).toFixed(r.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
-                    : r.CapacityGB + 'GB')
-                : (r.Model || '—');
-            const specLine = r._cat === 'gpu'
-                ? [r.VRAM ? r.VRAM + 'GB VRAM' : '', r.Brand].filter(Boolean).join(' · ')
-                : r._cat === 'cpu'
-                    ? [r.Socket, r.Cores ? r.Cores + ' cores' : '', r.Brand].filter(Boolean).join(' · ')
-                    : [r.Interface, r.FormFactor, r.Brand].filter(Boolean).join(' · ');
+        const sorted = sortData(rows, priceGuideSort.col, priceGuideSort.asc);
+        body.innerHTML = sorted.map(r => {
+            const lbl = r._label;
+            const modelName = r._cat === 'hdd' ? capStr(r)
+                            : r._cat === 'ram' ? `${r.CapacityGB}GB`
+                            : (r.Model || '—');
+            const specLine  = r._cat === 'hdd' ? (r.Interface || '')
+                            : r._cat === 'ram' ? (r.Type || '')
+                            : '';
             const low = r.SoldCount < 5;
             const escapedLbl = lbl.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
             return `<tr class="${low ? 'low-confidence' : ''}">
@@ -1043,6 +1071,7 @@
                 </td>
                 <td style="text-align:right">
                     <div style="font-size:14px">£${Number(r.AvgPrice).toFixed(2)}</div>
+                    <div class="brand-tag">${fmtRange(r.MinPrice, r.MaxPrice)}</div>
                 </td>
                 <td style="text-align:right">
                     <div class="brand-tag">${r.SoldCount} sales</div>
@@ -1114,7 +1143,10 @@
         const fmt = v => (v != null && !isNaN(v)) ? Number(v).toFixed(2) : '—';
         const prices = `
             <td data-label="Current" style="text-align:right"><div class="price-current">£${fmt(d.CurrentPrice)}</div></td>
-            <td data-label="Avg" style="text-align:right"><div class="price-avg">£${fmt(d.AvgMarketPrice)}</div></td>
+            <td data-label="Avg" style="text-align:right">
+                <div class="price-avg">£${fmt(d.AvgMarketPrice)}</div>
+                <div class="brand-tag">${fmtRange(d.MinMarketPrice, d.MaxMarketPrice)}</div>
+            </td>
             <td data-label="Saving" style="text-align:right"><span class="gain">+£${fmt(d.PotentialGain)}</span></td>
             <td data-label="Discount"><span class="discount-badge ${bigDiscount ? 'high' : ''}">${d.DiscountPct}% OFF</span></td>
             <td data-label="Ends In"><span class="time-cell" data-ends="${d.EndTime || ''}"></span></td>
@@ -1157,6 +1189,19 @@
                 ${prices}
             </tr>`;
         }
+        if (type === 'ram') {
+            const cap = `${d.CapacityGB}GB ${d.Type || ''}`.trim();
+            return `<tr style="animation-delay:${delay}ms">
+                <td class="card-title">
+                    <div class="model-cell">${cap}</div>
+                </td>
+                <td data-label="Brand">
+                    <div class="model-cell" style="font-size:13px">${d.Brand || '—'}</div>
+                    <div class="brand-tag">${d.Speed ? d.Speed.toLocaleString() + ' MHz' : ''}</div>
+                </td>
+                ${prices}
+            </tr>`;
+        }
     }
 
     function renderDeals(deals, type) {
@@ -1184,7 +1229,7 @@
             const res  = await fetch('/api/deal-counts');
             const data = await res.json();
             if (data.status !== 'ok') return;
-            ['gpu', 'cpu', 'hdd'].forEach(type => {
+            ['gpu', 'cpu', 'hdd', 'ram'].forEach(type => {
                 const badge = document.getElementById(`badge-${type}`);
                 const count = data.counts[type];
                 if (count > 0) {
@@ -1203,8 +1248,7 @@
             const data = await res.json();
             document.getElementById('stat-active').textContent = data.active_listings.toLocaleString();
             document.getElementById('stat-sold').textContent = data.sold_listings.toLocaleString();
-            const d = new Date(data.last_updated);
-            document.getElementById('stat-updated').textContent = isNaN(d) ? '—' : d.toLocaleDateString('en-GB', {day:'2-digit', month:'short'});
+            document.getElementById('stat-updated').textContent = formatDate(data.last_scrape_at) || '—';
         } catch {}
     }
 
