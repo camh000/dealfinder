@@ -326,7 +326,7 @@ def __ParseItems(soup, query, productType):
             log.warning("[%s] Skipping item '%s...' - could not parse URL/ID: %s", query, title[:40], e)
             continue
 
-        socket = cores = capacity_gb = interface = form_factor = rpm = None
+        socket = cores = capacity_gb = interface = form_factor = rpm = ram_type = speed = None
 
         if productType == 'GPU':
 
@@ -503,6 +503,54 @@ def __ParseItems(soup, query, productType):
             form_factor = extract_form_factor(title)
             rpm         = extract_rpm(title)
 
+        elif productType == 'RAM':
+
+            _tl = title.lower()
+            _is_system_ram = any(k in _tl for k in [
+                'mini pc', 'mini-pc', ' nuc', 'barebones',
+                'desktop pc', 'all-in-one', 'laptop', 'notebook',
+                'gaming pc', 'gaming computer', 'custom pc',
+                'full pc', 'complete pc', 'pc bundle', 'pc build',
+            ])
+            if _is_system_ram:
+                log.debug("[%s] Skipping system listing: %s", query, title[:60])
+                continue
+
+            # Type — DDR3 / DDR4 / DDR5 (mandatory; skip if absent)
+            type_m = re.search(r'\b(DDR[345])\b', title, re.IGNORECASE)
+            if not type_m:
+                continue
+            ram_type = type_m.group(1).upper()
+
+            # Capacity — total kit GB
+            title_up = title.upper()
+            kit_m = re.search(r'(\d+)\s*[xX×]\s*(\d+)\s*GB', title_up)
+            if kit_m:
+                capacity_gb = int(kit_m.group(1)) * int(kit_m.group(2))
+            else:
+                all_gb = [int(m) for m in re.findall(r'(\d+)\s*GB', title_up)]
+                capacity_gb = max(all_gb) if all_gb else None
+
+            if capacity_gb is None or capacity_gb < 2 or capacity_gb > 256:
+                continue
+
+            # Speed — optional MHz
+            spd_m = re.search(r'(\d{3,5})\s*[Mm][Hh][Zz]', title)
+            speed = int(spd_m.group(1)) if spd_m else None
+
+            # Brand
+            RAM_BRAND_MAP = {
+                'CORSAIR': 'Corsair', 'G.SKILL': 'G.Skill', 'GSKILL': 'G.Skill',
+                'KINGSTON': 'Kingston', 'SAMSUNG': 'Samsung', 'CRUCIAL': 'Crucial',
+                'HYPERX': 'HyperX', 'PATRIOT': 'Patriot', 'TEAMGROUP': 'TeamGroup',
+                'TEAM GROUP': 'TeamGroup', 'ADATA': 'ADATA', 'PNY': 'PNY',
+                'SK HYNIX': 'Hynix', 'HYNIX': 'Hynix', 'MICRON': 'Micron',
+                'LEXAR': 'Lexar', 'BALLISTIX': 'Ballistix',
+            }
+            brand = next((v for k, v in RAM_BRAND_MAP.items() if k in title_up), None)
+            model = None
+            vram  = None
+
         else:
             brand = ''
             model = ''
@@ -530,6 +578,8 @@ def __ParseItems(soup, query, productType):
             'interface': interface,
             'form-factor': form_factor,
             'rpm': rpm,
+            'ram-type': ram_type,
+            'speed': speed,
         }
         
         data.append(itemData)
@@ -682,6 +732,9 @@ class Product:
     interface: Optional[str] = None
     form_factor: Optional[str] = None
     rpm: Optional[int] = None
+    # RAM fields
+    ram_type: Optional[str] = None
+    speed: Optional[int] = None
 
 def _get_connection():
     return mariadb.connect(
@@ -739,6 +792,17 @@ def _upload(cur, p: Product, product_type: str) -> int:
                 FormFactor = VALUES(FormFactor),
                 RPM = VALUES(RPM);
             """, (p.id, p.brand, p.capacity_gb, p.interface, p.form_factor, p.rpm)
+        )
+    elif product_type == 'RAM':
+        cur.execute("""
+            INSERT INTO RAM (ID, Brand, CapacityGB, Type, Speed)
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                Brand      = VALUES(Brand),
+                CapacityGB = VALUES(CapacityGB),
+                Type       = VALUES(Type),
+                Speed      = VALUES(Speed);
+            """, (p.id, p.brand, p.capacity_gb, p.ram_type, p.speed)
         )
     return ebay_rc
 
@@ -929,6 +993,7 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
                     socket=d["socket"], cores=d["cores"],
                     capacity_gb=d["capacity-gb"], interface=d["interface"],
                     form_factor=d["form-factor"], rpm=d["rpm"],
+                    ram_type=d["ram-type"], speed=d["speed"],
                 )
                 for d in items
             ]
@@ -1042,6 +1107,8 @@ def ScrapeTargeted(items: list) -> int:
                         interface=item['interface'],
                         form_factor=item['form-factor'],
                         rpm=item['rpm'],
+                        ram_type=item['ram-type'],
+                        speed=item['speed'],
                     )
                     _upload(cur, product, category)
                     log.info(

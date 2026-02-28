@@ -70,6 +70,17 @@ HDD_QUERY_LIST = [
     "SATA hard drive TB",
 ]
 
+RAM_QUERY_LIST = [
+    "8gb ddr3 ram",
+    "16gb ddr3 ram",
+    "8gb ddr4 ram",
+    "16gb ddr4 ram",
+    "32gb ddr4 ram",
+    "16gb ddr5 ram",
+    "32gb ddr5 ram",
+    "64gb ddr5 ram",
+]
+
 # ── Scheduler state ────────────────────────────────────────────────────────────
 
 _last_full_scrape: datetime | None = None
@@ -90,6 +101,7 @@ def run_full_scrape():
         (GPU_QUERY_LIST, 'GPU'),
         (CPU_QUERY_LIST, 'CPU'),
         (HDD_QUERY_LIST, 'HDD'),
+        (RAM_QUERY_LIST, 'RAM'),
     ]:
         try:
             log.info("Scraping %s...", product_type)
