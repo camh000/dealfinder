@@ -939,7 +939,7 @@
         }
         const sorted = sortData(visible, resolvedSort.col, resolvedSort.asc);
         body.innerHTML = sorted.map((r, i) => {
-            const win = r.FinalPrice < r.AvgMarketPrice;
+            const win = Number(r.FinalPrice) < Number(r.AvgMarketPrice);
             const pctLabel = r.ActualDiscountPct > 0
                 ? `${r.ActualDiscountPct}% off mkt`
                 : `${Math.abs(r.ActualDiscountPct).toFixed(1)}% over mkt`;
