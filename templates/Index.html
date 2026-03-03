@@ -621,6 +621,29 @@
         .basket-total { font-size:18px; font-weight:700; color:var(--accent); }
         tr.low-confidence { opacity:0.55; }
 
+        /* Prices layout with sidebar basket */
+        .prices-layout {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+        }
+        .prices-table-wrap {
+            flex: 1;
+            min-width: 0;
+            overflow-x: auto;
+        }
+        .basket-sidebar {
+            width: 280px;
+            position: sticky;
+            top: 20px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            border-radius: 4px;
+            overflow: hidden;
+            max-height: calc(100vh - 200px);
+            overflow-y: auto;
+        }
+
         /* Scrollbar */
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: var(--bg); }
@@ -642,6 +665,15 @@
 
             main { padding: 16px; }
             footer { padding: 16px; font-size: 10px; letter-spacing: 0; }
+
+            /* Prices layout — stack vertically on mobile */
+            .prices-layout { flex-direction: column; }
+            .basket-sidebar {
+                width: 100%;
+                position: static;
+                max-height: none;
+                margin-top: 20px;
+            }
 
             /* Card layout — convert table rows to stacked cards */
             .table-wrap { border-left: none; border-right: none; border-radius: 0; }
@@ -750,7 +782,7 @@
             </div>
             <div class="filter-group">
                 <label>Min Discount %</label>
-                <input type="number" id="filter-discount" min="0" max="100" value="0" onchange="applyFilters()">
+                <input type="number" id="filter-discount" min="0" value="20" onchange="applyFilters()">
             </div>
             <div class="filter-group">
                 <label>Min £ Saving</label>
@@ -809,23 +841,25 @@
                 <button class="pcat-btn" data-cat="ram" onclick="setPriceCat('ram')">RAM</button>
             </div>
         </div>
-        <div class="table-wrap">
-            <table>
-                <thead id="price-guide-head"></thead>
-                <tbody id="price-guide-body">
-                    <tr class="state-row"><td colspan="5"><span class="loader"></span> Loading…</td></tr>
-                </tbody>
-            </table>
-        </div>
-        <div id="basket" style="display:none">
-            <div class="basket-header">
-                <span class="basket-title">Build Basket</span>
-                <button class="basket-clear-btn" onclick="clearBasket()">CLEAR</button>
+        <div class="prices-layout">
+            <div class="prices-table-wrap">
+                <table>
+                    <thead id="price-guide-head"></thead>
+                    <tbody id="price-guide-body">
+                        <tr class="state-row"><td colspan="5"><span class="loader"></span> Loading…</td></tr>
+                    </tbody>
+                </table>
             </div>
-            <div id="basket-items"></div>
-            <div class="basket-footer">
-                <span class="basket-label">TOTAL</span>
-                <span class="basket-total" id="basket-total">£0.00</span>
+            <div class="basket-sidebar" id="basket-sidebar" style="display:none">
+                <div class="basket-header">
+                    <span class="basket-title">Build Basket</span>
+                    <button class="basket-clear-btn" onclick="clearBasket()">CLEAR</button>
+                </div>
+                <div id="basket-items"></div>
+                <div class="basket-footer">
+                    <span class="basket-label">TOTAL</span>
+                    <span class="basket-total" id="basket-total">£0.00</span>
+                </div>
             </div>
         </div>
     </div>
@@ -850,7 +884,7 @@
     let priceGuideSort = { col: 'AvgPrice',   asc: false }; // highest-first
 
     // ── Filter state ─────────────────────────────────────────────────────────
-    let currentFilters = { window: 2, brand: '', minDiscount: 0, minSaving: 0 };
+    let currentFilters = { window: 2, brand: '', minDiscount: 20, minSaving: 0 };
     let allDealsData = {}; // cache deals per type per window
 
     // Generic sort — handles numbers, strings and ISO date strings
@@ -1229,7 +1263,7 @@
     function clearBasket() { basket = []; renderBasket(); }
 
     function renderBasket() {
-        const el = document.getElementById('basket');
+        const el = document.getElementById('basket-sidebar');
         if (!basket.length) { el.style.display = 'none'; return; }
         el.style.display = '';
         document.getElementById('basket-total').textContent =
@@ -1360,7 +1394,7 @@
 
     async function loadTabCounts() {
         try {
-            const res  = await fetch(`/api/deal-counts?window=${currentFilters.window}`);
+            const res  = await fetch(`/api/deal-counts?window=${currentFilters.window}&min_discount=${currentFilters.minDiscount}`);
             const data = await res.json();
             if (data.status !== 'ok') return;
             ['gpu', 'cpu', 'hdd', 'ram'].forEach(type => {
@@ -1415,20 +1449,23 @@
         const savingVal = document.getElementById('filter-saving').value;
         
         const newWindow = parseInt(windowVal, 10);
+        const newDiscount = parseFloat(discountVal) || 0;
         const windowChanged = newWindow !== currentFilters.window;
+        const discountChanged = newDiscount !== currentFilters.minDiscount;
         
         currentFilters = {
             window: newWindow,
             brand: brandVal,
-            minDiscount: parseFloat(discountVal) || 0,
+            minDiscount: newDiscount,
             minSaving: parseFloat(savingVal) || 0
         };
         
-        // If window changed, we need to fetch new data
-        if (windowChanged) {
+        // If window or discount changed, we need to fetch new data from API
+        if (windowChanged || discountChanged) {
             loadDeals();
+            loadTabCounts();
         } else {
-            // Otherwise just apply client-side filters
+            // Otherwise just apply client-side filters (brand, saving)
             filterAndRenderDeals();
         }
     }
@@ -1436,35 +1473,32 @@
     function clearFilters() {
         document.getElementById('filter-window').value = '2';
         document.getElementById('filter-brand').value = '';
-        document.getElementById('filter-discount').value = '0';
+        document.getElementById('filter-discount').value = '20';
         document.getElementById('filter-saving').value = '0';
         
         const windowChanged = currentFilters.window !== 2;
-        currentFilters = { window: 2, brand: '', minDiscount: 0, minSaving: 0 };
+        const discountChanged = currentFilters.minDiscount !== 20;
+        currentFilters = { window: 2, brand: '', minDiscount: 20, minSaving: 0 };
         
-        if (windowChanged) {
+        if (windowChanged || discountChanged) {
             loadDeals();
+            loadTabCounts();
         } else {
             filterAndRenderDeals();
         }
     }
 
     function filterAndRenderDeals() {
-        const data = allDealsData[`${activeType}_${currentFilters.window}`] || [];
+        const data = allDealsData[`${activeType}_${currentFilters.window}_${currentFilters.minDiscount}`] || [];
         
         let filtered = data;
         
-        // Apply brand filter
+        // Apply brand filter (client-side only)
         if (currentFilters.brand) {
             filtered = filtered.filter(d => d.Brand === currentFilters.brand);
         }
         
-        // Apply min discount filter
-        if (currentFilters.minDiscount > 0) {
-            filtered = filtered.filter(d => d.DiscountPct >= currentFilters.minDiscount);
-        }
-        
-        // Apply min saving filter
+        // Apply min saving filter (client-side only, discount already filtered by API)
         if (currentFilters.minSaving > 0) {
             filtered = filtered.filter(d => d.PotentialGain >= currentFilters.minSaving);
         }
@@ -1481,11 +1515,11 @@
         document.getElementById('deals-body').innerHTML =
             `<tr class="state-row"><td colspan="${cols}"><span class="loader"></span> Loading deals...</td></tr>`;
         try {
-            const res  = await fetch(`/api/deals?type=${activeType}&window=${currentFilters.window}`);
+            const res  = await fetch(`/api/deals?type=${activeType}&window=${currentFilters.window}&min_discount=${currentFilters.minDiscount}`);
             const data = await res.json();
             if (data.status === 'ok') {
-                // Cache the data
-                allDealsData[`${activeType}_${currentFilters.window}`] = data.deals;
+                // Cache the data with window and discount in key
+                allDealsData[`${activeType}_${currentFilters.window}_${currentFilters.minDiscount}`] = data.deals;
                 populateBrandFilter();
                 filterAndRenderDeals();
             } else {

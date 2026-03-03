@@ -223,9 +223,10 @@ WHERE
 ORDER BY PotentialGain DESC;
 """
 
-def get_deals_query(product_type: str, window_hours: int = 2) -> str:
-    """Return deals query with parameterized time window."""
+def get_deals_query(product_type: str, window_hours: int = 2, min_discount: float = 20) -> str:
+    """Return deals query with parameterized time window and discount threshold."""
     interval = f"INTERVAL {max(1, min(window_hours, 24))} HOUR"
+    threshold = (100 - max(0, min_discount)) / 100.0
 
     if product_type == 'gpu':
         return f"""
@@ -271,7 +272,7 @@ JOIN Scraper.GPU g ON g.ID = e.ID
 JOIN ModelStats ms ON ms.Model = g.Model
 WHERE
     e.SoldDate IS NULL
-    AND (e.Price / 100) < ms.AvgPrice * 0.8
+    AND (e.Price / 100) < ms.AvgPrice * {threshold}
     AND e.EndTime > NOW()
     AND e.EndTime < NOW() + {interval}
 ORDER BY PotentialGain DESC;
@@ -321,7 +322,7 @@ JOIN Scraper.CPU c ON c.ID = e.ID
 JOIN ModelStats ms ON ms.Model = c.Model
 WHERE
     e.SoldDate IS NULL
-    AND (e.Price / 100) < ms.AvgPrice * 0.8
+    AND (e.Price / 100) < ms.AvgPrice * {threshold}
     AND e.EndTime > NOW()
     AND e.EndTime < NOW() + {interval}
 ORDER BY PotentialGain DESC;
@@ -374,7 +375,7 @@ JOIN Scraper.HDD h ON h.ID = e.ID
 JOIN ModelStats ms ON ms.CapacityGB = h.CapacityGB AND ms.Interface <=> h.Interface
 WHERE
     e.SoldDate IS NULL
-    AND (e.Price / 100) < ms.AvgPrice * 0.8
+    AND (e.Price / 100) < ms.AvgPrice * {threshold}
     AND e.EndTime > NOW()
     AND e.EndTime < NOW() + {interval}
 ORDER BY PotentialGain DESC;
@@ -426,16 +427,17 @@ JOIN Scraper.RAM r ON r.ID = e.ID
 JOIN ModelStats ms ON ms.Type = r.Type AND ms.CapacityGB = r.CapacityGB
 WHERE
     e.SoldDate IS NULL
-    AND (e.Price / 100) < ms.AvgPrice * 0.8
+    AND (e.Price / 100) < ms.AvgPrice * {threshold}
     AND e.EndTime > NOW()
     AND e.EndTime < NOW() + {interval}
 ORDER BY PotentialGain DESC;
 """
     return GPU_DEALS_QUERY  # fallback
 
-def get_count_query(product_type: str, window_hours: int = 2) -> str:
-    """Return count query with parameterized time window."""
+def get_count_query(product_type: str, window_hours: int = 2, min_discount: float = 20) -> str:
+    """Return count query with parameterized time window and discount threshold."""
     interval = f"INTERVAL {max(1, min(window_hours, 24))} HOUR"
+    threshold = (100 - max(0, min_discount)) / 100.0
 
     if product_type == 'gpu':
         return f"""
@@ -449,7 +451,7 @@ SELECT COUNT(*) AS cnt
 FROM Scraper.EBAY e
 JOIN Scraper.GPU g ON g.ID = e.ID
 JOIN ModelStats ms ON ms.Model = g.Model
-WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
+WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * {threshold}
   AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
 """
     elif product_type == 'cpu':
@@ -464,7 +466,7 @@ SELECT COUNT(*) AS cnt
 FROM Scraper.EBAY e
 JOIN Scraper.CPU c ON c.ID = e.ID
 JOIN ModelStats ms ON ms.Model = c.Model
-WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
+WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * {threshold}
   AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
 """
     elif product_type == 'hdd':
@@ -479,7 +481,7 @@ SELECT COUNT(*) AS cnt
 FROM Scraper.EBAY e
 JOIN Scraper.HDD h ON h.ID = e.ID
 JOIN ModelStats ms ON ms.CapacityGB = h.CapacityGB AND ms.Interface <=> h.Interface
-WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
+WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * {threshold}
   AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
 """
     elif product_type == 'ram':
@@ -494,7 +496,7 @@ SELECT COUNT(*) AS cnt
 FROM Scraper.EBAY e
 JOIN Scraper.RAM r ON r.ID = e.ID
 JOIN ModelStats ms ON ms.Type = r.Type AND ms.CapacityGB = r.CapacityGB
-WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
+WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * {threshold}
   AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
 """
     return ""
@@ -804,11 +806,18 @@ def deals():
     except (ValueError, TypeError):
         window_hours = 2
     
+    # Parse min_discount parameter (default 20%, min 0%)
+    try:
+        min_discount = float(request.args.get('min_discount', 20))
+        min_discount = max(0, min_discount)
+    except (ValueError, TypeError):
+        min_discount = 20
+    
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
-        cur.execute(get_deals_query(product_type, window_hours))
+        cur.execute(get_deals_query(product_type, window_hours, min_discount))
         rows = cur.fetchall()
 
         # Record newly surfaced deals (INSERT IGNORE = only capture first sighting)
@@ -870,13 +879,20 @@ def deal_counts():
     except (ValueError, TypeError):
         window_hours = 2
     
+    # Parse min_discount parameter (default 20%, min 0%)
+    try:
+        min_discount = float(request.args.get('min_discount', 20))
+        min_discount = max(0, min_discount)
+    except (ValueError, TypeError):
+        min_discount = 20
+    
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
         counts = {}
         for key in ('gpu', 'cpu', 'hdd', 'ram'):
-            cur.execute(get_count_query(key, window_hours))
+            cur.execute(get_count_query(key, window_hours, min_discount))
             counts[key] = cur.fetchone()['cnt']
         return jsonify({"status": "ok", "counts": counts})
     except Exception as e:
