@@ -31,6 +31,18 @@
             --sans:     'Barlow Condensed', sans-serif;
         }
 
+        [data-theme="light"] {
+            --bg:       #f5f7fa;
+            --surface:  #ffffff;
+            --border:   #d0d7de;
+            --green:    #2ea043;
+            --green-dim:#3fb950;
+            --amber:    #d29922;
+            --red:      #cf222e;
+            --text:     #24292f;
+            --muted:    #6e7781;
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
@@ -107,6 +119,21 @@
             50% { opacity: 0.3; }
         }
 
+        .theme-toggle {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text);
+            font-size: 14px;
+            padding: 4px 8px;
+            cursor: pointer;
+            margin-left: 10px;
+            border-radius: 4px;
+        }
+
+        .theme-toggle:hover {
+            border-color: var(--green);
+        }
+
         /* Tab bar */
         .tab-bar {
             display: flex;
@@ -177,6 +204,63 @@
             font-size: 11px;
             color: var(--green);
             background: rgba(0,229,160,0.08);
+            padding: 4px 10px;
+            border-radius: 2px;
+        }
+
+        .filter-panel {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            margin-bottom: 20px;
+            padding: 15px 20px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            flex-wrap: wrap;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .filter-group label {
+            font-size: 10px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .filter-group select,
+        .filter-group input {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 6px 10px;
+            font-family: var(--mono);
+            font-size: 12px;
+            min-width: 120px;
+        }
+
+        .filter-group input[type="number"] {
+            min-width: 80px;
+        }
+
+        .filter-clear {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--muted);
+            padding: 6px 14px;
+            font-family: var(--mono);
+            font-size: 11px;
+            cursor: pointer;
+            margin-left: auto;
+        }
+
+        .filter-clear:hover {
+            border-color: var(--red);
+            color: var(--red);
             border: 1px solid rgba(0,229,160,0.2);
             padding: 2px 10px;
             border-radius: 2px;
@@ -314,6 +398,11 @@
             background: rgba(245,166,35,0.1);
             border-color: rgba(245,166,35,0.3);
             color: var(--amber);
+        }
+
+        .bid-count {
+            font-size: 12px;
+            color: var(--muted);
         }
 
         .time-cell { color: var(--text); font-size: 13px; }
@@ -624,6 +713,7 @@
         <span>ACTIVE <span class="val" id="stat-active">—</span></span>
         <span>SOLD <span class="val" id="stat-sold">—</span></span>
         <span>UPDATED <span class="val" id="stat-updated">—</span></span>
+        <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
     </div>
 </header>
 
@@ -642,6 +732,31 @@
             <span class="section-title">Active Deals</span>
             <span class="deal-count" id="deal-count">— deals</span>
             <button class="refresh-btn" id="refresh-btn" onclick="loadDeals()">↻ REFRESH</button>
+        </div>
+
+        <div class="filter-panel" id="filter-panel">
+            <div class="filter-group">
+                <label>Time Window</label>
+                <select id="filter-window" onchange="applyFilters()">
+                    <option value="2">Ending in 2 hours</option>
+                    <option value="6">Ending in 6 hours</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Brand</label>
+                <select id="filter-brand" onchange="applyFilters()">
+                    <option value="">All Brands</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Min Discount %</label>
+                <input type="number" id="filter-discount" min="0" max="100" value="0" onchange="applyFilters()">
+            </div>
+            <div class="filter-group">
+                <label>Min £ Saving</label>
+                <input type="number" id="filter-saving" min="0" value="0" onchange="applyFilters()">
+            </div>
+            <button class="filter-clear" onclick="clearFilters()">Clear</button>
         </div>
 
         <div class="table-wrap">
@@ -730,9 +845,13 @@
     let dealsData    = [], dealsType    = '';
     let resolvedData = [], pendingData  = [];
     let dealsSort      = { col: null,         asc: true  };
-    let resolvedSort   = { col: 'SurfacedAt', asc: false }; // newest-first
+    let resolvedSort   = { col: 'EndTime',    asc: false }; // newest-first (ended)
     let pendingSort    = { col: 'EndTime',    asc: true  }; // soonest-first
     let priceGuideSort = { col: 'AvgPrice',   asc: false }; // highest-first
+
+    // ── Filter state ─────────────────────────────────────────────────────────
+    let currentFilters = { window: 2, brand: '', minDiscount: 0, minSaving: 0 };
+    let allDealsData = {}; // cache deals per type per window
 
     // Generic sort — handles numbers, strings and ISO date strings
     function sortData(arr, col, asc) {
@@ -766,6 +885,7 @@
             ${th('Avg Market', 'AvgMarketPrice', ' right')}
             ${th('You Save',   'PotentialGain',  ' right')}
             ${th('Discount',   'DiscountPct')}
+            ${th('Bids',       'Bids',           ' right')}
             ${th('Ends In',    'EndTime')}
             <th></th>`;
         if (type === 'gpu') return `<tr><th>Model</th>${prices}</tr>`;
@@ -812,12 +932,13 @@
         const th  = (label, col, extra = '') =>
             `<th class="${cls(col)}${extra}" onclick="sortResolved('${col}')">${label}${si(col)}</th>`;
         return `<tr>
-            ${th('Surfaced',    'SurfacedAt')}
+            ${th('Ended',       'EndTime')}
             <th>Cat</th>
             <th>Model</th>
             ${th('Surfaced @',  'SurfacedPrice',    ' right')}
             ${th('Market Avg',  'AvgMarketPrice',   ' right')}
             ${th('Final Sale',  'FinalPrice',       ' right')}
+            ${th('£ Saving',    'SavingGbp',        ' right')}
             <th>Outcome</th>
             <th></th>
         </tr>`;
@@ -855,7 +976,7 @@
         renderPendingTable();
     }
 
-    const COLS = { gpu: 7, cpu: 8, hdd: 8, ram: 8 };
+    const COLS = { gpu: 8, cpu: 9, hdd: 9, ram: 9 };
 
     function switchTab(type) {
         activeType = type;
@@ -934,7 +1055,7 @@
         // Filter out EndedUnsold rows — no final price data, clutter the history
         const visible = resolvedData.filter(r => !r.EndedUnsold);
         if (visible.length === 0) {
-            body.innerHTML = '<tr class="state-row"><td colspan="8">No resolved deals yet — they appear here once auctions end and the scraper picks them up as sold.</td></tr>';
+            body.innerHTML = '<tr class="state-row"><td colspan="9">No resolved deals yet — they appear here once auctions end and the scraper picks them up as sold.</td></tr>';
             return;
         }
         const sorted = sortData(visible, resolvedSort.col, resolvedSort.asc);
@@ -943,8 +1064,11 @@
             const pctLabel = r.ActualDiscountPct > 0
                 ? `${r.ActualDiscountPct}% off mkt`
                 : `${Math.abs(r.ActualDiscountPct).toFixed(1)}% over mkt`;
+            const saving = Number(r.FinalPrice) - Number(r.AvgMarketPrice);
+            const savingStr = saving >= 0 ? `+£${saving.toFixed(2)}` : `-£${Math.abs(saving).toFixed(2)}`;
+            const savingClass = saving < 0 ? 'gain' : 'price-current';
             return `<tr style="animation-delay:${i * 40}ms">
-                <td>${formatDate(r.SurfacedAt)}</td>
+                <td>${formatDate(r.EndTime)}</td>
                 <td><span class="cat-badge">${r.Category}</span></td>
                 <td><div class="model-cell" style="font-size:14px">${r.Model || '—'}</div></td>
                 <td style="text-align:right">
@@ -956,6 +1080,7 @@
                     <div class="${win ? 'gain' : 'price-current'}" style="font-size:13px">${fmtGbp(r.FinalPrice)}</div>
                     <div class="price-avg">${pctLabel}</div>
                 </td>
+                <td style="text-align:right"><div class="${savingClass}" style="font-size:13px">${savingStr}</div></td>
                 <td><span class="${win ? 'outcome-win' : 'outcome-miss'}">${win ? 'DEAL' : 'MISS'}</span></td>
                 <td><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>
             </tr>`;
@@ -1157,6 +1282,7 @@
             </td>
             <td data-label="Saving" style="text-align:right"><span class="gain">+£${fmt(d.PotentialGain)}</span></td>
             <td data-label="Discount"><span class="discount-badge ${bigDiscount ? 'high' : ''}">${d.DiscountPct}% OFF</span></td>
+            <td data-label="Bids" style="text-align:right"><span class="bid-count">${d.Bids || 0} bids</span></td>
             <td data-label="Ends In"><span class="time-cell" data-ends="${d.EndTime || ''}"></span></td>
             <td class="card-action"><a href="${safeUrl(d.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>`;
 
@@ -1234,7 +1360,7 @@
 
     async function loadTabCounts() {
         try {
-            const res  = await fetch('/api/deal-counts');
+            const res  = await fetch(`/api/deal-counts?window=${currentFilters.window}`);
             const data = await res.json();
             if (data.status !== 'ok') return;
             ['gpu', 'cpu', 'hdd', 'ram'].forEach(type => {
@@ -1260,6 +1386,93 @@
         } catch {}
     }
 
+    // ── Filter functions ─────────────────────────────────────────────────────
+    function populateBrandFilter() {
+        const select = document.getElementById('filter-brand');
+        const brands = new Set();
+        
+        // Collect brands from current deals data
+        const data = allDealsData[`${activeType}_${currentFilters.window}`] || [];
+        data.forEach(d => {
+            if (d.Brand) brands.add(d.Brand);
+        });
+        
+        // Sort and add options
+        const sortedBrands = Array.from(brands).sort();
+        select.innerHTML = '<option value="">All Brands</option>' +
+            sortedBrands.map(b => `<option value="${b}">${b}</option>`).join('');
+        
+        // Restore current selection if valid
+        if (currentFilters.brand && brands.has(currentFilters.brand)) {
+            select.value = currentFilters.brand;
+        }
+    }
+
+    function applyFilters() {
+        const windowVal = document.getElementById('filter-window').value;
+        const brandVal = document.getElementById('filter-brand').value;
+        const discountVal = document.getElementById('filter-discount').value;
+        const savingVal = document.getElementById('filter-saving').value;
+        
+        const newWindow = parseInt(windowVal, 10);
+        const windowChanged = newWindow !== currentFilters.window;
+        
+        currentFilters = {
+            window: newWindow,
+            brand: brandVal,
+            minDiscount: parseFloat(discountVal) || 0,
+            minSaving: parseFloat(savingVal) || 0
+        };
+        
+        // If window changed, we need to fetch new data
+        if (windowChanged) {
+            loadDeals();
+        } else {
+            // Otherwise just apply client-side filters
+            filterAndRenderDeals();
+        }
+    }
+
+    function clearFilters() {
+        document.getElementById('filter-window').value = '2';
+        document.getElementById('filter-brand').value = '';
+        document.getElementById('filter-discount').value = '0';
+        document.getElementById('filter-saving').value = '0';
+        
+        const windowChanged = currentFilters.window !== 2;
+        currentFilters = { window: 2, brand: '', minDiscount: 0, minSaving: 0 };
+        
+        if (windowChanged) {
+            loadDeals();
+        } else {
+            filterAndRenderDeals();
+        }
+    }
+
+    function filterAndRenderDeals() {
+        const data = allDealsData[`${activeType}_${currentFilters.window}`] || [];
+        
+        let filtered = data;
+        
+        // Apply brand filter
+        if (currentFilters.brand) {
+            filtered = filtered.filter(d => d.Brand === currentFilters.brand);
+        }
+        
+        // Apply min discount filter
+        if (currentFilters.minDiscount > 0) {
+            filtered = filtered.filter(d => d.DiscountPct >= currentFilters.minDiscount);
+        }
+        
+        // Apply min saving filter
+        if (currentFilters.minSaving > 0) {
+            filtered = filtered.filter(d => d.PotentialGain >= currentFilters.minSaving);
+        }
+        
+        renderDeals(filtered, activeType);
+        document.getElementById('deal-count').textContent = `${filtered.length} deal${filtered.length !== 1 ? 's' : ''}`;
+    }
+
     async function loadDeals() {
         const btn  = document.getElementById('refresh-btn');
         const cols = COLS[activeType];
@@ -1268,10 +1481,13 @@
         document.getElementById('deals-body').innerHTML =
             `<tr class="state-row"><td colspan="${cols}"><span class="loader"></span> Loading deals...</td></tr>`;
         try {
-            const res  = await fetch(`/api/deals?type=${activeType}`);
+            const res  = await fetch(`/api/deals?type=${activeType}&window=${currentFilters.window}`);
             const data = await res.json();
             if (data.status === 'ok') {
-                renderDeals(data.deals, activeType);
+                // Cache the data
+                allDealsData[`${activeType}_${currentFilters.window}`] = data.deals;
+                populateBrandFilter();
+                filterAndRenderDeals();
             } else {
                 document.getElementById('deals-body').innerHTML =
                     `<tr class="state-row"><td colspan="${cols}">Error: ${data.message}</td></tr>`;
@@ -1284,6 +1500,23 @@
             btn.classList.remove('spinning');
         }
     }
+
+    // ── Theme toggle ─────────────────────────────────────────────────────────
+    function initTheme() {
+        const saved = localStorage.getItem('theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', saved);
+        document.getElementById('theme-toggle').textContent = saved === 'light' ? '☀️' : '🌙';
+    }
+
+    function toggleTheme() {
+        const current = document.documentElement.getAttribute('data-theme') || 'dark';
+        const next = current === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('theme', next);
+        document.getElementById('theme-toggle').textContent = next === 'light' ? '☀️' : '🌙';
+    }
+
+    initTheme();
 
     loadStats();
     loadDeals();

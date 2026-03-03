@@ -223,14 +223,222 @@ WHERE
 ORDER BY PotentialGain DESC;
 """
 
-DEALS_QUERIES = {
-    'gpu': GPU_DEALS_QUERY,
-    'cpu': CPU_DEALS_QUERY,
-    'hdd': HDD_DEALS_QUERY,
-    'ram': RAM_DEALS_QUERY,
-}
+def get_deals_query(product_type: str, window_hours: int = 2) -> str:
+    """Return deals query with parameterized time window."""
+    interval = f"INTERVAL {max(1, min(window_hours, 24))} HOUR"
 
-GPU_COUNT_QUERY = """
+    if product_type == 'gpu':
+        return f"""
+WITH RawStats AS (
+    SELECT g.Model,
+           AVG(e.Price / 100)    AS RawAvg,
+           STDDEV(e.Price / 100) AS StdDev
+    FROM Scraper.GPU g
+    JOIN Scraper.EBAY e ON e.ID = g.ID
+    WHERE e.SoldDate IS NOT NULL AND g.Model IS NOT NULL
+    GROUP BY g.Model
+    HAVING COUNT(*) >= 5
+),
+ModelStats AS (
+    SELECT g.Model,
+           ROUND(AVG(e.Price / 100), 2) AS AvgPrice,
+           ROUND(MIN(e.Price / 100), 2) AS MinMarketPrice,
+           ROUND(MAX(e.Price / 100), 2) AS MaxMarketPrice
+    FROM   Scraper.GPU g
+    JOIN   Scraper.EBAY e ON e.ID = c.ID
+    JOIN   RawStats rs ON rs.Model = g.Model
+    WHERE  e.SoldDate IS NOT NULL AND g.Model IS NOT NULL AND e.Price IS NOT NULL
+      AND  (e.Price / 100) BETWEEN rs.RawAvg - 2 * rs.StdDev
+                                AND rs.RawAvg + 2 * rs.StdDev
+    GROUP  BY g.Model
+)
+SELECT
+    e.ID,
+    g.Model,
+    g.Brand,
+    g.VRAM,
+    ROUND(e.Price / 100, 2)                              AS CurrentPrice,
+    ms.AvgPrice                                          AS AvgMarketPrice,
+    ms.MinMarketPrice,
+    ms.MaxMarketPrice,
+    ROUND(ms.AvgPrice - (e.Price / 100), 2)              AS PotentialGain,
+    ROUND((1 - (e.Price / 100) / ms.AvgPrice) * 100, 1) AS DiscountPct,
+    e.Bids,
+    e.EndTime,
+    e.URL
+FROM Scraper.EBAY e
+JOIN Scraper.GPU g ON g.ID = e.ID
+JOIN ModelStats ms ON ms.Model = g.Model
+WHERE
+    e.SoldDate IS NULL
+    AND (e.Price / 100) < ms.AvgPrice * 0.8
+    AND e.EndTime > NOW()
+    AND e.EndTime < NOW() + {interval}
+ORDER BY PotentialGain DESC;
+"""
+    elif product_type == 'cpu':
+        return f"""
+WITH RawStats AS (
+    SELECT c.Model,
+           AVG(e.Price / 100)    AS RawAvg,
+           STDDEV(e.Price / 100) AS StdDev
+    FROM Scraper.CPU c
+    JOIN Scraper.EBAY e ON e.ID = c.ID
+    WHERE e.SoldDate IS NOT NULL AND c.Model IS NOT NULL
+    GROUP BY c.Model
+    HAVING COUNT(*) >= 5
+),
+ModelStats AS (
+    SELECT c.Model,
+           ROUND(AVG(e.Price / 100), 2) AS AvgPrice,
+           ROUND(MIN(e.Price / 100), 2) AS MinMarketPrice,
+           ROUND(MAX(e.Price / 100), 2) AS MaxMarketPrice
+    FROM   Scraper.CPU c
+    JOIN   Scraper.EBAY e ON e.ID = c.ID
+    JOIN   RawStats rs ON rs.Model = c.Model
+    WHERE  e.SoldDate IS NOT NULL AND c.Model IS NOT NULL AND e.Price IS NOT NULL
+      AND  (e.Price / 100) BETWEEN rs.RawAvg - 2 * rs.StdDev
+                                AND rs.RawAvg + 2 * rs.StdDev
+    GROUP  BY c.Model
+)
+SELECT
+    e.ID,
+    c.Model,
+    c.Brand,
+    c.Socket,
+    c.Cores,
+    ROUND(e.Price / 100, 2)                              AS CurrentPrice,
+    ms.AvgPrice                                          AS AvgMarketPrice,
+    ms.MinMarketPrice,
+    ms.MaxMarketPrice,
+    ROUND(ms.AvgPrice - (e.Price / 100), 2)              AS PotentialGain,
+    ROUND((1 - (e.Price / 100) / ms.AvgPrice) * 100, 1) AS DiscountPct,
+    e.Bids,
+    e.EndTime,
+    e.URL
+FROM Scraper.EBAY e
+JOIN Scraper.CPU c ON c.ID = e.ID
+JOIN ModelStats ms ON ms.Model = c.Model
+WHERE
+    e.SoldDate IS NULL
+    AND (e.Price / 100) < ms.AvgPrice * 0.8
+    AND e.EndTime > NOW()
+    AND e.EndTime < NOW() + {interval}
+ORDER BY PotentialGain DESC;
+"""
+    elif product_type == 'hdd':
+        return f"""
+WITH RawStats AS (
+    SELECT h.CapacityGB,
+           h.Interface,
+           AVG(e.Price / 100)    AS RawAvg,
+           STDDEV(e.Price / 100) AS StdDev
+    FROM Scraper.HDD h
+    JOIN Scraper.EBAY e ON e.ID = h.ID
+    WHERE e.SoldDate IS NOT NULL AND h.CapacityGB IS NOT NULL
+    GROUP BY h.CapacityGB, h.Interface
+    HAVING COUNT(*) >= 5
+),
+ModelStats AS (
+    SELECT h.CapacityGB,
+           h.Interface,
+           ROUND(AVG(e.Price / 100), 2) AS AvgPrice,
+           ROUND(MIN(e.Price / 100), 2) AS MinMarketPrice,
+           ROUND(MAX(e.Price / 100), 2) AS MaxMarketPrice
+    FROM   Scraper.HDD h
+    JOIN   Scraper.EBAY e ON e.ID = h.ID
+    JOIN   RawStats rs ON rs.CapacityGB = h.CapacityGB AND rs.Interface <=> h.Interface
+    WHERE  e.SoldDate IS NOT NULL AND h.CapacityGB IS NOT NULL AND e.Price IS NOT NULL
+      AND  (e.Price / 100) BETWEEN rs.RawAvg - 2 * rs.StdDev
+                                AND rs.RawAvg + 2 * rs.StdDev
+    GROUP  BY h.CapacityGB, h.Interface
+)
+SELECT
+    e.ID,
+    h.Brand,
+    h.CapacityGB,
+    h.Interface,
+    h.FormFactor,
+    h.RPM,
+    ROUND(e.Price / 100, 2)                              AS CurrentPrice,
+    ms.AvgPrice                                          AS AvgMarketPrice,
+    ms.MinMarketPrice,
+    ms.MaxMarketPrice,
+    ROUND(ms.AvgPrice - (e.Price / 100), 2)              AS PotentialGain,
+    ROUND((1 - (e.Price / 100) / ms.AvgPrice) * 100, 1) AS DiscountPct,
+    e.Bids,
+    e.EndTime,
+    e.URL
+FROM Scraper.EBAY e
+JOIN Scraper.HDD h ON h.ID = e.ID
+JOIN ModelStats ms ON ms.CapacityGB = h.CapacityGB AND ms.Interface <=> h.Interface
+WHERE
+    e.SoldDate IS NULL
+    AND (e.Price / 100) < ms.AvgPrice * 0.8
+    AND e.EndTime > NOW()
+    AND e.EndTime < NOW() + {interval}
+ORDER BY PotentialGain DESC;
+"""
+    elif product_type == 'ram':
+        return f"""
+WITH RawStats AS (
+    SELECT r.Type, r.CapacityGB,
+           AVG(e.Price / 100)    AS RawAvg,
+           STDDEV(e.Price / 100) AS StdDev
+    FROM Scraper.RAM r
+    JOIN Scraper.EBAY e ON e.ID = r.ID
+    WHERE e.SoldDate IS NOT NULL
+      AND r.Type IS NOT NULL AND r.CapacityGB IS NOT NULL
+    GROUP BY r.Type, r.CapacityGB
+    HAVING COUNT(*) >= 5
+),
+ModelStats AS (
+    SELECT r.Type, r.CapacityGB,
+           ROUND(AVG(e.Price / 100), 2) AS AvgPrice,
+           ROUND(MIN(e.Price / 100), 2) AS MinMarketPrice,
+           ROUND(MAX(e.Price / 100), 2) AS MaxMarketPrice
+    FROM   Scraper.RAM r
+    JOIN   Scraper.EBAY e ON e.ID = r.ID
+    JOIN   RawStats rs ON rs.Type = r.Type AND rs.CapacityGB = r.CapacityGB
+    WHERE  e.SoldDate IS NOT NULL
+      AND  r.Type IS NOT NULL AND r.CapacityGB IS NOT NULL
+      AND  (e.Price / 100) BETWEEN rs.RawAvg - 2 * rs.StdDev
+                                AND rs.RawAvg + 2 * rs.StdDev
+    GROUP  BY r.Type, r.CapacityGB
+)
+SELECT
+    e.ID,
+    r.Brand,
+    r.CapacityGB,
+    r.Type,
+    r.Speed,
+    ROUND(e.Price / 100, 2)                              AS CurrentPrice,
+    ms.AvgPrice                                          AS AvgMarketPrice,
+    ms.MinMarketPrice,
+    ms.MaxMarketPrice,
+    ROUND(ms.AvgPrice - (e.Price / 100), 2)              AS PotentialGain,
+    ROUND((1 - (e.Price / 100) / ms.AvgPrice) * 100, 1) AS DiscountPct,
+    e.Bids,
+    e.EndTime,
+    e.URL
+FROM Scraper.EBAY e
+JOIN Scraper.RAM r ON r.ID = e.ID
+JOIN ModelStats ms ON ms.Type = r.Type AND ms.CapacityGB = r.CapacityGB
+WHERE
+    e.SoldDate IS NULL
+    AND (e.Price / 100) < ms.AvgPrice * 0.8
+    AND e.EndTime > NOW()
+    AND e.EndTime < NOW() + {interval}
+ORDER BY PotentialGain DESC;
+"""
+    return GPU_DEALS_QUERY  # fallback
+
+def get_count_query(product_type: str, window_hours: int = 2) -> str:
+    """Return count query with parameterized time window."""
+    interval = f"INTERVAL {max(1, min(window_hours, 24))} HOUR"
+
+    if product_type == 'gpu':
+        return f"""
 WITH ModelStats AS (
     SELECT g.Model, AVG(e.Price / 100) AS AvgPrice
     FROM Scraper.GPU g JOIN Scraper.EBAY e ON e.ID = g.ID
@@ -242,10 +450,10 @@ FROM Scraper.EBAY e
 JOIN Scraper.GPU g ON g.ID = e.ID
 JOIN ModelStats ms ON ms.Model = g.Model
 WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
-  AND e.EndTime > NOW() AND e.EndTime < NOW() + INTERVAL 2 HOUR;
+  AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
 """
-
-CPU_COUNT_QUERY = """
+    elif product_type == 'cpu':
+        return f"""
 WITH ModelStats AS (
     SELECT c.Model, AVG(e.Price / 100) AS AvgPrice
     FROM Scraper.CPU c JOIN Scraper.EBAY e ON e.ID = c.ID
@@ -257,10 +465,10 @@ FROM Scraper.EBAY e
 JOIN Scraper.CPU c ON c.ID = e.ID
 JOIN ModelStats ms ON ms.Model = c.Model
 WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
-  AND e.EndTime > NOW() AND e.EndTime < NOW() + INTERVAL 2 HOUR;
+  AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
 """
-
-HDD_COUNT_QUERY = """
+    elif product_type == 'hdd':
+        return f"""
 WITH ModelStats AS (
     SELECT h.CapacityGB, h.Interface, AVG(e.Price / 100) AS AvgPrice
     FROM Scraper.HDD h JOIN Scraper.EBAY e ON e.ID = h.ID
@@ -272,8 +480,24 @@ FROM Scraper.EBAY e
 JOIN Scraper.HDD h ON h.ID = e.ID
 JOIN ModelStats ms ON ms.CapacityGB = h.CapacityGB AND ms.Interface <=> h.Interface
 WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
-  AND e.EndTime > NOW() AND e.EndTime < NOW() + INTERVAL 2 HOUR;
+  AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
 """
+    elif product_type == 'ram':
+        return f"""
+WITH ModelStats AS (
+    SELECT r.Type, r.CapacityGB, AVG(e.Price / 100) AS AvgPrice
+    FROM Scraper.RAM r JOIN Scraper.EBAY e ON e.ID = r.ID
+    WHERE e.SoldDate IS NOT NULL AND r.Type IS NOT NULL AND r.CapacityGB IS NOT NULL
+    GROUP BY r.Type, r.CapacityGB HAVING COUNT(*) >= 5
+)
+SELECT COUNT(*) AS cnt
+FROM Scraper.EBAY e
+JOIN Scraper.RAM r ON r.ID = e.ID
+JOIN ModelStats ms ON ms.Type = r.Type AND ms.CapacityGB = r.CapacityGB
+WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
+  AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
+"""
+    return ""
 
 PRICE_GUIDE_GPU_QUERY = """
 WITH RawStats AS (
@@ -416,28 +640,6 @@ FROM   RawStats rs
 JOIN   CleanStats cs ON cs.Type = rs.Type AND cs.CapacityGB = rs.CapacityGB
 ORDER  BY rs.Type, rs.CapacityGB;
 """
-
-RAM_COUNT_QUERY = """
-WITH ModelStats AS (
-    SELECT r.Type, r.CapacityGB, AVG(e.Price / 100) AS AvgPrice
-    FROM Scraper.RAM r JOIN Scraper.EBAY e ON e.ID = r.ID
-    WHERE e.SoldDate IS NOT NULL AND r.Type IS NOT NULL AND r.CapacityGB IS NOT NULL
-    GROUP BY r.Type, r.CapacityGB HAVING COUNT(*) >= 5
-)
-SELECT COUNT(*) AS cnt
-FROM Scraper.EBAY e
-JOIN Scraper.RAM r ON r.ID = e.ID
-JOIN ModelStats ms ON ms.Type = r.Type AND ms.CapacityGB = r.CapacityGB
-WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
-  AND e.EndTime > NOW() AND e.EndTime < NOW() + INTERVAL 2 HOUR;
-"""
-
-COUNT_QUERIES = {
-    'gpu': GPU_COUNT_QUERY,
-    'cpu': CPU_COUNT_QUERY,
-    'hdd': HDD_COUNT_QUERY,
-    'ram': RAM_COUNT_QUERY,
-}
 
 OUTCOMES_RESOLVED_QUERY = """
 SELECT
@@ -592,13 +794,21 @@ def index():
 @app.route("/api/deals")
 def deals():
     product_type = request.args.get('type', 'gpu').lower()
-    if product_type not in DEALS_QUERIES:
+    if product_type not in ('gpu', 'cpu', 'hdd', 'ram'):
         return jsonify({"status": "error", "message": f"Unknown type '{product_type}'. Use gpu, cpu, hdd, or ram."}), 400
+    
+    # Parse window parameter (default 2 hours, max 24)
+    try:
+        window_hours = int(request.args.get('window', 2))
+        window_hours = max(1, min(window_hours, 24))
+    except (ValueError, TypeError):
+        window_hours = 2
+    
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
-        cur.execute(DEALS_QUERIES[product_type])
+        cur.execute(get_deals_query(product_type, window_hours))
         rows = cur.fetchall()
 
         # Record newly surfaced deals (INSERT IGNORE = only capture first sighting)
@@ -653,13 +863,20 @@ def deals():
 
 @app.route("/api/deal-counts")
 def deal_counts():
+    # Parse window parameter (default 2 hours, max 24)
+    try:
+        window_hours = int(request.args.get('window', 2))
+        window_hours = max(1, min(window_hours, 24))
+    except (ValueError, TypeError):
+        window_hours = 2
+    
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
         counts = {}
-        for key, query in COUNT_QUERIES.items():
-            cur.execute(query)
+        for key in ('gpu', 'cpu', 'hdd', 'ram'):
+            cur.execute(get_count_query(key, window_hours))
             counts[key] = cur.fetchone()['cnt']
         return jsonify({"status": "ok", "counts": counts})
     except Exception as e:

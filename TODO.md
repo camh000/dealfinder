@@ -9,13 +9,14 @@
 - [x] **Last scraped timestamp** — top-right of the dashboard should display the datetime the last scrape run completed
 - [x] **Prices tab sortable columns** — click any column header (Cat, Model/Specs, Avg Market, Sales) to sort the price-guide table ascending/descending, consistent with the sort behaviour on the deal tables
 - [x] **Outcomes resolved panel: hide Ended items + fixed-height scroll** — filter out EndedUnsold rows from the resolved table (they clutter the outcome history without useful price data); cap the panel at 7 rows tall with overflow-y scroll so it doesn't push pending items off screen
-- [ ] **Outcomes resolved: show ended-at timestamp** — replace the "Surfaced" column in the resolved table with (or add alongside it) the auction end time (`EndTime`); the ended-at date is more useful for history — "when did this sell?" — than when the scraper first spotted it
-- [ ] **Outcomes £ saving column** — in the resolved outcomes table, add a column (or sub-line on the Final Sale cell) showing the absolute £ difference between FinalPrice and AvgMarketPrice (e.g. "−£47 vs market"); positive = saved, negative = overpaid; complements the existing % label
-- [ ] **Bid count on deal panels** — show the current bid count on each deal row in the GPU / CPU / HDD / RAM panels; requires scraping `bidCount` from the eBay listing and storing it; surface as a small muted sub-line below the price
-- [ ] **Filter panel** — filter by brand, minimum discount %, minimum £ saving
-- [ ] **Widen time window** — add a "coming up" section for auctions ending in 2–6 hours
-- [ ] **Align OUTCOMES panel columns** — stat cards in the top panel are slightly offset from the resolved/pending table columns below
-- [ ] **Light / dark theme toggle** — light theme CSS vars + toggle button persisted to `localStorage`
+- [x] **Outcomes resolved: show ended-at timestamp** — replace the "Surfaced" column in the resolved table with (or add alongside it) the auction end time (`EndTime`); the ended-at date is more useful for history — "when did this sell?" — than when the scraper first spotted it
+- [x] **Outcomes £ saving column** — in the resolved outcomes table, add a column (or sub-line on the Final Sale cell) showing the absolute £ difference between FinalPrice and AvgMarketPrice (e.g. "−£47 vs market"); positive = saved, negative = overpaid; complements the existing % label
+- [x] **Bid count on deal panels** — show the current bid count on each deal row in the GPU / CPU / HDD / RAM panels; requires scraping `bidCount` from the eBay listing and storing it; surface as a small muted sub-line below the price
+- [x] **Filter panel** — filter by brand, minimum discount %, minimum £ saving
+- [x] **Widen time window** — add a "coming up" section for auctions ending in 2–6 hours
+- [x] **Align OUTCOMES panel columns** — stat cards in the top panel are slightly offset from the resolved/pending table columns below
+- [x] **Light / dark theme toggle** — light theme CSS vars + toggle button persisted to `localStorage`
+- [ ] **Move build basket to right side** — in the PRICES tab, position the build basket panel on the right side so it stays visible when scrolling through a long component list
 - [x] **PWA / mobile install** — add `manifest.json` and service worker for home screen install
 
 ## Scraper / Data
@@ -53,6 +54,7 @@
 
 ## Bugs
 
+- [ ] **ScrapeTargeted fails on RAM items** — `ScrapeTargeted()` fails with KeyError: 'ram-type' when processing RAM items; the Product dataclass expects 'ram_type' but the scraper returns 'ram-type' with a hyphen; affects targeted scrapes when tracked RAM deals are ending (`EbayScraper.py: ScrapeTargeted`)
 - [x] 🔴 **Price parsing drops thousands separator** — `__ParseRawPrice` does `replace(',', '.')` so `£1,740.70` → `£1.740.70`; regex then matches `1.740` = £1.74. Fix: `replace(',', '')` (`EbayScraper.py: __ParseRawPrice`); after fixing, run a backfill query to find and correct suspicious prices already in the DB (any active/sold GPU or CPU listing under £10 is a candidate)
 - [x] **Suppress zero active-deals log** — `GetActiveDeals()` logs "Active deals: 0 item(s) currently tracked" every scheduler tick when there are no tracked deals; only log when count > 0 (`EbayScraper.py: GetActiveDeals`)
 - [x] **Complete PC builds classified as CPU** — titles like "HIGH END GAMING PC RYZEN 7 9800x3d, AMD Radeon RX 9070 XT" pass the system-listing filter; add `'gaming pc'`, `'custom pc'`, `'full pc'`, `'complete pc'` to `_is_system` keyword list (`EbayScraper.py: __ParseItems CPU branch`)
