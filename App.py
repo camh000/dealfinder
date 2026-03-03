@@ -270,7 +270,7 @@ WITH ModelStats AS (
 SELECT COUNT(*) AS cnt
 FROM Scraper.EBAY e
 JOIN Scraper.HDD h ON h.ID = e.ID
-JOIN ModelStats ms ON ms.CapacityGB = h.CapacityGB AND ms.Interface = h.Interface
+JOIN ModelStats ms ON ms.CapacityGB = h.CapacityGB AND ms.Interface <=> h.Interface
 WHERE e.SoldDate IS NULL AND (e.Price / 100) < ms.AvgPrice * 0.8
   AND e.EndTime > NOW() AND e.EndTime < NOW() + INTERVAL 2 HOUR;
 """
@@ -450,9 +450,9 @@ SELECT
     d.BidCount                       AS BidCountAtSurfacing,
     d.EndTime,
     d.SurfacedAt,
-    ROUND(e.Price / 100, 2)          AS FinalPrice,
+    ROUND(COALESCE(d.FinalPrice, e.Price) / 100, 2)          AS FinalPrice,
     e.SoldDate,
-    ROUND((1 - (e.Price / 100) / (d.AvgMarketPrice / 100)) * 100, 1) AS ActualDiscountPct,
+    ROUND((1 - COALESCE(d.FinalPrice, e.Price) / d.AvgMarketPrice) * 100, 1) AS ActualDiscountPct,
     d.EndedUnsold,
     e.URL
 FROM Scraper.DealOutcomes d
@@ -508,6 +508,7 @@ def ensure_outcomes_table():
         for col_sql in [
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN GaveUp TINYINT(1) NOT NULL DEFAULT 0",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN EndedUnsold TINYINT(1) NOT NULL DEFAULT 0",
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN FinalPrice INT NULL",
         ]:
             try:
                 cur.execute(col_sql)
@@ -707,6 +708,18 @@ def outcomes():
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
+
+        # Lazy-backfill: lock in FinalPrice for rows resolved before the column existed.
+        # Once written, d.FinalPrice is immutable — future re-listings of the sold item
+        # won't change e.Price in the DB but this guards against it anyway.
+        cur.execute("""
+            UPDATE Scraper.DealOutcomes d
+            JOIN Scraper.EBAY e ON e.ID = d.EbayID
+            SET d.FinalPrice = e.Price
+            WHERE e.SoldDate IS NOT NULL AND d.FinalPrice IS NULL AND d.EndedUnsold = 0
+        """)
+        if cur.rowcount > 0:
+            conn.commit()
 
         cur.execute(OUTCOMES_RESOLVED_QUERY)
         resolved = cur.fetchall()
