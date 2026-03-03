@@ -245,7 +245,7 @@ ModelStats AS (
            ROUND(MIN(e.Price / 100), 2) AS MinMarketPrice,
            ROUND(MAX(e.Price / 100), 2) AS MaxMarketPrice
     FROM   Scraper.GPU g
-    JOIN   Scraper.EBAY e ON e.ID = c.ID
+    JOIN   Scraper.EBAY e ON e.ID = g.ID
     JOIN   RawStats rs ON rs.Model = g.Model
     WHERE  e.SoldDate IS NOT NULL AND g.Model IS NOT NULL AND e.Price IS NOT NULL
       AND  (e.Price / 100) BETWEEN rs.RawAvg - 2 * rs.StdDev
