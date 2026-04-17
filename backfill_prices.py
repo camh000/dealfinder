@@ -104,8 +104,7 @@ def main():
 
     now = datetime.now()
 
-    active   = [r for r in rows if r[2+1] is not None and r[2+1] > now and r[3+1] is None]
-    # columns: ID, Title, Price, EndTime, SoldDate, Category
+    # columns: ID=0, Title=1, Price=2, EndTime=3, SoldDate=4, Category=5
     active   = [r for r in rows if r[3] is not None and r[3] > now and r[4] is None]
     ended    = [r for r in rows if r not in active]
 

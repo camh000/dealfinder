@@ -5,6 +5,7 @@ credentials.env
 # Cache files from EbayScraper (query result snapshots)
 *.txt
 !requirements.txt
+!requirements-dev.txt
 
 # Python
 __pycache__/

@@ -1,0 +1,5 @@
+# Development / test-only dependencies. Not shipped in production images.
+-r requirements.txt
+
+pytest==8.3.3
+mysql-connector-python==9.1.0

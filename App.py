@@ -1,4 +1,5 @@
 from flask import Flask, jsonify, render_template, request, make_response, send_from_directory
+from datetime import timezone
 import mariadb
 import os
 import logging
@@ -9,6 +10,20 @@ load_dotenv("credentials.env")
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+
+def _iso_utc(dt):
+    """Serialise a naive DB datetime as a UTC ISO-8601 string.
+
+    DB timestamps are stored as naive datetimes that already represent UTC
+    (see parse_ebay_endtime's offset application). Tagging them as UTC at
+    the API boundary makes the contract explicit for frontend consumers.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
 
 def get_connection():
     return mariadb.connect(
@@ -709,18 +724,25 @@ def ensure_outcomes_table():
         """)
         conn.commit()
         # Auto-migrate existing installations that predate optional columns.
+        # MariaDB errno 1060 (ER_DUP_FIELDNAME) means the column already exists
+        # and is expected on every run after the first. Any other error is real.
+        DUP_COLUMN_ERRNO = 1060
         for col_sql in [
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN GaveUp TINYINT(1) NOT NULL DEFAULT 0",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN EndedUnsold TINYINT(1) NOT NULL DEFAULT 0",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN FinalPrice INT NULL",
         ]:
+            col_name = col_sql.split("ADD COLUMN ")[1].split()[0]
             try:
                 cur.execute(col_sql)
                 conn.commit()
-                col_name = col_sql.split("ADD COLUMN ")[1].split()[0]
                 log.info("DealOutcomes: added %s column", col_name)
-            except Exception:
-                pass  # column already exists (MySQL error 1060) — safe to ignore
+            except mariadb.Error as e:
+                if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                    log.error(
+                        "DealOutcomes: unexpected error adding %s (errno=%s): %s",
+                        col_name, getattr(e, "errno", None), e,
+                    )
         log.info("DealOutcomes table ready")
     except Exception as e:
         log.error("Could not create DealOutcomes table: %s", e)
@@ -859,7 +881,7 @@ def deals():
 
         for row in rows:
             if row.get("EndTime"):
-                row["EndTime"] = row["EndTime"].isoformat()
+                row["EndTime"] = _iso_utc(row["EndTime"])
 
         return jsonify({"status": "ok", "deals": rows})
     except Exception as e:
@@ -925,7 +947,7 @@ def stats():
         return jsonify({
             "active_listings": active,
             "sold_listings": sold,
-            "last_scrape_at": last_scrape.isoformat() if last_scrape else None,
+            "last_scrape_at": _iso_utc(last_scrape),
         })
     except Exception as e:
         log.error("stats error: %s", e)
@@ -963,12 +985,12 @@ def outcomes():
         for row in resolved:
             for col in ('EndTime', 'SoldDate', 'SurfacedAt'):
                 if row.get(col):
-                    row[col] = row[col].isoformat()
+                    row[col] = _iso_utc(row[col])
 
         for row in pending:
             for col in ('EndTime', 'SurfacedAt'):
                 if row.get(col):
-                    row[col] = row[col].isoformat()
+                    row[col] = _iso_utc(row[col])
 
         beat_market = sum(1 for r in resolved if r['FinalPrice'] is not None
                           and r['FinalPrice'] < r['AvgMarketPrice'])
@@ -1017,4 +1039,9 @@ def price_guide():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    # Dev-only entry point. Production runs under gunicorn (see Dockerfile.web),
+    # which binds its own socket and ignores this block. Default to loopback so
+    # a stray `python App.py` doesn't expose the dev server on all interfaces.
+    host = os.environ.get("FLASK_HOST", "127.0.0.1")
+    port = int(os.environ.get("FLASK_PORT", "5000"))
+    app.run(host=host, port=port, debug=False)

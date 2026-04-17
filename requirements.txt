@@ -1,17 +1,14 @@
 # Web server
-flask
-gunicorn
+flask==3.0.3
+gunicorn==23.0.0
 
 # Database
-mariadb
+mariadb==1.1.10
 
 # Utilities
-python-dotenv
-requests
-beautifulsoup4
+python-dotenv==1.0.1
+requests==2.32.3
+beautifulsoup4==4.12.3
 
 # HTTP client with browser TLS fingerprinting (primary fetcher)
-curl-cffi
-
-# Testing
-pytest
+curl-cffi==0.7.4

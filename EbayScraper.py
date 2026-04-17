@@ -53,6 +53,12 @@ typeDict = {
     'offers': '&LH_BO=1'
 }
 
+# Hours added to parsed eBay "time-end" strings to convert displayed local time
+# to the timezone stored in the DB. Historically fixed at +7 to map Pacific
+# summer time (eBay's display TZ for some accounts) to UTC. Override via
+# EBAY_ENDTIME_OFFSET_HOURS if eBay starts serving times in a different zone.
+ENDTIME_OFFSET_HOURS = int(os.environ.get('EBAY_ENDTIME_OFFSET_HOURS', '7'))
+
 # Persistent curl-cffi session — reused across requests within a scrape run so
 # that Akamai cookies set on the homepage warmup are carried to search requests.
 # Call reset_direct_session() before each run to get a fresh identity.
@@ -175,9 +181,14 @@ def _fetch_zyte(url: str) -> str | None:
 
     max_retries = int(os.environ.get('ZYTE_MAX_RETRIES', '3'))
 
+    # Redact query string before logging — search terms / future auth tokens
+    # shouldn't be shipped to log aggregators.
+    _parts = urllib.parse.urlsplit(url)
+    _safe_url = f"{_parts.scheme}://{_parts.netloc}{_parts.path}"
+
     for attempt in range(max_retries):
         try:
-            log.info("Fetching via Zyte API: %s", url)
+            log.info("Fetching via Zyte API: %s", _safe_url)
             resp = requests.post(
                 "https://api.zyte.com/v1/extract",
                 auth=(api_key, ""),
@@ -657,7 +668,7 @@ def parse_ebay_endtime(endtime_str: str, reference_date: datetime = None):
 
     weekdays = {"Mon":0, "Tue":1, "Wed":2, "Thu":3, "Fri":4, "Sat":5, "Sun":6}
 
-    offset = timedelta(hours=7)
+    offset = timedelta(hours=ENDTIME_OFFSET_HOURS)
 
     # Case 1: Today 21:44
     if endtime_str.lower().startswith("today"):
@@ -1018,17 +1029,29 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
         conn.close()
 
 
+_scrape_meta_ensured = False
+
+
+def _ensure_scrape_meta_table(cur) -> None:
+    """Create ScrapeMeta if missing. Runs once per process."""
+    global _scrape_meta_ensured
+    if _scrape_meta_ensured:
+        return
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS Scraper.ScrapeMeta (
+            id          TINYINT  NOT NULL DEFAULT 1 PRIMARY KEY,
+            LastScrapeAt DATETIME NULL
+        )
+    """)
+    _scrape_meta_ensured = True
+
+
 def RecordScrapeCompleted():
     """Persist the current UTC timestamp as the last full-scrape completion time."""
     conn = _get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS Scraper.ScrapeMeta (
-                id          TINYINT  NOT NULL DEFAULT 1 PRIMARY KEY,
-                LastScrapeAt DATETIME NULL
-            )
-        """)
+        _ensure_scrape_meta_table(cur)
         cur.execute("""
             INSERT INTO Scraper.ScrapeMeta (id, LastScrapeAt) VALUES (1, NOW())
             ON DUPLICATE KEY UPDATE LastScrapeAt = NOW()
@@ -1051,8 +1074,8 @@ def GetActiveDeals() -> list:
         try:
             cur.execute("""
                 SELECT o.EbayID, o.Category, e.Title, o.EndTime
-                FROM   DealOutcomes o
-                JOIN   EBAY e ON e.ID = o.EbayID
+                FROM   Scraper.DealOutcomes o
+                JOIN   Scraper.EBAY e ON e.ID = o.EbayID
                 WHERE  o.EndTime > NOW()
                   AND  e.SoldDate IS NULL
             """)

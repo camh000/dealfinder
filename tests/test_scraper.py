@@ -84,10 +84,12 @@ class TestParseEbayEndtime:
         assert result == expected
 
     def test_weekday_future(self):
-        # "Fri, 10:00" — Friday is 2 days after Wednesday
+        # "Fri, 10:00" — Friday (weekday 4) is 2 days after Wednesday.
+        # The +7h offset pushes 10:00 → 17:00 same day, so weekday stays Friday.
         result = EbayScraper.parse_ebay_endtime("Fri, 10:00", reference_date=self.REF)
         assert result is not None
-        assert result.weekday() == (4 + 0) % 7 or True   # just check it parsed
+        assert result.weekday() == 4
+        assert result.hour == (10 + 7) % 24
         assert result.minute == 0
 
     def test_weekday_same_day_past_time(self):
