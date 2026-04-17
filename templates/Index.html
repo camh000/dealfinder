@@ -6,8 +6,10 @@
     <title>PC Deal Finder</title>
     <!-- PWA -->
     <link rel="manifest" href="/static/manifest.json">
-    <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
-    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/apple-touch-icon.png">
+    <link rel="icon" type="image/x-icon" sizes="any" href="/static/favicon.ico">
+    <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="/static/icons/icon-512.png">
     <meta name="theme-color" content="#00e5a0">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -334,6 +336,7 @@
             border-bottom: 1px solid rgba(28,42,58,0.5);
             transition: background 0.15s;
             animation: fadeIn 0.4s ease both;
+            animation-delay: calc(var(--i, 0) * 40ms);
         }
 
         tbody tr:hover { background: rgba(255,255,255,0.02); }
@@ -782,11 +785,11 @@
             </div>
             <div class="filter-group">
                 <label>Min Discount %</label>
-                <input type="number" id="filter-discount" min="0" value="20" onchange="applyFilters()">
+                <input type="number" id="filter-discount" min="0" value="20" oninput="applyFiltersDebounced()">
             </div>
             <div class="filter-group">
                 <label>Min £ Saving</label>
-                <input type="number" id="filter-saving" min="0" value="0" onchange="applyFilters()">
+                <input type="number" id="filter-saving" min="0" value="0" oninput="applyFiltersDebounced()">
             </div>
             <button class="filter-clear" onclick="clearFilters()">Clear</button>
         </div>
@@ -832,7 +835,7 @@
         </div>
         <div class="price-controls">
             <input type="text" id="price-search" class="price-search-input"
-                   placeholder="Search models, brands, specs…" oninput="filterPriceGuide()">
+                   placeholder="Search models, brands, specs…" oninput="filterPriceGuideDebounced()">
             <div class="price-cat-filter">
                 <button class="pcat-btn active" data-cat="all" onclick="setPriceCat('all')">All</button>
                 <button class="pcat-btn" data-cat="gpu" onclick="setPriceCat('gpu')">GPU</button>
@@ -882,6 +885,34 @@
     let resolvedSort   = { col: 'EndTime',    asc: false }; // newest-first (ended)
     let pendingSort    = { col: 'EndTime',    asc: true  }; // soonest-first
     let priceGuideSort = { col: 'AvgPrice',   asc: false }; // highest-first
+
+    // Restore sort state from the previous visit so a user-chosen sort
+    // survives reloads and tab switches. Schema is defensive — unknown keys
+    // or bad JSON fall back to the defaults above.
+    const SORT_KEY = 'pcd.sortState.v1';
+    try {
+        const saved = JSON.parse(localStorage.getItem(SORT_KEY) || '{}');
+        if (saved.dealsSort      && 'col' in saved.dealsSort)      dealsSort      = saved.dealsSort;
+        if (saved.resolvedSort   && 'col' in saved.resolvedSort)   resolvedSort   = saved.resolvedSort;
+        if (saved.pendingSort    && 'col' in saved.pendingSort)    pendingSort    = saved.pendingSort;
+        if (saved.priceGuideSort && 'col' in saved.priceGuideSort) priceGuideSort = saved.priceGuideSort;
+    } catch {}
+
+    function saveSortState() {
+        try {
+            localStorage.setItem(SORT_KEY, JSON.stringify({
+                dealsSort, resolvedSort, pendingSort, priceGuideSort,
+            }));
+        } catch {}
+    }
+
+    function debounce(fn, ms) {
+        let t;
+        return (...args) => {
+            clearTimeout(t);
+            t = setTimeout(() => fn(...args), ms);
+        };
+    }
 
     // ── Filter state ─────────────────────────────────────────────────────────
     let currentFilters = { window: 2, brand: '', minDiscount: 20, minSaving: 0 };
@@ -934,6 +965,7 @@
         dealsSort = dealsSort.col === col
             ? { col, asc: !dealsSort.asc }
             : { col, asc: col === 'EndTime' };
+        saveSortState();
         renderDeals(dealsData, dealsType);
     }
 
@@ -956,6 +988,7 @@
         priceGuideSort = priceGuideSort.col === col
             ? { col, asc: !priceGuideSort.asc }
             : { col, asc: defaultAsc };
+        saveSortState();
         renderPriceGuide();
     }
 
@@ -1000,6 +1033,7 @@
         resolvedSort = resolvedSort.col === col
             ? { col, asc: !resolvedSort.asc }
             : { col, asc: false };
+        saveSortState();
         renderResolvedTable();
     }
 
@@ -1007,10 +1041,24 @@
         pendingSort = pendingSort.col === col
             ? { col, asc: !pendingSort.asc }
             : { col, asc: col === 'EndTime' };
+        saveSortState();
         renderPendingTable();
     }
 
-    const COLS = { gpu: 8, cpu: 9, hdd: 9, ram: 9 };
+    // Column count derived from the header template so state rows (loading/
+    // error/empty) always span the right number of cells even if dealsHeader
+    // changes. Cached per type after first use.
+    const _colsCache = {};
+    function colsForType(type) {
+        if (_colsCache[type] == null) {
+            // Parser needs a table ancestor to keep <tr> — bare divs would
+            // drop it, losing every <th> past the first row.
+            const tmp = document.createElement('table');
+            tmp.innerHTML = '<thead>' + dealsHeader(type) + '</thead>';
+            _colsCache[type] = tmp.querySelectorAll('th').length || 8;
+        }
+        return _colsCache[type];
+    }
 
     function switchTab(type) {
         activeType = type;
@@ -1101,7 +1149,7 @@
             const saving = Number(r.FinalPrice) - Number(r.AvgMarketPrice);
             const savingStr = saving >= 0 ? `+£${saving.toFixed(2)}` : `-£${Math.abs(saving).toFixed(2)}`;
             const savingClass = saving < 0 ? 'gain' : 'price-current';
-            return `<tr style="animation-delay:${i * 40}ms">
+            return `<tr style="--i:${i}">
                 <td>${formatDate(r.EndTime)}</td>
                 <td><span class="cat-badge">${r.Category}</span></td>
                 <td><div class="model-cell" style="font-size:14px">${r.Model || '—'}</div></td>
@@ -1130,8 +1178,8 @@
                 ? `<span class="outcome-miss">UNRESOLVED</span>`
                 : ended
                     ? `<span class="time-cell urgent">AWAITING</span>`
-                    : `<span class="time-cell" data-ends="${r.EndTime}"></span>`;
-            return `<tr style="animation-delay:${i * 40}ms">
+                    : `<span class="time-cell" ${endsAttrs(r.EndTime)}></span>`;
+            return `<tr style="--i:${i}">
                 <td>${formatDate(r.SurfacedAt)}</td>
                 <td><span class="cat-badge">${r.Category}</span></td>
                 <td><div class="model-cell" style="font-size:14px">${r.Model || '—'}</div></td>
@@ -1178,6 +1226,7 @@
     }
 
     function filterPriceGuide() { renderPriceGuide(); }
+    const filterPriceGuideDebounced = debounce(filterPriceGuide, 200);
 
     function renderPriceGuide() {
         if (!priceGuideData) return;
@@ -1276,10 +1325,7 @@
             </div>`).join('');
     }
 
-    function formatCountdown(isoStr) {
-        if (!isoStr) return '—';
-        const diff = Math.floor((new Date(isoStr) - Date.now()) / 1000);
-        if (diff <= 0) return 'ENDED';
+    function formatCountdownFromSec(diff) {
         const h = Math.floor(diff / 3600);
         const m = Math.floor((diff % 3600) / 60);
         const s = diff % 60;
@@ -1288,13 +1334,31 @@
         return `${s}s`;
     }
 
+    // Ticks every second. Reads cached ms timestamp (data-ends-ms) instead of
+    // reparsing the ISO string, and short-circuits rows already marked ENDED.
     function tickCountdowns() {
-        document.querySelectorAll('[data-ends]').forEach(el => {
-            const isoStr = el.dataset.ends;
-            const diff = isoStr ? (new Date(isoStr) - Date.now()) / 1000 : -1;
-            el.textContent = formatCountdown(isoStr);
-            el.classList.toggle('urgent', diff >= 0 && diff < 300);
+        document.querySelectorAll('[data-ends-ms]').forEach(el => {
+            if (el.dataset.ended === '1') return;
+            const ts = Number(el.dataset.endsMs);
+            if (!ts) { el.textContent = '—'; return; }
+            const diff = Math.floor((ts - Date.now()) / 1000);
+            if (diff <= 0) {
+                el.textContent = 'ENDED';
+                el.dataset.ended = '1';
+                el.classList.remove('urgent');
+                return;
+            }
+            el.textContent = formatCountdownFromSec(diff);
+            el.classList.toggle('urgent', diff < 300);
         });
+    }
+
+    // Build the data-* attributes for a countdown cell. Caches ms once at
+    // render so tickCountdowns doesn't parse ISO 60 times per minute per row.
+    function endsAttrs(iso) {
+        if (!iso) return '';
+        const ms = new Date(iso).getTime();
+        return isNaN(ms) ? '' : `data-ends-ms="${ms}"`;
     }
 
     function safeUrl(url) {
@@ -1306,7 +1370,6 @@
 
     function renderRow(d, type, i) {
         const bigDiscount = d.DiscountPct >= 30;
-        const delay       = i * 60;
         const fmt = v => (v != null && !isNaN(v)) ? Number(v).toFixed(2) : '—';
         const prices = `
             <td data-label="Current" style="text-align:right"><div class="price-current">£${fmt(d.CurrentPrice)}</div></td>
@@ -1317,11 +1380,11 @@
             <td data-label="Saving" style="text-align:right"><span class="gain">+£${fmt(d.PotentialGain)}</span></td>
             <td data-label="Discount"><span class="discount-badge ${bigDiscount ? 'high' : ''}">${d.DiscountPct}% OFF</span></td>
             <td data-label="Bids" style="text-align:right"><span class="bid-count">${d.Bids || 0} bids</span></td>
-            <td data-label="Ends In"><span class="time-cell" data-ends="${d.EndTime || ''}"></span></td>
+            <td data-label="Ends In"><span class="time-cell" ${endsAttrs(d.EndTime)}></span></td>
             <td class="card-action"><a href="${safeUrl(d.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>`;
 
         if (type === 'gpu') {
-            return `<tr style="animation-delay:${delay}ms">
+            return `<tr style="--i:${i}">
                 <td class="card-title">
                     <div class="model-cell">${d.Model || '—'}</div>
                     <div class="brand-tag">${d.Brand || ''}${d.VRAM ? ' · ' + d.VRAM + 'GB' : ''}</div>
@@ -1330,7 +1393,7 @@
             </tr>`;
         }
         if (type === 'cpu') {
-            return `<tr style="animation-delay:${delay}ms">
+            return `<tr style="--i:${i}">
                 <td class="card-title">
                     <div class="model-cell">${d.Model || '—'}</div>
                     <div class="brand-tag">${d.Brand || ''}</div>
@@ -1346,7 +1409,7 @@
             const cap = d.CapacityGB >= 1000
                 ? (d.CapacityGB / 1000).toFixed(d.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
                 : d.CapacityGB + 'GB';
-            return `<tr style="animation-delay:${delay}ms">
+            return `<tr style="--i:${i}">
                 <td class="card-title">
                     <div class="model-cell">${cap} · ${d.Interface || 'SATA'}</div>
                 </td>
@@ -1359,7 +1422,7 @@
         }
         if (type === 'ram') {
             const cap = `${d.CapacityGB}GB ${d.Type || ''}`.trim();
-            return `<tr style="animation-delay:${delay}ms">
+            return `<tr style="--i:${i}">
                 <td class="card-title">
                     <div class="model-cell">${cap}</div>
                 </td>
@@ -1377,7 +1440,7 @@
         dealsType = type;
         const thead = document.getElementById('deals-head');
         const tbody = document.getElementById('deals-body');
-        const cols  = COLS[type];
+        const cols  = colsForType(type);
 
         thead.innerHTML = dealsHeader(type);
         document.getElementById('deal-count').textContent = `${deals.length} deal${deals.length !== 1 ? 's' : ''}`;
@@ -1509,7 +1572,7 @@
 
     async function loadDeals() {
         const btn  = document.getElementById('refresh-btn');
-        const cols = COLS[activeType];
+        const cols = colsForType(activeType);
         btn.classList.add('spinning');
         document.getElementById('deals-head').innerHTML = dealsHeader(activeType);
         document.getElementById('deals-body').innerHTML =
@@ -1552,13 +1615,41 @@
 
     initTheme();
 
+    // Build the debounced filter handler after applyFilters is defined.
+    const applyFiltersDebounced = debounce(applyFilters, 250);
+
+    // ── Interval lifecycle ──────────────────────────────────────────────────
+    // Tabbed-off or backgrounded pages are paused so mobile doesn't burn
+    // battery refreshing invisible data. Intervals also stop on pagehide so
+    // multi-tab usage doesn't stack listeners.
+    const _intervals = [];
+    function startIntervals() {
+        if (_intervals.length) return;
+        _intervals.push(setInterval(tickCountdowns, 1000));
+        _intervals.push(setInterval(loadDeals,      5 * 60 * 1000));
+        _intervals.push(setInterval(loadStats,      5 * 60 * 1000));
+        _intervals.push(setInterval(loadTabCounts,  5 * 60 * 1000));
+    }
+    function stopIntervals() {
+        _intervals.forEach(clearInterval);
+        _intervals.length = 0;
+    }
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            stopIntervals();
+        } else {
+            startIntervals();
+            // Catch up on the time spent hidden.
+            tickCountdowns();
+            loadStats();
+        }
+    });
+    window.addEventListener('pagehide', stopIntervals);
+
     loadStats();
     loadDeals();
     loadTabCounts();
-    setInterval(tickCountdowns, 1000);
-    setInterval(loadDeals, 5 * 60 * 1000);
-    setInterval(loadStats, 5 * 60 * 1000);
-    setInterval(loadTabCounts, 5 * 60 * 1000);
+    startIntervals();
 
     // Service worker registration
     if ('serviceWorker' in navigator) {

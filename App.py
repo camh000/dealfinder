@@ -1,5 +1,6 @@
-from flask import Flask, jsonify, render_template, request, make_response, send_from_directory
+from flask import Flask, jsonify, render_template, request, make_response
 from datetime import timezone
+import hashlib
 import mariadb
 import os
 import logging
@@ -802,11 +803,45 @@ def ensure_ram_table():
 ensure_ram_table()
 
 
+def _compute_sw_version() -> str:
+    """Produce a short version tag used for the SW cache name.
+
+    Priority: APP_VERSION env var (set explicitly at deploy) >
+    short hash of sw.js + Index.html mtimes (cache busts when either changes) >
+    literal 'dev' if the files are unreadable.
+    """
+    explicit = os.environ.get('APP_VERSION')
+    if explicit:
+        return explicit[:12]
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        mtimes = (
+            os.path.getmtime(os.path.join(here, 'static', 'sw.js')),
+            os.path.getmtime(os.path.join(here, 'templates', 'Index.html')),
+        )
+        return hashlib.sha256(str(mtimes).encode()).hexdigest()[:8]
+    except OSError:
+        return 'dev'
+
+
+_SW_VERSION = _compute_sw_version()
+log.info("Service worker cache version: pcd-%s", _SW_VERSION)
+
+
 @app.route('/sw.js')
 def service_worker():
-    resp = make_response(send_from_directory('static', 'sw.js'))
+    # Rewrite the hardcoded cache name with a per-deploy version so that
+    # clients invalidate stale assets on upgrade without needing a manual
+    # version bump in static/sw.js. Also tell browsers not to cache sw.js
+    # itself — SW specs recommend max-age=0 for the worker script.
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, 'static', 'sw.js'), 'r', encoding='utf-8') as f:
+        body = f.read()
+    body = body.replace("'pcd-v1'", f"'pcd-{_SW_VERSION}'", 1)
+    resp = make_response(body)
     resp.headers['Content-Type'] = 'application/javascript'
     resp.headers['Service-Worker-Allowed'] = '/'
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return resp
 
 
