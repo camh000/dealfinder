@@ -331,6 +331,7 @@ class TestScrapeItemById:
             'brand': 'Test', 'model': 'RTX 9000', 'vram': 16,
             'socket': None, 'cores': None,
             'capacity-gb': None, 'interface': None, 'form-factor': None, 'rpm': None,
+            'ram-type': None, 'speed': None,
         }
 
     def _patch_internals(self, parse_return):
@@ -603,6 +604,7 @@ class TestScrapeTargeted:
             'socket': None, 'cores': None,
             'capacity-gb': None, 'interface': None,
             'form-factor': None, 'rpm': None,
+            'ram-type': None, 'speed': None,
         }
 
     def test_empty_list_returns_zero_without_db(self):

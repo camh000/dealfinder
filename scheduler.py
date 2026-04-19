@@ -31,6 +31,12 @@ OUTCOME_GIVE_UP_DAYS = int(os.environ.get('OUTCOME_GIVE_UP_DAYS', '7'))
 # Minutes between full query-list scrapes.
 FULL_SCRAPE_INTERVAL_MINUTES = int(os.environ.get('FULL_SCRAPE_INTERVAL_MINUTES', '60'))
 
+# eBay search parameters — override per-deployment without a code change.
+# Accepted values match EbayScraper.countryDict / conditionDict / typeDict.
+SCRAPE_COUNTRY      = os.environ.get('SCRAPE_COUNTRY',      'uk')
+SCRAPE_CONDITION    = os.environ.get('SCRAPE_CONDITION',    'used')
+SCRAPE_LISTING_TYPE = os.environ.get('SCRAPE_LISTING_TYPE', 'auction')
+
 # Targeted-scrape tiers: (threshold_minutes, interval_minutes)
 # When a tracked deal has <= threshold_minutes remaining, scrape it every interval_minutes.
 # Evaluated in ascending threshold order — first matching tier wins.
@@ -96,7 +102,12 @@ def run_full_scrape():
     log.info("Starting full scrape run...")
     # Fresh curl-cffi session per full run so Akamai cookies are re-established.
     EbayScraper.reset_direct_session()
-    common = dict(country='uk', condition='used', listing_type='auction', cache=False)
+    common = dict(
+        country=SCRAPE_COUNTRY,
+        condition=SCRAPE_CONDITION,
+        listing_type=SCRAPE_LISTING_TYPE,
+        cache=False,
+    )
     for query_list, product_type in [
         (GPU_QUERY_LIST, 'GPU'),
         (CPU_QUERY_LIST, 'CPU'),

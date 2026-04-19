@@ -269,6 +269,11 @@ def __ParseItems(soup, query, productType):
     if not rawItems:
         log.warning("No items found for query '%s' - eBay may have changed their HTML structure", query)
     data = []
+    # eBay's search layout puts a "tile" ad / sponsored slot as the first card
+    # in this container. It has a different inner structure and never parses
+    # cleanly, so we skip it unconditionally. If eBay ever stops serving that
+    # first slot this line will silently drop a real result — the try/except
+    # blocks below will still log warnings so a regression is visible.
     for item in rawItems[1:]:
         
         # Get item data — skip item entirely if critical fields can't be parsed
@@ -646,12 +651,18 @@ def __StDev(numberList):
     return stdev
 
 def __StDevParse(numberList):
-    
+    # Small samples don't have enough data to reliably identify outliers —
+    # trimming would throw away legitimate spread. Return the list unchanged.
+    if len(numberList) < 5:
+        return numberList
+
     avg = __Average(numberList)
     stdev = __StDev(numberList)
-    
-    # Remove prices too high or too low; Accept Between -1 StDev to +1 StDev
-    numberList = [nmbr for nmbr in numberList if (avg + stdev >= nmbr >= avg - stdev)]
+
+    # Trim prices further than 2 SD from the mean. 1 SD was too aggressive
+    # (dropped ~30% of samples even on clean data); 2 SD keeps ~95% of a
+    # normal distribution and still catches wild eBay misformats.
+    numberList = [nmbr for nmbr in numberList if (avg + 2 * stdev >= nmbr >= avg - 2 * stdev)]
 
     return numberList
 

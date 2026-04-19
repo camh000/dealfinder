@@ -885,7 +885,14 @@ def deals():
                         cap = row.get('CapacityGB')
                         iface = row.get('Interface') or 'SATA'
                         if cap and cap >= 1000:
-                            model_label = f"{cap // 1000}TB {iface}"
+                            # Preserve one decimal when capacity doesn't divide
+                            # evenly so 2048GB / 3072GB / 6144GB stay distinct
+                            # from 2TB / 3TB / 6TB in DealOutcomes.Model.
+                            tb = cap / 1000
+                            model_label = (
+                                f"{int(tb)}TB {iface}" if cap % 1000 == 0
+                                else f"{tb:.1f}TB {iface}"
+                            )
                         elif cap:
                             model_label = f"{cap}GB {iface}"
                         else:
