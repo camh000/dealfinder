@@ -26,7 +26,7 @@ CATEGORIES = {
         'not_null': ['Model'],
         'deal_select': ['g.Model', 'g.Brand', 'g.VRAM'],
         'guide_select': ['rs.Model'],
-        'guide_order': 'cs.AvgPrice DESC',
+        'guide_order': 'ms.AvgPrice DESC',
     },
     'cpu': {
         'table': 'CPU', 'alias': 'c',
@@ -34,7 +34,7 @@ CATEGORIES = {
         'not_null': ['Model'],
         'deal_select': ['c.Model', 'c.Brand', 'c.Socket', 'c.Cores'],
         'guide_select': ['rs.Model'],
-        'guide_order': 'cs.AvgPrice DESC',
+        'guide_order': 'ms.AvgPrice DESC',
     },
     'hdd': {
         'table': 'HDD', 'alias': 'h',
@@ -42,7 +42,7 @@ CATEGORIES = {
         'not_null': ['CapacityGB'],
         'deal_select': ['h.Brand', 'h.CapacityGB', 'h.Interface', 'h.FormFactor', 'h.RPM'],
         'guide_select': ['rs.CapacityGB', 'rs.Interface'],
-        'guide_order': 'rs.CapacityGB DESC, cs.AvgPrice DESC',
+        'guide_order': 'rs.CapacityGB DESC, ms.AvgPrice DESC',
     },
     'ram': {
         'table': 'RAM', 'alias': 'r',
@@ -71,36 +71,52 @@ def _join_cond(cfg, left: str, right: str) -> str:
     return ' AND '.join(parts)
 
 
-def _stats_ctes(cfg, min_sold: int) -> str:
-    """RawStats (mean/stdev per group) + ModelStats (sigma-trimmed stats)."""
+# eBay sold prices are heavily right-skewed (bundles, mislabelled multi-item
+# lots): on real data the GPU mean sat ~75% above the median. Market price is
+# therefore the MEDIAN of sold effective prices — a single absurd sale cannot
+# move it. Display min/max come from a sanity band around the median so the
+# UI range isn't stretched by outliers either.
+BAND_LO, BAND_HI = 0.4, 2.5
+
+
+def _median_ctes(cfg) -> str:
+    """SoldRows (per-sale effective prices) + RawStats (median + count per group)."""
     a = cfg['alias']
     group = ', '.join(f"{a}.{col}" for col, _ in cfg['group_cols'])
-    group_bare = ', '.join(col for col, _ in cfg['group_cols'])
+    cols = ', '.join(col for col, _ in cfg['group_cols'])
     not_null = ' AND '.join(f"{a}.{col} IS NOT NULL" for col in cfg['not_null'])
-    return f"""
-WITH RawStats AS (
-    SELECT {group},
-           AVG({EFF})    AS RawAvg,
-           STDDEV({EFF}) AS StdDev
+    return f"""SoldRows AS (
+    SELECT {group}, {EFF} AS Eff
     FROM Scraper.{cfg['table']} {a}
     JOIN Scraper.EBAY e ON e.ID = {a}.ID
     WHERE e.SoldDate IS NOT NULL AND e.Price IS NOT NULL AND {not_null}
-    GROUP BY {group}
-    HAVING COUNT(*) >= {min_sold}
 ),
+RawStats AS (
+    SELECT DISTINCT {cols},
+           MEDIAN(Eff) OVER (PARTITION BY {cols}) AS MedPrice,
+           COUNT(*)    OVER (PARTITION BY {cols}) AS SoldCount
+    FROM SoldRows
+)"""
+
+
+def _stats_ctes(cfg, min_sold: int) -> str:
+    """Median CTEs + ModelStats (median market price, banded min/max)."""
+    sr_cols = ', '.join(f"sr.{col}" for col, _ in cfg['group_cols'])
+    join_sr_rs = _join_cond(cfg, 'sr', 'rs')
+    return f"""
+WITH {_median_ctes(cfg)},
 ModelStats AS (
-    SELECT {group},
-           ROUND(AVG({EFF}), 2) AS AvgPrice,
-           ROUND(MIN({EFF}), 2) AS MinMarketPrice,
-           ROUND(MAX({EFF}), 2) AS MaxMarketPrice
-    FROM   Scraper.{cfg['table']} {a}
-    JOIN   Scraper.EBAY e ON e.ID = {a}.ID
-    JOIN   RawStats rs ON {_join_cond(cfg, 'rs', a)}
-    WHERE  e.SoldDate IS NOT NULL AND e.Price IS NOT NULL AND {not_null}
-      AND  {EFF} BETWEEN rs.RawAvg - 2 * rs.StdDev
-                     AND rs.RawAvg + 2 * rs.StdDev
-    GROUP  BY {group}
-)""", group_bare
+    SELECT {sr_cols},
+           ROUND(rs.MedPrice, 2)  AS AvgPrice,
+           ROUND(MIN(sr.Eff), 2)  AS MinMarketPrice,
+           ROUND(MAX(sr.Eff), 2)  AS MaxMarketPrice,
+           rs.SoldCount           AS SoldCount
+    FROM SoldRows sr
+    JOIN RawStats rs ON {join_sr_rs}
+    WHERE rs.SoldCount >= {min_sold}
+      AND sr.Eff BETWEEN rs.MedPrice * {BAND_LO} AND rs.MedPrice * {BAND_HI}
+    GROUP BY {sr_cols}, rs.MedPrice, rs.SoldCount
+)"""
 
 
 def build_deals_query(product_type: str, window_hours: int = 2, min_discount: float = 20) -> str:
@@ -108,8 +124,12 @@ def build_deals_query(product_type: str, window_hours: int = 2, min_discount: fl
     a = cfg['alias']
     interval = f"INTERVAL {_clamp_window(window_hours)} HOUR"
     threshold = _clamp_threshold(min_discount)
-    ctes, _ = _stats_ctes(cfg, min_sold=5)
+    ctes = _stats_ctes(cfg, min_sold=5)
     extra = ',\n    '.join(cfg['deal_select'])
+    # DealScore: discount% weighted by urgency (1/hours-left, floored at 15
+    # min so the divisor can't explode) and damped by competition (1/(1+bids))
+    # — a 25%-off item ending in 20 min with no bids outranks a 40%-off item
+    # ending in 6 h with 9 bidders that will be bid up anyway.
     return f"""{ctes}
 SELECT
     e.ID,
@@ -120,6 +140,9 @@ SELECT
     ms.MaxMarketPrice,
     ROUND(ms.AvgPrice - {EFF}, 2)                AS PotentialGain,
     ROUND((1 - {EFF} / ms.AvgPrice) * 100, 1)    AS DiscountPct,
+    ROUND(((1 - {EFF} / ms.AvgPrice) * 100)
+        / GREATEST(TIMESTAMPDIFF(MINUTE, NOW(), e.EndTime) / 60.0, 0.25)
+        / (1 + COALESCE(e.Bids, 0)), 2)          AS DealScore,
     e.Bids,
     e.EndTime,
     e.URL
@@ -131,7 +154,7 @@ WHERE
     AND {EFF} < ms.AvgPrice * {threshold}
     AND e.EndTime > NOW()
     AND e.EndTime < NOW() + {interval}
-ORDER BY PotentialGain DESC;
+ORDER BY DealScore DESC;
 """
 
 
@@ -140,62 +163,32 @@ def build_count_query(product_type: str, window_hours: int = 2, min_discount: fl
     a = cfg['alias']
     interval = f"INTERVAL {_clamp_window(window_hours)} HOUR"
     threshold = _clamp_threshold(min_discount)
-    group = ', '.join(f"{a}.{col}" for col, _ in cfg['group_cols'])
-    not_null = ' AND '.join(f"{a}.{col} IS NOT NULL" for col in cfg['not_null'])
+    # Same median basis as the deals query — the tab badges previously used an
+    # untrimmed mean and could disagree with the list they were counting.
     return f"""
-WITH ModelStats AS (
-    SELECT {group}, AVG({EFF}) AS AvgPrice
-    FROM Scraper.{cfg['table']} {a} JOIN Scraper.EBAY e ON e.ID = {a}.ID
-    WHERE e.SoldDate IS NOT NULL AND e.Price IS NOT NULL AND {not_null}
-    GROUP BY {group} HAVING COUNT(*) >= 5
-)
+WITH {_median_ctes(cfg)}
 SELECT COUNT(*) AS cnt
 FROM Scraper.EBAY e
 JOIN Scraper.{cfg['table']} {a} ON {a}.ID = e.ID
-JOIN ModelStats ms ON {_join_cond(cfg, 'ms', a)}
-WHERE e.SoldDate IS NULL AND {EFF} < ms.AvgPrice * {threshold}
+JOIN RawStats rs ON {_join_cond(cfg, 'rs', a)}
+WHERE rs.SoldCount >= 5
+  AND e.SoldDate IS NULL AND {EFF} < rs.MedPrice * {threshold}
   AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
 """
 
 
 def build_price_guide_query(product_type: str) -> str:
     cfg = CATEGORIES[product_type]
-    a = cfg['alias']
-    group = ', '.join(f"{a}.{col}" for col, _ in cfg['group_cols'])
-    not_null = ' AND '.join(f"{a}.{col} IS NOT NULL" for col in cfg['not_null'])
+    ctes = _stats_ctes(cfg, min_sold=3)
     guide_cols = ',\n       '.join(cfg['guide_select'])
-    return f"""
-WITH RawStats AS (
-    SELECT {group},
-           AVG({EFF})    AS RawAvg,
-           STDDEV({EFF}) AS StdDev,
-           COUNT(*)      AS SoldCount
-    FROM   Scraper.{cfg['table']} {a}
-    JOIN   Scraper.EBAY e ON e.ID = {a}.ID
-    WHERE  e.SoldDate IS NOT NULL AND e.Price IS NOT NULL AND {not_null}
-    GROUP  BY {group}
-    HAVING COUNT(*) >= 3
-),
-CleanStats AS (
-    SELECT {group},
-           ROUND(AVG({EFF}), 2) AS AvgPrice,
-           ROUND(MIN({EFF}), 2) AS MinPrice,
-           ROUND(MAX({EFF}), 2) AS MaxPrice
-    FROM   Scraper.{cfg['table']} {a}
-    JOIN   Scraper.EBAY e ON e.ID = {a}.ID
-    JOIN   RawStats rs ON {_join_cond(cfg, 'rs', a)}
-    WHERE  e.SoldDate IS NOT NULL AND e.Price IS NOT NULL AND {not_null}
-      AND  {EFF} BETWEEN rs.RawAvg - 2 * rs.StdDev
-                     AND rs.RawAvg + 2 * rs.StdDev
-    GROUP  BY {group}
-)
+    return f"""{ctes}
 SELECT {guide_cols},
-       cs.AvgPrice,
-       cs.MinPrice,
-       cs.MaxPrice,
-       rs.SoldCount
-FROM   RawStats rs
-JOIN   CleanStats cs ON {_join_cond(cfg, 'cs', 'rs')}
+       ms.AvgPrice,
+       ms.MinMarketPrice AS MinPrice,
+       ms.MaxMarketPrice AS MaxPrice,
+       ms.SoldCount
+FROM   ModelStats ms
+JOIN   RawStats rs ON {_join_cond(cfg, 'rs', 'ms')}
 ORDER  BY {cfg['guide_order']};
 """
 

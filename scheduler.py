@@ -135,6 +135,9 @@ def notify_new_deals(deals: list) -> None:
     recipients = EbayScraper.GetNotifyRecipients()
     if not recipients:
         return
+    # Outcome-calibrated premiums: median FinalPrice/SurfacedPrice per
+    # (category, bid-bucket). Fetched once per batch; {} when history is thin.
+    premiums = EbayScraper.GetSnipePremiums()
     for row in deals:
         category = (row.get('_category') or '').upper()
         for r in recipients:
@@ -153,12 +156,18 @@ def notify_new_deals(deals: list) -> None:
                     end_txt = end.replace(tzinfo=timezone.utc).astimezone(_LOCAL_TZ).strftime('%H:%M')
                 else:
                     end_txt = str(end)
+                message = f"Market avg £{avg:.2f} · {bids} bid(s) · ends {end_txt}"
+                entry = (premiums.get((category, EbayScraper._bid_bucket(bids)))
+                         or premiums.get((category, 'all')))
+                if entry:
+                    ratio, n = entry
+                    message += f" · predicted final ~£{price * ratio:.0f} (n={n})"
                 requests.post(
                     f"{r['HaUrl'].rstrip('/')}/api/services/notify/{r['NotifyService']}",
                     headers={"Authorization": f"Bearer {r['HaToken']}"},
                     json={
                         "title": f"Deal: {label} £{price:.2f} ({disc:.0f}% off)",
-                        "message": f"Market avg £{avg:.2f} · {bids} bid(s) · ends {end_txt}",
+                        "message": message,
                         "data": {"url": row.get('URL'), "tag": f"dealfinder-{row.get('ID')}"},
                     },
                     timeout=10,

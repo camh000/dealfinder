@@ -1,6 +1,7 @@
 import re
 import time
 import logging
+import statistics
 import requests
 import urllib.parse
 from bs4 import BeautifulSoup
@@ -1402,3 +1403,64 @@ def PruneStaleListings(days: int = 14) -> int:
         return 0
     finally:
         conn.close()
+
+
+# ── snipe-premium model ───────────────────────────────────────────────────────
+
+def _bid_bucket(bids) -> str:
+    """Bucket a bid count for premium stats: '0', '1-3' or '4+'."""
+    if not bids:
+        return '0'
+    return '1-3' if bids <= 3 else '4+'
+
+
+def _median_ratios(rows, min_samples: int = 5) -> dict:
+    """rows: (category, bid_count, surfaced_price, final_price) tuples.
+
+    Returns {(category, bucket): (median_final_over_surfaced, sample_count)}
+    where bucket is a _bid_bucket value plus an 'all' category-level fallback.
+    Groups below min_samples are dropped — too little history to trust.
+    """
+    groups = {}
+    for cat, bids, surfaced, final in rows:
+        if not surfaced or final is None:
+            continue
+        ratio = float(final) / float(surfaced)
+        groups.setdefault((cat, _bid_bucket(bids)), []).append(ratio)
+        groups.setdefault((cat, 'all'), []).append(ratio)
+    return {
+        key: (round(statistics.median(vals), 3), len(vals))
+        for key, vals in groups.items()
+        if len(vals) >= min_samples
+    }
+
+
+def GetSnipePremiums(min_samples: int = 5) -> dict:
+    """Learn how far above their surfaced price our deals actually close.
+
+    Median FinalPrice/SurfacedPrice ratio from resolved DealOutcomes (sold,
+    not ended-unsold), per category and bid bucket. The scheduler uses this
+    to annotate notifications with a predicted final price. Ratios are
+    unit-agnostic (both prices in pence). {} on error or thin history.
+    """
+    try:
+        conn = _get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT d.Category, d.BidCount, d.SurfacedPrice,
+                       COALESCE(d.FinalPrice, e.Price)
+                FROM Scraper.DealOutcomes d
+                JOIN Scraper.EBAY e ON e.ID = d.EbayID
+                WHERE e.SoldDate IS NOT NULL
+                  AND d.EndedUnsold = 0
+                  AND d.SurfacedPrice > 0
+                  AND COALESCE(d.FinalPrice, e.Price) IS NOT NULL
+            """)
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        return _median_ratios(rows, min_samples)
+    except Exception as e:
+        log.error("GetSnipePremiums failed: %s", e)
+        return {}
