@@ -82,14 +82,28 @@ _DIRECT_HEADERS_BASE = {
 }
 
 
+def _close_direct_session() -> None:
+    """Close the current curl-cffi session (if any) and drop the reference.
+
+    Explicitly closing releases libcurl handles/connections — older curl-cffi
+    releases leaked memory when sessions were abandoned without close().
+    """
+    global _direct_session
+    if _direct_session is not None:
+        try:
+            _direct_session.close()
+        except Exception:
+            pass
+        _direct_session = None
+
+
 def reset_direct_session() -> None:
     """Discard the current curl-cffi session.
 
     Call at the start of each scrape run so a fresh Akamai identity
     (new cookies, new TLS session) is established via the homepage warmup.
     """
-    global _direct_session
-    _direct_session = None
+    _close_direct_session()
 
 
 def _fetch_direct(url: str) -> str | None:
@@ -149,13 +163,13 @@ def _fetch_direct(url: str) -> str | None:
             log.warning(
                 "Direct fetch: response too small (%d chars) — possible block page", len(html)
             )
-            _direct_session = None  # session may be flagged; reset for next call
+            _close_direct_session()  # session may be flagged; reset for next call
             return None
         log.info("Direct fetch OK (curl-cffi/chrome131, %d chars)", len(html))
         return html
     except Exception as e:
         log.warning("Direct fetch failed: %s", e)
-        _direct_session = None
+        _close_direct_session()
         return None
 
 
@@ -269,12 +283,15 @@ def __ParseItems(soup, query, productType):
     if not rawItems:
         log.warning("No items found for query '%s' - eBay may have changed their HTML structure", query)
     data = []
-    # eBay's search layout puts a "tile" ad / sponsored slot as the first card
-    # in this container. It has a different inner structure and never parses
-    # cleanly, so we skip it unconditionally. If eBay ever stops serving that
-    # first slot this line will silently drop a real result — the try/except
-    # blocks below will still log warnings so a regression is visible.
-    for item in rawItems[1:]:
+    # eBay's search layout usually puts a "tile" ad / sponsored slot as the
+    # first card in this container; it has a different inner structure and
+    # never parses cleanly. Only skip it when it actually looks like the ad
+    # slot (no /itm/ listing link) so a real first result isn't lost on pages
+    # where eBay serves no ad.
+    start_idx = 0
+    if rawItems and rawItems[0].find('a', href=re.compile(r'/itm/\d+')) is None:
+        start_idx = 1
+    for item in rawItems[start_idx:]:
         
         # Get item data — skip item entirely if critical fields can't be parsed
         try:
@@ -313,7 +330,7 @@ def __ParseItems(soup, query, productType):
 
         try:
             soldDate = item.find(class_="su-styled-text positive default").get_text(strip=True)
-            soldDate = soldDate.lstrip('Sold ')
+            soldDate = soldDate.removeprefix('Sold ')
             soldDate = parse_soldDate(soldDate)
         except AttributeError:
             soldDate = None
@@ -746,6 +763,8 @@ class Product:
     brand: Optional[str]
     model: Optional[str]
     vram: Optional[int]
+    # Postage in pounds; folded into effective price by the deal queries.
+    shipping: float = 0.0
     # CPU fields
     socket: Optional[str] = None
     cores: Optional[int] = None
@@ -770,16 +789,18 @@ def _get_connection():
 def _upload(cur, p: Product, product_type: str) -> int:
     """Returns the EBAY rowcount: 1 = inserted, 2 = updated, 0 = no change."""
     cur.execute("""
-        INSERT INTO EBAY (ID, Title, Price, Bids, EndTime, SoldDate, URL)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO EBAY (ID, Title, Price, Shipping, Bids, EndTime, SoldDate, URL)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             Title = VALUES(Title),
             Price = VALUES(Price),
+            Shipping = VALUES(Shipping),
             Bids = VALUES(Bids),
             EndTime = VALUES(EndTime),
             SoldDate = VALUES(SoldDate),
             URL = VALUES(URL);
-        """, (p.id, p.title, p.price * 100, p.bid_count, p.time_end, p.sold_date, p.url)
+        """, (p.id, p.title, p.price * 100, int(round((p.shipping or 0) * 100)),
+              p.bid_count, p.time_end, p.sold_date, p.url)
     )
     ebay_rc = cur.rowcount
     if product_type == 'GPU':
@@ -1008,6 +1029,7 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
             products = [
                 Product(
                     id=d["id"], title=d["title"], price=d["price"],
+                    shipping=d.get("shipping") or 0,
                     time_left=d["time-left"], time_end=d["time-end"],
                     sold_date=d["sold-date"], bid_count=d["bid-count"],
                     reviews_count=d["reviews-count"], url=d["url"],
@@ -1032,6 +1054,7 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
 
         conn.commit()
         log.info("Scrape complete [%s]: %d new, %d updated", product_type, inserted, updated)
+        return inserted, updated
 
     except Exception as e:
         conn.rollback()
@@ -1126,6 +1149,7 @@ def ScrapeTargeted(items: list) -> int:
                         id=item['id'],
                         title=item['title'],
                         price=item['price'],
+                        shipping=item.get('shipping') or 0,
                         time_left=item['time-left'],
                         time_end=item['time-end'],
                         sold_date=item['sold-date'],
@@ -1164,6 +1188,187 @@ def ScrapeTargeted(items: list) -> int:
 
     except Exception as e:
         log.error("ScrapeTargeted DB error: %s", e)
+        conn.rollback()
+        return 0
+    finally:
+        conn.close()
+
+
+def EnsureShippingColumn() -> None:
+    """Add EBAY.Shipping (pence) on installations that predate it.
+
+    MariaDB errno 1060 (ER_DUP_FIELDNAME) means the column already exists and
+    is the expected outcome on every run after the first.
+    """
+    DUP_COLUMN_ERRNO = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE Scraper.EBAY ADD COLUMN Shipping INT NULL")
+            conn.commit()
+            log.info("EBAY: added Shipping column")
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("EBAY: unexpected error adding Shipping column: %s", e)
+    finally:
+        conn.close()
+
+
+def SurfaceDeals(window_hours: int = 2, min_discount: float = 20) -> list[dict]:
+    """Detect current deals server-side and record first sightings.
+
+    Runs the shared deal query for every category, INSERT IGNOREs each hit
+    into DealOutcomes, and returns ONLY the rows recorded for the first time
+    (rowcount==1) so the caller can notify exactly once per deal.
+
+    This replaces the old browser-driven surfacing in /api/deals — deals are
+    now captured even when nobody has the dashboard open.
+    """
+    import queries
+
+    new_deals = []
+    conn = _get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        ins = conn.cursor()
+        for product_type in queries.CATEGORIES:
+            try:
+                cur.execute(queries.build_deals_query(product_type, window_hours, min_discount))
+                rows = cur.fetchall()
+            except mariadb.Error as e:
+                log.error("SurfaceDeals: %s query failed: %s", product_type, e)
+                continue
+            for row in rows:
+                label = queries.model_label_for_row(product_type, row)
+                ins.execute("""
+                    INSERT IGNORE INTO Scraper.DealOutcomes
+                        (EbayID, Category, Model, SurfacedPrice, AvgMarketPrice, DiscountPct, BidCount, EndTime)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    row['ID'],
+                    product_type.upper(),
+                    label,
+                    int(round(row['CurrentPrice'] * 100)),
+                    int(round(row['AvgMarketPrice'] * 100)),
+                    float(row['DiscountPct']),
+                    int(row.get('Bids') or 0),
+                    row['EndTime'],
+                ))
+                if ins.rowcount == 1:
+                    row['_label'] = label
+                    row['_category'] = product_type.upper()
+                    new_deals.append(row)
+        conn.commit()
+        if new_deals:
+            log.info("SurfaceDeals: %d new deal(s) recorded", len(new_deals))
+        return new_deals
+    except Exception as e:
+        log.error("SurfaceDeals error: %s", e)
+        conn.rollback()
+        return []
+    finally:
+        conn.close()
+
+
+def EnsureNotifyRecipients() -> None:
+    """Create the NotifyRecipients table and bootstrap it from env vars.
+
+    On first run, if the table is empty and legacy HA_URL/HA_TOKEN/
+    HA_NOTIFY_SERVICE env vars are set, they are migrated into a default
+    all-categories recipient so existing deployments keep notifying without
+    manual setup.
+    """
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.NotifyRecipients (
+                ID            INT AUTO_INCREMENT PRIMARY KEY,
+                Name          VARCHAR(50)  NOT NULL,
+                HaUrl         VARCHAR(200) NOT NULL,
+                HaToken       VARCHAR(300) NOT NULL,
+                NotifyService VARCHAR(100) NOT NULL,
+                Categories    VARCHAR(50)  NOT NULL DEFAULT 'GPU,CPU,HDD,RAM',
+                Enabled       TINYINT(1)   NOT NULL DEFAULT 1
+            )
+        """)
+        conn.commit()
+        cur.execute("SELECT COUNT(*) FROM Scraper.NotifyRecipients")
+        if cur.fetchone()[0] == 0:
+            url = os.environ.get('HA_URL', '').rstrip('/')
+            token = os.environ.get('HA_TOKEN', '')
+            service = os.environ.get('HA_NOTIFY_SERVICE', '')
+            if url and token and service:
+                cur.execute("""
+                    INSERT INTO Scraper.NotifyRecipients (Name, HaUrl, HaToken, NotifyService)
+                    VALUES (%s, %s, %s, %s)
+                """, ('Cam', url, token, service))
+                conn.commit()
+                log.info("NotifyRecipients: bootstrapped default recipient from env")
+    except Exception as e:
+        log.error("EnsureNotifyRecipients failed: %s", e)
+    finally:
+        conn.close()
+
+
+def GetNotifyRecipients() -> list[dict]:
+    """Return enabled notification recipients. [] on any error."""
+    try:
+        conn = _get_connection()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("""
+                SELECT ID, Name, HaUrl, HaToken, NotifyService, Categories
+                FROM Scraper.NotifyRecipients
+                WHERE Enabled = 1
+            """)
+            return cur.fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        log.error("GetNotifyRecipients failed: %s", e)
+        return []
+
+
+def PruneStaleListings(days: int = 14) -> int:
+    """Delete zombie ACTIVE listings: never sold, ended more than `days` ago,
+    and not referenced by DealOutcomes.
+
+    These are ordinary auctions that ended while unobserved (e.g. downtime) —
+    they never resolve, inflate the active-listings count, and add join weight.
+    Sold rows are never touched: they ARE the price history. Satellite rows
+    are removed first to satisfy the FK constraints.
+
+    Returns the number of EBAY rows removed.
+    """
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        params = (days,)
+        zombie_cond = """
+            e.SoldDate IS NULL
+            AND e.EndTime IS NOT NULL
+            AND e.EndTime < NOW() - INTERVAL %s DAY
+            AND e.ID NOT IN (SELECT EbayID FROM Scraper.DealOutcomes)
+        """
+        for sat in ('GPU', 'CPU', 'HDD', 'RAM'):
+            cur.execute(f"""
+                DELETE s FROM Scraper.{sat} s
+                JOIN Scraper.EBAY e ON e.ID = s.ID
+                WHERE {zombie_cond}
+            """, params)
+        cur.execute(f"""
+            DELETE e FROM Scraper.EBAY e
+            WHERE {zombie_cond}
+        """, params)
+        removed = cur.rowcount
+        conn.commit()
+        if removed:
+            log.info("PruneStaleListings: removed %d zombie listing(s) ended >%dd ago", removed, days)
+        return removed
+    except Exception as e:
+        log.error("PruneStaleListings failed: %s", e)
         conn.rollback()
         return 0
     finally:
