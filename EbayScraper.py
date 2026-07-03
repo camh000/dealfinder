@@ -5,7 +5,8 @@ import requests
 import urllib.parse
 from bs4 import BeautifulSoup
 import os.path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 import mariadb
 import os
@@ -53,11 +54,12 @@ typeDict = {
     'offers': '&LH_BO=1'
 }
 
-# Hours added to parsed eBay "time-end" strings to convert displayed local time
-# to the timezone stored in the DB. Historically fixed at +7 to map Pacific
-# summer time (eBay's display TZ for some accounts) to UTC. Override via
-# EBAY_ENDTIME_OFFSET_HOURS if eBay starts serving times in a different zone.
-ENDTIME_OFFSET_HOURS = int(os.environ.get('EBAY_ENDTIME_OFFSET_HOURS', '7'))
+# Timezone in which eBay renders "time-end" strings for anonymous scrapes
+# (no account/cookies -> eBay defaults to US Pacific). Parsed wall-clock times
+# are made tz-aware in this zone and converted to UTC, so DST transitions on
+# both sides come from the tz database. The previous fixed +7h offset was
+# only correct during Pacific daylight time - an hour wrong every winter.
+EBAY_DISPLAY_TZ = os.environ.get('EBAY_DISPLAY_TZ', 'America/Los_Angeles')
 
 # Persistent curl-cffi session — reused across requests within a scrape run so
 # that Akamai cookies set on the homepage warmup are carried to search requests.
@@ -691,28 +693,39 @@ def __StDevParse(numberList):
 
     return numberList
 
-def parse_ebay_endtime(endtime_str: str, reference_date: datetime = None):
+def _display_wall_to_utc(wall: datetime, tz: ZoneInfo) -> datetime:
+    """Attach the eBay display timezone to a wall-clock datetime and return
+    the equivalent NAIVE UTC datetime (the frame everything is stored in)."""
+    return wall.replace(tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
 
+
+def parse_ebay_endtime(endtime_str: str, reference_date: datetime = None):
+    """Parse an eBay displayed end-time string into a naive UTC datetime.
+
+    All comparisons happen in the display timezone's wall-clock frame, then
+    the result is converted to UTC once at the end.
+
+    reference_date: naive wall-clock "now" IN THE DISPLAY TIMEZONE — injected
+    by tests for determinism; defaults to the current moment.
+    """
     if not endtime_str:
         return None
 
+    tz = ZoneInfo(EBAY_DISPLAY_TZ)
     if not reference_date:
-        reference_date = datetime.now()
+        reference_date = datetime.now(tz).replace(tzinfo=None)
 
     # Clean input
     endtime_str = endtime_str.strip().strip("() ")
 
     weekdays = {"Mon":0, "Tue":1, "Wed":2, "Thu":3, "Fri":4, "Sat":5, "Sun":6}
 
-    offset = timedelta(hours=ENDTIME_OFFSET_HOURS)
-
     # Case 1: Today 21:44
     if endtime_str.lower().startswith("today"):
         time_part = endtime_str.split()[1]
         hour, minute = map(int, time_part.split(":"))
-        return reference_date.replace(
-            hour=hour, minute=minute, second=0, microsecond=0
-        ) + offset
+        wall = reference_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return _display_wall_to_utc(wall, tz)
 
     # Case 2: Sun, 14:28
     match = re.match(r"([A-Za-z]{3}),\s*(\d{1,2}):(\d{2})", endtime_str)
@@ -729,8 +742,10 @@ def parse_ebay_endtime(endtime_str: str, reference_date: datetime = None):
         ):
             days_ahead = 7
 
-        dt = reference_date + timedelta(days=days_ahead)
-        return dt.replace(hour=hour, minute=minute, second=0, microsecond=0) + offset
+        wall = (reference_date + timedelta(days=days_ahead)).replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        return _display_wall_to_utc(wall, tz)
 
     # Case 3: 05/03, 07:05
     match = re.match(r"(\d{2})/(\d{2}),\s*(\d{1,2}):(\d{2})", endtime_str)
@@ -738,12 +753,11 @@ def parse_ebay_endtime(endtime_str: str, reference_date: datetime = None):
         day, month, hour, minute = map(int, match.groups())
         year = reference_date.year
 
-        dt = datetime(year, month, day, hour, minute)
+        wall = datetime(year, month, day, hour, minute)
+        if wall < reference_date:
+            wall = wall.replace(year=year + 1)
 
-        if dt < reference_date:
-            dt = dt.replace(year=year + 1)
-
-        return dt + offset
+        return _display_wall_to_utc(wall, tz)
 
     return None
 
@@ -786,13 +800,20 @@ class Product:
     speed: Optional[int] = None
 
 def _get_connection():
-    return mariadb.connect(
+    conn = mariadb.connect(
         user=os.environ["DB_USER"],
         password=os.environ["DB_PASSWORD"],
         host=os.environ["DB_HOST"],
         port=int(os.environ.get("DB_PORT", 3305)),
         database=os.environ["DB_NAME"]
     )
+    # Pin the session to UTC so NOW()/CURRENT_TIMESTAMP match the UTC-naive
+    # datetimes we store (the server otherwise runs in host-local time, which
+    # skewed every time comparison by an hour during BST).
+    cur = conn.cursor()
+    cur.execute("SET time_zone = '+00:00'")
+    cur.close()
+    return conn
 
 def _upload(cur, p: Product, product_type: str) -> int:
     """Returns the EBAY rowcount: 1 = inserted, 2 = updated, 0 = no change."""

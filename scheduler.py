@@ -2,12 +2,22 @@ import time
 import logging
 import signal
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 import sys
 import os
 
 load_dotenv("credentials.env")
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now — the single time frame the whole stack stores."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+# Local timezone for human-facing notification text only.
+_LOCAL_TZ = ZoneInfo(os.environ.get('TZ', 'Europe/London'))
 
 # Add parent dir to path so EbayScraper is importable
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -138,7 +148,11 @@ def notify_new_deals(deals: list) -> None:
                 disc = float(row.get('DiscountPct'))
                 bids = row.get('Bids') or 0
                 end = row.get('EndTime')
-                end_txt = end.strftime('%H:%M') if hasattr(end, 'strftime') else str(end)
+                if hasattr(end, 'strftime'):
+                    # Stored UTC-naive; show the recipient local wall time.
+                    end_txt = end.replace(tzinfo=timezone.utc).astimezone(_LOCAL_TZ).strftime('%H:%M')
+                else:
+                    end_txt = str(end)
                 requests.post(
                     f"{r['HaUrl'].rstrip('/')}/api/services/notify/{r['NotifyService']}",
                     headers={"Authorization": f"Bearer {r['HaToken']}"},
@@ -214,7 +228,7 @@ def run_full_scrape():
     except Exception as e:
         log.error("Stale-listing prune failed: %s", e)
 
-    _last_full_scrape = datetime.now()
+    _last_full_scrape = _utcnow()
     try:
         EbayScraper.RecordScrapeCompleted()
     except Exception as e:
@@ -244,7 +258,9 @@ def run_targeted_scrapes():
     if not active_deals:
         return
 
-    now = datetime.now()
+    # DB EndTimes are UTC-naive — compare in the same frame (datetime.now()
+    # here previously skewed every countdown by an hour during BST).
+    now = _utcnow()
     items_to_scrape = []
 
     for ebay_id, category, title, end_time in active_deals:
@@ -321,7 +337,7 @@ if __name__ == "__main__":
 
     while True:
         time.sleep(60)
-        now = datetime.now()
+        now = _utcnow()
 
         # Full scrape: due if interval has elapsed since last run.
         if _last_full_scrape is None or \

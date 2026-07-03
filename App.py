@@ -43,13 +43,19 @@ def _iso_utc(dt):
     return dt.isoformat()
 
 def get_connection():
-    return mariadb.connect(
+    conn = mariadb.connect(
         user=os.environ["DB_USER"],
         password=os.environ["DB_PASSWORD"],
         host=os.environ["DB_HOST"],
         port=int(os.environ.get("DB_PORT", 3305)),
         database=os.environ["DB_NAME"]
     )
+    # Pin the session to UTC — NOW() in the deal-window SQL must match the
+    # UTC-naive EndTimes we store, and _iso_utc()'s UTC tag must be true.
+    cur = conn.cursor()
+    cur.execute("SET time_zone = '+00:00'")
+    cur.close()
+    return conn
 
 
 # Deal / count / price-guide SQL lives in queries.py — one source of truth

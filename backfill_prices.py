@@ -33,13 +33,17 @@ except ImportError:
 # ── connection ────────────────────────────────────────────────────────────────
 
 def _connect():
-    return mysql.connector.connect(
+    conn = mysql.connector.connect(
         host=os.environ["DB_HOST"],
         port=int(os.environ.get("DB_PORT", "3305")),
         user=os.environ["DB_USER"],
         password=os.environ["DB_PASSWORD"],
         database=os.environ["DB_NAME"],
     )
+    cur = conn.cursor()
+    cur.execute("SET time_zone = '+00:00'")   # match the stack's UTC frame
+    cur.close()
+    return conn
 
 
 # ── queries ───────────────────────────────────────────────────────────────────

@@ -10,6 +10,9 @@ mariadb==1.1.14
 python-dotenv==1.0.1
 requests==2.32.3
 beautifulsoup4==4.12.3
+# IANA tz database for zoneinfo (eBay display-time -> UTC conversion);
+# slim base images don't guarantee the system tzdata package.
+tzdata>=2024.1
 
 # HTTP client with browser TLS fingerprinting (primary fetcher).
 # >=0.8 fixes session memory leaks present in 0.7.x (sessions are also now

@@ -73,23 +73,34 @@ class TestStDevParse:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestParseEbayEndtime:
-    # Reference: Wednesday 15 Jan 2025, 14:30
+    """Times are interpreted as US-Pacific wall clock (eBay's display TZ for
+    anonymous scrapes) and returned as naive UTC. In January that's PST
+    (UTC-8); in July PDT (UTC-7). The tz database supplies the difference —
+    the old fixed +7 offset was an hour wrong every winter.
+    """
+    # Reference "now" in display-TZ wall clock: Wednesday 15 Jan 2025, 14:30 PST
     REF = datetime(2025, 1, 15, 14, 30, 0)
-    OFFSET = timedelta(hours=7)
+    PST = timedelta(hours=8)   # winter: PST -> UTC
 
     def test_today_format(self):
         result = EbayScraper.parse_ebay_endtime("Today 21:44", reference_date=self.REF)
         assert result is not None
-        expected = self.REF.replace(hour=21, minute=44, second=0, microsecond=0) + self.OFFSET
+        expected = self.REF.replace(hour=21, minute=44, second=0, microsecond=0) + self.PST
         assert result == expected
+
+    def test_today_format_summer_uses_pdt(self):
+        # Tuesday 15 Jul 2025 — Pacific daylight time, so UTC is only +7.
+        ref_summer = datetime(2025, 7, 15, 14, 30, 0)
+        result = EbayScraper.parse_ebay_endtime("Today 21:44", reference_date=ref_summer)
+        assert result == ref_summer.replace(hour=21, minute=44) + timedelta(hours=7)
 
     def test_weekday_future(self):
         # "Fri, 10:00" — Friday (weekday 4) is 2 days after Wednesday.
-        # The +7h offset pushes 10:00 → 17:00 same day, so weekday stays Friday.
+        # 10:00 PST -> 18:00 UTC, still Friday.
         result = EbayScraper.parse_ebay_endtime("Fri, 10:00", reference_date=self.REF)
         assert result is not None
         assert result.weekday() == 4
-        assert result.hour == (10 + 7) % 24
+        assert result.hour == 18
         assert result.minute == 0
 
     def test_weekday_same_day_past_time(self):
@@ -104,14 +115,14 @@ class TestParseEbayEndtime:
         assert result is not None
         assert result.day == 18
         assert result.month == 1
-        assert result.hour == 9 + 7   # 09:00 + 7h offset
+        assert result.hour == 9 + 8   # 09:00 PST -> 17:00 UTC
 
     def test_date_format_wraps_hour(self):
-        # 23:00 + 7h should roll into next day
+        # 23:00 PST + 8h rolls into the next day (07:00 UTC)
         result = EbayScraper.parse_ebay_endtime("18/01, 23:00", reference_date=self.REF)
         assert result is not None
         assert result.day == 19
-        assert result.hour == 6
+        assert result.hour == 7
 
     def test_empty_string(self):
         assert EbayScraper.parse_ebay_endtime("") is None
