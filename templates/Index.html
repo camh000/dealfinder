@@ -1169,6 +1169,9 @@
     async function saveRecipient(idx) {
         const card = document.querySelector(`#recipients-list [data-idx="${idx}"]`);
         const status = card.querySelector('.rc-status');
+        const saveBtn = card.querySelector('.refresh-btn');
+        if (saveBtn.disabled) return;   // debounce double-clicks (duplicate rows)
+        saveBtn.disabled = true;
         const body = {
             id:             recipientsCache[idx].ID || null,
             name:           card.querySelector('.rc-name').value.trim(),
@@ -1190,6 +1193,8 @@
             await loadNotifySettings();
         } catch (e) {
             status.textContent = `Error: ${e.message}`;
+        } finally {
+            saveBtn.disabled = false;
         }
     }
 
@@ -1218,7 +1223,7 @@
 
     async function loadOutcomes() {
         document.getElementById('outcomes-resolved-body').innerHTML =
-            '<tr class="state-row"><td colspan="8"><span class="loader"></span> Loading...</td></tr>';
+            '<tr class="state-row"><td colspan="9"><span class="loader"></span> Loading...</td></tr>';
         try {
             const res  = await fetch('/api/outcomes');
             const data = await res.json();
@@ -1226,7 +1231,7 @@
             renderOutcomes(data);
         } catch (err) {
             document.getElementById('outcomes-resolved-body').innerHTML =
-                `<tr class="state-row"><td colspan="8">Error: ${err.message}</td></tr>`;
+                `<tr class="state-row"><td colspan="9">Error: ${escSet(err.message)}</td></tr>`;
         }
     }
 
@@ -1271,15 +1276,21 @@
             body.innerHTML = '<tr class="state-row"><td colspan="9">No resolved deals yet — they appear here once auctions end and the scraper picks them up as sold.</td></tr>';
             return;
         }
+        // SavingGbp: positive = paid under market (a save). Attached here so
+        // the '£ Saving' column header sorts on a real field.
+        visible.forEach(r => {
+            r.SavingGbp = (r.FinalPrice != null && r.AvgMarketPrice != null)
+                ? Number(r.AvgMarketPrice) - Number(r.FinalPrice) : null;
+        });
         const sorted = sortData(visible, resolvedSort.col, resolvedSort.asc);
         body.innerHTML = sorted.map((r, i) => {
             const win = Number(r.FinalPrice) < Number(r.AvgMarketPrice);
             const pctLabel = r.ActualDiscountPct > 0
                 ? `${r.ActualDiscountPct}% off mkt`
                 : `${Math.abs(r.ActualDiscountPct).toFixed(1)}% over mkt`;
-            const saving = Number(r.FinalPrice) - Number(r.AvgMarketPrice);
+            const saving = r.SavingGbp ?? 0;
             const savingStr = saving >= 0 ? `+£${saving.toFixed(2)}` : `-£${Math.abs(saving).toFixed(2)}`;
-            const savingClass = saving < 0 ? 'gain' : 'price-current';
+            const savingClass = saving > 0 ? 'gain' : 'price-current';
             return `<tr style="--i:${i}">
                 <td>${formatDate(r.EndTime)}</td>
                 <td><span class="cat-badge">${r.Category}</span></td>
@@ -1309,7 +1320,7 @@
                 ? `<span class="outcome-miss">UNRESOLVED</span>`
                 : ended
                     ? `<span class="time-cell urgent">AWAITING</span>`
-                    : `<span class="time-cell" ${endsAttrs(r.EndTime)}></span>`;
+                    : `<span class="time-cell" ${endsAttrs(r.EndTime)}>${r.EndTime ? '' : '—'}</span>`;
             return `<tr style="--i:${i}">
                 <td>${formatDate(r.SurfacedAt)}</td>
                 <td><span class="cat-badge">${r.Category}</span></td>
@@ -1493,9 +1504,11 @@
     }
 
     function safeUrl(url) {
+        // Protocol allowlist AND attribute-escape the result — a stray quote
+        // in a scraped URL must not break out of href="...".
         try {
             const parsed = new URL(url);
-            return (parsed.protocol === 'https:' || parsed.protocol === 'http:') ? url : '#';
+            return (parsed.protocol === 'https:' || parsed.protocol === 'http:') ? escSet(url) : '#';
         } catch { return '#'; }
     }
 
@@ -1511,7 +1524,7 @@
             <td data-label="Saving" style="text-align:right"><span class="gain">+£${fmt(d.PotentialGain)}</span></td>
             <td data-label="Discount"><span class="discount-badge ${bigDiscount ? 'high' : ''}">${d.DiscountPct}% OFF</span></td>
             <td data-label="Bids" style="text-align:right"><span class="bid-count">${d.Bids || 0} bids</span></td>
-            <td data-label="Ends In"><span class="time-cell" ${endsAttrs(d.EndTime)}></span></td>
+            <td data-label="Ends In"><span class="time-cell" ${endsAttrs(d.EndTime)}>${d.EndTime ? '' : '—'}</span></td>
             <td class="card-action"><a href="${safeUrl(d.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>`;
 
         if (type === 'gpu') {
@@ -1619,8 +1632,9 @@
         const select = document.getElementById('filter-brand');
         const brands = new Set();
         
-        // Collect brands from current deals data
-        const data = allDealsData[`${activeType}_${currentFilters.window}`] || [];
+        // Collect brands from current deals data (key must match the cache
+        // key written in loadDeals: type_window_minDiscount)
+        const data = allDealsData[`${activeType}_${currentFilters.window}_${currentFilters.minDiscount}`] || [];
         data.forEach(d => {
             if (d.Brand) brands.add(d.Brand);
         });
@@ -1701,7 +1715,12 @@
         document.getElementById('deal-count').textContent = `${filtered.length} deal${filtered.length !== 1 ? 's' : ''}`;
     }
 
+    const DEAL_TYPES = ['gpu', 'cpu', 'hdd', 'ram'];
+
     async function loadDeals() {
+        // Guard: on non-deal tabs (outcomes/prices/settings) there is nothing
+        // to load and /api/deals would 400 on the tab name.
+        if (!DEAL_TYPES.includes(activeType)) return;
         const btn  = document.getElementById('refresh-btn');
         const cols = colsForType(activeType);
         btn.classList.add('spinning');
@@ -1718,12 +1737,12 @@
                 filterAndRenderDeals();
             } else {
                 document.getElementById('deals-body').innerHTML =
-                    `<tr class="state-row"><td colspan="${cols}">Error: ${data.message}</td></tr>`;
+                    `<tr class="state-row"><td colspan="${cols}">Error: ${escSet(data.message)}</td></tr>`;
             }
         } catch(err) {
             console.error('loadDeals error:', err);
             document.getElementById('deals-body').innerHTML =
-                `<tr class="state-row"><td colspan="${cols}">Error: ${err.message || 'Could not connect to server.'}</td></tr>`;
+                `<tr class="state-row"><td colspan="${cols}">Error: ${escSet(err.message || 'Could not connect to server.')}</td></tr>`;
         } finally {
             btn.classList.remove('spinning');
         }
@@ -1757,6 +1776,7 @@
     function startIntervals() {
         if (_intervals.length) return;
         _intervals.push(setInterval(tickCountdowns, 1000));
+        // loadDeals self-guards on non-deal tabs (outcomes/prices/settings).
         _intervals.push(setInterval(loadDeals,      5 * 60 * 1000));
         _intervals.push(setInterval(loadStats,      5 * 60 * 1000));
         _intervals.push(setInterval(loadTabCounts,  5 * 60 * 1000));

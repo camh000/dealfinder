@@ -313,7 +313,15 @@ def __ParseItems(soup, query, productType):
             continue
 
         try:
-            shipping = __ParseRawPrice(item.find('span', {'class': 'su-styled-text secondary large'}).find('span').get_text(strip=True))
+            # eBay 2026 markup: postage lives in a flat span of this class with
+            # text like "+£3.42 delivery" / "Free delivery" (previously a nested
+            # span saying "postage" — the old selector silently returned 0).
+            # The same class also carries the bid-count span, hence the regex.
+            ship_el = item.find('span', {'class': 'su-styled-text secondary large'},
+                                string=re.compile(r'delivery|postage', re.I))
+            shipping = __ParseRawPrice(ship_el.get_text(strip=True)) if ship_el else 0
+            if shipping is None:
+                shipping = 0   # "Free delivery"
         except (AttributeError, TypeError):
             shipping = 0
 
@@ -963,7 +971,7 @@ def VerifyPendingOutcomes(hours_after: int = 6, give_up_days: int = 7) -> int:
                                Bids     = %s
                         WHERE  ID       = %s
                           AND  SoldDate IS NULL
-                    """, (item['sold-date'], int(item['price'] * 100), item['bid-count'], ebay_id))
+                    """, (item['sold-date'], int(round(item['price'] * 100)), item['bid-count'], ebay_id))
                     log.info(
                         "Outcome verified: ID=%s sold for £%.2f on %s",
                         ebay_id, item['price'], item['sold-date'],

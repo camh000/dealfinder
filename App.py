@@ -427,9 +427,14 @@ def outcomes():
                 if row.get(col):
                     row[col] = _iso_utc(row[col])
 
-        beat_market = sum(1 for r in resolved if r['FinalPrice'] is not None
-                          and r['FinalPrice'] < r['AvgMarketPrice'])
-        total_resolved = len(resolved)
+        # Win-rate math excludes ended-unsold auctions: they have no final
+        # price, the table hides them, and nobody could have "beaten" them —
+        # counting them silently diluted the headline stat.
+        priced = [r for r in resolved
+                  if not r['EndedUnsold'] and r['FinalPrice'] is not None]
+        beat_market = sum(1 for r in priced if r['FinalPrice'] < r['AvgMarketPrice'])
+        total_resolved = len(priced)
+        ended_unsold = sum(1 for r in resolved if r['EndedUnsold'])
         win_rate = round(beat_market / total_resolved * 100, 1) if total_resolved > 0 else 0
 
         return jsonify({
@@ -439,6 +444,7 @@ def outcomes():
                 "beat_market": beat_market,
                 "win_rate": win_rate,
                 "total_pending": len(pending),
+                "ended_unsold": ended_unsold,
             },
             "resolved": resolved,
             "pending": pending,
@@ -530,6 +536,18 @@ def notify_settings_save():
         conn = get_connection()
         cur = conn.cursor()
         if rid:
+            if not token:
+                # SECURITY: without this, anyone who can reach the API could
+                # repoint an existing recipient's URL at their own server and
+                # the scheduler would POST the STORED bearer token to it.
+                # A destination change therefore requires re-entering the token.
+                cur.execute("SELECT HaUrl FROM Scraper.NotifyRecipients WHERE ID=%s", (int(rid),))
+                row = cur.fetchone()
+                if row is None:
+                    return jsonify({"status": "error", "message": "recipient not found"}), 404
+                if row[0].rstrip('/') != ha_url:
+                    return jsonify({"status": "error",
+                                    "message": "HA URL changed — re-enter the token to confirm"}), 400
             if token:
                 cur.execute("""
                     UPDATE Scraper.NotifyRecipients
