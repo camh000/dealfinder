@@ -6,11 +6,15 @@ services:
       dockerfile: Dockerfile.web
     container_name: dealfinder-web
     ports:
-      - "5000:5000"
+      - "5010:5000"   # host 5000 now belongs to Frigate
     env_file:
       - credentials.env
-    restart: unless-stopped
-    # Uses the host network so it can reach MariaDB on your Unraid IP
+    # 'always' (not 'unless-stopped'): survives host reboots, engine updates
+    # and manual stops - the outage went unnoticed for weeks because
+    # unless-stopped deliberately never restarts a manually-stopped container.
+    restart: always
+    init: true
+    # Reaches MariaDB on the Unraid host IP
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -21,6 +25,7 @@ services:
     container_name: dealfinder-scraper
     env_file:
       - credentials.env
-    restart: unless-stopped
+    restart: always
+    init: true
     extra_hosts:
       - "host.docker.internal:host-gateway"
