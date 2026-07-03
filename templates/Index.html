@@ -759,6 +759,7 @@
     <button class="tab-btn" data-type="ram" onclick="switchTab('ram')">RAM<span class="tab-badge" id="badge-ram"></span></button>
     <button class="tab-btn" data-type="outcomes" onclick="switchTab('outcomes')">OUTCOMES</button>
     <button class="tab-btn" data-type="prices"   onclick="switchTab('prices')">PRICES</button>
+    <button class="tab-btn" data-type="settings" onclick="switchTab('settings')">SETTINGS</button>
 </div>
 
 <main>
@@ -864,6 +865,21 @@
                     <span class="basket-total" id="basket-total">£0.00</span>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <div id="panel-settings" style="display:none">
+        <div class="section-header">
+            <span class="section-title">Notification Settings</span>
+            <button class="refresh-btn" onclick="addRecipient()">+ ADD RECIPIENT</button>
+        </div>
+        <p style="opacity:.65;font-size:.85em;margin:0 0 14px">
+            Deal push notifications go to each enabled recipient's Home Assistant, filtered to
+            the categories they've ticked. Notifications are sent once per deal, when it is
+            first spotted by the hourly scan.
+        </p>
+        <div id="recipients-list">
+            <div class="state-row" style="padding:20px"><span class="loader"></span> Loading…</div>
         </div>
     </div>
 </main>
@@ -1067,13 +1083,128 @@
         });
         const isPrices   = type === 'prices';
         const isOutcomes = type === 'outcomes';
-        const isDeals    = !isPrices && !isOutcomes;
+        const isSettings = type === 'settings';
+        const isDeals    = !isPrices && !isOutcomes && !isSettings;
         document.getElementById('panel-deals').style.display    = isDeals    ? '' : 'none';
         document.getElementById('panel-outcomes').style.display = isOutcomes ? '' : 'none';
         document.getElementById('panel-prices').style.display   = isPrices   ? '' : 'none';
-        if (isOutcomes)    loadOutcomes();
-        else if (isPrices) loadPriceGuide();
-        else               loadDeals();
+        document.getElementById('panel-settings').style.display = isSettings ? '' : 'none';
+        if (isOutcomes)      loadOutcomes();
+        else if (isPrices)   loadPriceGuide();
+        else if (isSettings) loadNotifySettings();
+        else                 loadDeals();
+    }
+
+    // ── Notification settings ───────────────────────────────────────────────
+    const NOTIFY_CATS = ['GPU', 'CPU', 'HDD', 'RAM'];
+    let recipientsCache = [];
+
+    function escSet(s) {
+        return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                              .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    async function loadNotifySettings() {
+        const list = document.getElementById('recipients-list');
+        try {
+            const res  = await fetch('/api/notify-settings');
+            const data = await res.json();
+            if (data.status !== 'ok') throw new Error(data.message);
+            recipientsCache = data.recipients;
+            renderRecipients();
+        } catch (e) {
+            list.innerHTML = `<div class="state-row" style="padding:20px">Failed to load settings: ${escSet(e.message)}</div>`;
+        }
+    }
+
+    function recipientCard(r, idx) {
+        const cats = r.Categories || [];
+        const catBoxes = NOTIFY_CATS.map(c => `
+            <label style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;cursor:pointer">
+                <input type="checkbox" class="rc-cat" value="${c}" ${cats.includes(c) ? 'checked' : ''}> ${c}
+            </label>`).join('');
+        const tokenPh = r.TokenSet ? 'saved — leave blank to keep' : 'long-lived HA access token';
+        return `
+        <div class="filter-panel" style="display:block;margin-bottom:14px" data-idx="${idx}">
+            <div style="display:flex;flex-wrap:wrap;gap:12px">
+                <div class="filter-group"><label>Name</label>
+                    <input type="text" class="rc-name" value="${escSet(r.Name)}" placeholder="e.g. Dad"></div>
+                <div class="filter-group" style="min-width:230px"><label>Home Assistant URL</label>
+                    <input type="text" class="rc-url" value="${escSet(r.HaUrl)}" placeholder="http://192.168.10.254:8123"></div>
+                <div class="filter-group" style="min-width:230px"><label>Notify Service</label>
+                    <input type="text" class="rc-service" value="${escSet(r.NotifyService)}" placeholder="mobile_app_dads_phone"></div>
+                <div class="filter-group" style="min-width:260px"><label>HA Token</label>
+                    <input type="password" class="rc-token" value="" placeholder="${tokenPh}"></div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-top:10px">
+                <span>${catBoxes}</span>
+                <label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer">
+                    <input type="checkbox" class="rc-enabled" ${r.Enabled !== false ? 'checked' : ''}> Enabled
+                </label>
+                <span style="flex:1"></span>
+                <button class="refresh-btn" onclick="saveRecipient(${idx})">SAVE</button>
+                <button class="filter-clear" onclick="deleteRecipient(${idx})">DELETE</button>
+                <span class="rc-status" style="font-size:.85em;opacity:.8"></span>
+            </div>
+        </div>`;
+    }
+
+    function renderRecipients() {
+        const list = document.getElementById('recipients-list');
+        if (!recipientsCache.length) {
+            list.innerHTML = '<div class="state-row" style="padding:20px">No recipients yet — add one above.</div>';
+            return;
+        }
+        list.innerHTML = recipientsCache.map((r, i) => recipientCard(r, i)).join('');
+    }
+
+    function addRecipient() {
+        if (document.getElementById('panel-settings').style.display === 'none') switchTab('settings');
+        recipientsCache.push({ Name: '', HaUrl: '', NotifyService: '', Categories: [...NOTIFY_CATS], Enabled: true, TokenSet: false });
+        renderRecipients();
+        const cards = document.querySelectorAll('#recipients-list [data-idx]');
+        cards[cards.length - 1]?.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    async function saveRecipient(idx) {
+        const card = document.querySelector(`#recipients-list [data-idx="${idx}"]`);
+        const status = card.querySelector('.rc-status');
+        const body = {
+            id:             recipientsCache[idx].ID || null,
+            name:           card.querySelector('.rc-name').value.trim(),
+            ha_url:         card.querySelector('.rc-url').value.trim(),
+            notify_service: card.querySelector('.rc-service').value.trim(),
+            ha_token:       card.querySelector('.rc-token').value.trim(),
+            enabled:        card.querySelector('.rc-enabled').checked,
+            categories:     [...card.querySelectorAll('.rc-cat:checked')].map(cb => cb.value),
+        };
+        status.textContent = 'Saving…';
+        try {
+            const res  = await fetch('/api/notify-settings', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await res.json();
+            if (data.status !== 'ok') throw new Error(data.message);
+            status.textContent = 'Saved ✓';
+            await loadNotifySettings();
+        } catch (e) {
+            status.textContent = `Error: ${e.message}`;
+        }
+    }
+
+    async function deleteRecipient(idx) {
+        const r = recipientsCache[idx];
+        if (!r.ID) { recipientsCache.splice(idx, 1); renderRecipients(); return; }
+        if (!confirm(`Delete recipient "${r.Name}"?`)) return;
+        try {
+            const res  = await fetch(`/api/notify-settings/${r.ID}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (data.status !== 'ok') throw new Error(data.message);
+            await loadNotifySettings();
+        } catch (e) {
+            alert(`Delete failed: ${e.message}`);
+        }
     }
 
     function formatDate(isoStr) {
