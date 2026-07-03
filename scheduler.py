@@ -1,5 +1,7 @@
 import time
 import logging
+import signal
+import requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import sys
@@ -36,6 +38,21 @@ FULL_SCRAPE_INTERVAL_MINUTES = int(os.environ.get('FULL_SCRAPE_INTERVAL_MINUTES'
 SCRAPE_COUNTRY      = os.environ.get('SCRAPE_COUNTRY',      'uk')
 SCRAPE_CONDITION    = os.environ.get('SCRAPE_CONDITION',    'used')
 SCRAPE_LISTING_TYPE = os.environ.get('SCRAPE_LISTING_TYPE', 'auction')
+
+# Uptime Kuma push monitor URL. Pinged ONLY after a full scrape that touched
+# at least one row — so eBay markup drift, total fetch failure or a dead DB
+# all read as "down" in Kuma instead of rotting silently.
+KUMA_PUSH_URL = os.environ.get('KUMA_PUSH_URL', '')
+
+# Home Assistant push notifications for newly surfaced deals (all optional —
+# leave unset to disable). HA_NOTIFY_SERVICE is the part after 'notify.'.
+HA_URL            = os.environ.get('HA_URL', '').rstrip('/')
+HA_TOKEN          = os.environ.get('HA_TOKEN', '')
+HA_NOTIFY_SERVICE = os.environ.get('HA_NOTIFY_SERVICE', '')
+
+# Server-side deal surfacing parameters (mirrors the UI defaults).
+SURFACE_WINDOW_HOURS = int(os.environ.get('SURFACE_WINDOW_HOURS', '2'))
+SURFACE_MIN_DISCOUNT = float(os.environ.get('SURFACE_MIN_DISCOUNT', '20'))
 
 # Targeted-scrape tiers: (threshold_minutes, interval_minutes)
 # When a tracked deal has <= threshold_minutes remaining, scrape it every interval_minutes.
@@ -96,6 +113,57 @@ _last_targeted: dict = {}
 
 # ── Scrape functions ───────────────────────────────────────────────────────────
 
+def notify_new_deals(deals: list) -> None:
+    """Push Home Assistant notifications for newly surfaced deals.
+
+    Recipients + per-recipient category filters live in the NotifyRecipients
+    table (managed from the dashboard's SETTINGS tab). Each enabled recipient
+    gets one notification per new deal in a category they've opted into.
+    """
+    if not deals:
+        return
+    recipients = EbayScraper.GetNotifyRecipients()
+    if not recipients:
+        return
+    for row in deals:
+        category = (row.get('_category') or '').upper()
+        for r in recipients:
+            cats = [c.strip().upper() for c in (r.get('Categories') or '').split(',') if c.strip()]
+            if category not in cats:
+                continue
+            try:
+                label = row.get('_label') or 'deal'
+                price = float(row.get('CurrentPrice'))
+                avg = float(row.get('AvgMarketPrice'))
+                disc = float(row.get('DiscountPct'))
+                bids = row.get('Bids') or 0
+                end = row.get('EndTime')
+                end_txt = end.strftime('%H:%M') if hasattr(end, 'strftime') else str(end)
+                requests.post(
+                    f"{r['HaUrl'].rstrip('/')}/api/services/notify/{r['NotifyService']}",
+                    headers={"Authorization": f"Bearer {r['HaToken']}"},
+                    json={
+                        "title": f"Deal: {label} £{price:.2f} ({disc:.0f}% off)",
+                        "message": f"Market avg £{avg:.2f} · {bids} bid(s) · ends {end_txt}",
+                        "data": {"url": row.get('URL'), "tag": f"dealfinder-{row.get('ID')}"},
+                    },
+                    timeout=10,
+                )
+            except Exception as e:
+                log.warning("Deal notification to %s failed for %s: %s",
+                            r.get('Name'), row.get('ID'), e)
+
+
+def kuma_heartbeat(ok: bool, msg: str) -> None:
+    """Ping the Uptime Kuma push monitor. Only called for healthy runs."""
+    if not KUMA_PUSH_URL or not ok:
+        return
+    try:
+        requests.get(KUMA_PUSH_URL, params={"status": "up", "msg": msg[:250]}, timeout=10)
+    except Exception as e:
+        log.warning("Kuma heartbeat failed: %s", e)
+
+
 def run_full_scrape():
     """Run the full query-list scrape for all categories + outcome verification."""
     global _last_full_scrape
@@ -108,6 +176,8 @@ def run_full_scrape():
         listing_type=SCRAPE_LISTING_TYPE,
         cache=False,
     )
+    total_rows = 0
+    categories_ok = 0
     for query_list, product_type in [
         (GPU_QUERY_LIST, 'GPU'),
         (CPU_QUERY_LIST, 'CPU'),
@@ -116,7 +186,9 @@ def run_full_scrape():
     ]:
         try:
             log.info("Scraping %s...", product_type)
-            EbayScraper.ScrapeAndUpload(query_list, product_type=product_type, **common)
+            inserted, updated = EbayScraper.ScrapeAndUpload(query_list, product_type=product_type, **common)
+            total_rows += inserted + updated
+            categories_ok += 1
             log.info("%s scrape complete.", product_type)
         except Exception as e:
             log.error("%s scrape failed: %s", product_type, e)
@@ -127,11 +199,40 @@ def run_full_scrape():
     except Exception as e:
         log.error("Outcome verification failed: %s", e)
 
+    # Server-side deal surfacing + push notifications — deals are captured
+    # and alerted even when nobody has the dashboard open.
+    try:
+        new_deals = EbayScraper.SurfaceDeals(SURFACE_WINDOW_HOURS, SURFACE_MIN_DISCOUNT)
+        notify_new_deals(new_deals)
+    except Exception as e:
+        log.error("Deal surfacing failed: %s", e)
+
+    # Housekeeping: drop zombie active listings (ended >14d, never resolved,
+    # not deal-tracked). Sold rows are never pruned — they're the price history.
+    try:
+        EbayScraper.PruneStaleListings(days=14)
+    except Exception as e:
+        log.error("Stale-listing prune failed: %s", e)
+
     _last_full_scrape = datetime.now()
     try:
         EbayScraper.RecordScrapeCompleted()
     except Exception as e:
         log.error("Failed to record scrape timestamp: %s", e)
+
+    # Heartbeat only when the run was genuinely healthy: at least one category
+    # succeeded AND at least one row was inserted/updated. A healthy hourly run
+    # always touches rows (existing active listings get re-upserted), so zero
+    # rows means the parser or every fetch is broken — let Kuma flag it.
+    kuma_heartbeat(
+        ok=(categories_ok > 0 and total_rows > 0),
+        msg=f"full scrape ok: {total_rows} rows across {categories_ok}/4 categories",
+    )
+    if categories_ok > 0 and total_rows == 0:
+        log.error(
+            "Full scrape touched 0 rows — eBay markup may have changed "
+            "(parser drift) or all fetches are being blocked. Kuma heartbeat withheld."
+        )
     log.info("Full scrape run complete.")
 
 
@@ -187,12 +288,33 @@ def run_targeted_scrapes():
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
+def _handle_sigterm(signum, frame):
+    """Exit promptly and cleanly on docker stop (we run as PID 1)."""
+    log.info("Received signal %s — shutting down.", signum)
+    raise SystemExit(0)
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+    signal.signal(signal.SIGINT, _handle_sigterm)
+
     log.info(
         "Scheduler starting — full scrape every %d min; targeted tiers: %s",
         FULL_SCRAPE_INTERVAL_MINUTES,
         _TARGETED_TIERS,
     )
+
+    # One-time schema migration: EBAY.Shipping (pence) for postage-inclusive pricing.
+    try:
+        EbayScraper.EnsureShippingColumn()
+    except Exception as e:
+        log.error("Shipping column migration failed: %s", e)
+
+    # Notification recipients table (+ bootstrap the default recipient from env).
+    try:
+        EbayScraper.EnsureNotifyRecipients()
+    except Exception as e:
+        log.error("NotifyRecipients setup failed: %s", e)
 
     # Run full scrape immediately on startup so data is fresh before the first interval.
     run_full_scrape()
