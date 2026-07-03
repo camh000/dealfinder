@@ -1244,13 +1244,19 @@
         resolvedData = resolved;
         pendingData  = pending;
 
-        const total = summary.total_resolved + summary.total_pending;
+        const gaveUp = summary.gave_up || 0;
+        const total = summary.total_resolved + summary.total_pending + gaveUp;
+        const gaveUpCard = gaveUp > 0
+            ? `<div class="stat-card" title="Surfaced deals the verifier could no longer look up on eBay (completed listings roll off search after ~90 days). Never resolved.">
+                   <div class="stat-label">Gave Up</div><div class="stat-value amber">${gaveUp}</div></div>`
+            : '';
         document.getElementById('outcome-stats').innerHTML = `
             <div class="stat-card"><div class="stat-label">Tracked</div><div class="stat-value">${total}</div></div>
             <div class="stat-card"><div class="stat-label">Resolved</div><div class="stat-value">${summary.total_resolved}</div></div>
             <div class="stat-card"><div class="stat-label">Beat Market</div><div class="stat-value green">${summary.beat_market}</div></div>
             <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-value ${summary.win_rate >= 50 ? 'green' : 'amber'}">${summary.win_rate}%</div></div>
             <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value">${summary.total_pending}</div></div>
+            ${gaveUpCard}
         `;
 
         renderResolvedTable();
@@ -1315,12 +1321,12 @@
         document.getElementById('outcomes-pending-head').innerHTML = pendingHeader();
         const sorted = sortData(pendingData, pendingSort.col, pendingSort.asc);
         document.getElementById('outcomes-pending-body').innerHTML = sorted.map((r, i) => {
+            // Pending rows are always still in flight (gave-up rows are filtered
+            // out server-side): show a live countdown, or AWAITING once ended.
             const ended = !r.EndTime || new Date(r.EndTime) <= Date.now();
-            const statusCell = r.GaveUp
-                ? `<span class="outcome-miss">UNRESOLVED</span>`
-                : ended
-                    ? `<span class="time-cell urgent">AWAITING</span>`
-                    : `<span class="time-cell" ${endsAttrs(r.EndTime)}>${r.EndTime ? '' : '—'}</span>`;
+            const statusCell = ended
+                ? `<span class="time-cell urgent">AWAITING</span>`
+                : `<span class="time-cell" ${endsAttrs(r.EndTime)}>${r.EndTime ? '' : '—'}</span>`;
             return `<tr style="--i:${i}">
                 <td>${formatDate(r.SurfacedAt)}</td>
                 <td><span class="cat-badge">${r.Category}</span></td>

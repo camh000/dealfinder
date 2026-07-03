@@ -91,6 +91,11 @@ ORDER BY d.SurfacedAt DESC
 LIMIT 200;
 """
 
+# Pending = genuinely still in flight. GaveUp rows are excluded: the verifier
+# permanently stopped chasing them (eBay purges completed listings from search
+# after ~90 days, so they can never resolve), and listing them as "unresolved"
+# just buried the one or two live deals under a pile of dead months-old records.
+# They're still counted separately in the summary so the history isn't hidden.
 OUTCOMES_PENDING_QUERY = """
 SELECT
     d.EbayID,
@@ -107,8 +112,15 @@ SELECT
     e.URL
 FROM Scraper.DealOutcomes d
 JOIN Scraper.EBAY e ON e.ID = d.EbayID
-WHERE e.SoldDate IS NULL
+WHERE e.SoldDate IS NULL AND d.GaveUp = 0
 ORDER BY d.EndTime ASC;
+"""
+
+GAVE_UP_COUNT_QUERY = """
+SELECT COUNT(*) AS n
+FROM Scraper.DealOutcomes d
+JOIN Scraper.EBAY e ON e.ID = d.EbayID
+WHERE e.SoldDate IS NULL AND d.GaveUp = 1;
 """
 
 
@@ -423,6 +435,9 @@ def outcomes():
         cur.execute(OUTCOMES_PENDING_QUERY)
         pending = cur.fetchall()
 
+        cur.execute(GAVE_UP_COUNT_QUERY)
+        gave_up = cur.fetchone()['n']
+
         for row in resolved:
             for col in ('EndTime', 'SoldDate', 'SurfacedAt'):
                 if row.get(col):
@@ -451,6 +466,7 @@ def outcomes():
                 "win_rate": win_rate,
                 "total_pending": len(pending),
                 "ended_unsold": ended_unsold,
+                "gave_up": gave_up,
             },
             "resolved": resolved,
             "pending": pending,
