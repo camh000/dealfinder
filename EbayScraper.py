@@ -281,6 +281,31 @@ def __GetHTML(query, country, condition='', listing_type='all', alreadySold=True
 
     return BeautifulSoup(responseHTML, 'html.parser')
 
+# ── component sub-type classification ─────────────────────────────────────────
+# External HDDs (portable/USB enclosures) sell for very different money than bare
+# internal drives, and laptop SODIMM sticks differ from desktop DIMMs. These are
+# module-level so the scraper, the backfill and the tests share one definition.
+
+_HDD_EXTERNAL_RE = re.compile(
+    r'\b(external|portable|my\s*passport|my\s*book|elements|expansion|'
+    r'backup\s*plus|one\s*touch|canvio|easystore|game\s*drive|lacie|'
+    r'enclosure|ext\.?\s*hdd|extern)\b', re.IGNORECASE)
+
+
+def classify_drive_type(title: str) -> str:
+    """'External' for portable/USB-enclosure drives, else 'Internal' (the default)."""
+    return 'External' if _HDD_EXTERNAL_RE.search(title or '') else 'Internal'
+
+
+_RAM_SODIMM_RE = re.compile(
+    r'so.?dimm|small\s*outline|\blaptop\b|\bnotebook\b', re.IGNORECASE)
+
+
+def classify_ram_form_factor(title: str) -> str:
+    """'SODIMM' for laptop/small-outline modules, else 'DIMM' (desktop, the default)."""
+    return 'SODIMM' if _RAM_SODIMM_RE.search(title or '') else 'DIMM'
+
+
 def __ParseItems(soup, query, productType):
     rawItems = soup.find_all('div', {'class': 'su-card-container su-card-container--horizontal'})
     if not rawItems:
@@ -371,6 +396,7 @@ def __ParseItems(soup, query, productType):
             continue
 
         socket = cores = capacity_gb = interface = form_factor = rpm = ram_type = speed = None
+        drive_type = ram_format = None
 
         if productType == 'GPU':
 
@@ -546,16 +572,24 @@ def __ParseItems(soup, query, productType):
             interface   = extract_interface(title)
             form_factor = extract_form_factor(title)
             rpm         = extract_rpm(title)
+            drive_type  = classify_drive_type(title)
 
         elif productType == 'RAM':
 
             _tl = title.lower()
-            _is_system_ram = any(k in _tl for k in [
-                'mini pc', 'mini-pc', ' nuc', 'barebones',
-                'desktop pc', 'all-in-one', 'laptop', 'notebook',
-                'gaming pc', 'gaming computer', 'custom pc',
-                'full pc', 'complete pc', 'pc bundle', 'pc build',
-            ])
+            # 'laptop'/'notebook' alone no longer disqualifies a listing — that
+            # was dropping legitimate laptop (SODIMM) memory. Only treat those as
+            # a whole-machine sale when paired with a storage device; the other
+            # keywords are unambiguous complete systems.
+            _is_system_ram = (
+                any(k in _tl for k in [
+                    'mini pc', 'mini-pc', ' nuc', 'barebones',
+                    'desktop pc', 'all-in-one', 'gaming pc', 'gaming computer',
+                    'custom pc', 'full pc', 'complete pc', 'pc bundle', 'pc build',
+                ])
+                or (('laptop' in _tl or 'notebook' in _tl)
+                    and bool(re.search(r'\d+\s*(tb|gb)\s*(ssd|nvme|hdd|emmc)', _tl)))
+            )
             if _is_system_ram:
                 log.debug("[%s] Skipping system listing: %s", query, title[:60])
                 continue
@@ -594,6 +628,7 @@ def __ParseItems(soup, query, productType):
             brand = next((v for k, v in RAM_BRAND_MAP.items() if k in title_up), None)
             model = None
             vram  = None
+            ram_format = classify_ram_form_factor(title)
 
         else:
             brand = ''
@@ -622,8 +657,10 @@ def __ParseItems(soup, query, productType):
             'interface': interface,
             'form-factor': form_factor,
             'rpm': rpm,
+            'drive-type': drive_type,
             'ram-type': ram_type,
             'speed': speed,
+            'ram-format': ram_format,
         }
         
         data.append(itemData)
@@ -796,9 +833,11 @@ class Product:
     interface: Optional[str] = None
     form_factor: Optional[str] = None
     rpm: Optional[int] = None
+    drive_type: Optional[str] = None   # Internal / External
     # RAM fields
     ram_type: Optional[str] = None
     speed: Optional[int] = None
+    ram_format: Optional[str] = None   # DIMM / SODIMM
 
 def _get_connection():
     conn = mariadb.connect(
@@ -856,26 +895,28 @@ def _upload(cur, p: Product, product_type: str) -> int:
         )
     elif product_type == 'HDD':
         cur.execute("""
-            INSERT INTO HDD (ID, Brand, CapacityGB, Interface, FormFactor, RPM)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO HDD (ID, Brand, CapacityGB, Interface, FormFactor, RPM, DriveType)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 Brand = VALUES(Brand),
                 CapacityGB = VALUES(CapacityGB),
                 Interface = VALUES(Interface),
                 FormFactor = VALUES(FormFactor),
-                RPM = VALUES(RPM);
-            """, (p.id, p.brand, p.capacity_gb, p.interface, p.form_factor, p.rpm)
+                RPM = VALUES(RPM),
+                DriveType = VALUES(DriveType);
+            """, (p.id, p.brand, p.capacity_gb, p.interface, p.form_factor, p.rpm, p.drive_type)
         )
     elif product_type == 'RAM':
         cur.execute("""
-            INSERT INTO RAM (ID, Brand, CapacityGB, Type, Speed)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO RAM (ID, Brand, CapacityGB, Type, Speed, FormFactor)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 Brand      = VALUES(Brand),
                 CapacityGB = VALUES(CapacityGB),
                 Type       = VALUES(Type),
-                Speed      = VALUES(Speed);
-            """, (p.id, p.brand, p.capacity_gb, p.ram_type, p.speed)
+                Speed      = VALUES(Speed),
+                FormFactor = VALUES(FormFactor);
+            """, (p.id, p.brand, p.capacity_gb, p.ram_type, p.speed, p.ram_format)
         )
     return ebay_rc
 
@@ -1067,7 +1108,9 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
                     socket=d["socket"], cores=d["cores"],
                     capacity_gb=d["capacity-gb"], interface=d["interface"],
                     form_factor=d["form-factor"], rpm=d["rpm"],
+                    drive_type=d.get("drive-type"),
                     ram_type=d["ram-type"], speed=d["speed"],
+                    ram_format=d.get("ram-format"),
                 )
                 for d in items
             ]
@@ -1195,8 +1238,10 @@ def ScrapeTargeted(items: list) -> int:
                         interface=item['interface'],
                         form_factor=item['form-factor'],
                         rpm=item['rpm'],
+                        drive_type=item.get('drive-type'),
                         ram_type=item['ram-type'],
                         speed=item['speed'],
+                        ram_format=item.get('ram-format'),
                     )
                     _upload(cur, product, category)
                     log.info(
@@ -1241,6 +1286,51 @@ def EnsureShippingColumn() -> None:
         except mariadb.Error as e:
             if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
                 log.error("EBAY: unexpected error adding Shipping column: %s", e)
+    finally:
+        conn.close()
+
+
+def EnsureCategoryAttributes() -> None:
+    """Add HDD.DriveType (Internal/External) and RAM.FormFactor (DIMM/SODIMM) on
+    installations that predate them, then backfill any NULL rows by re-parsing the
+    listing title. Idempotent: after the first pass no NULLs remain (new inserts
+    always set the value), so the backfill query returns nothing and does nothing.
+    """
+    DUP_COLUMN_ERRNO = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        for table, col in (("HDD", "DriveType"), ("RAM", "FormFactor")):
+            try:
+                cur.execute(f"ALTER TABLE Scraper.{table} ADD COLUMN {col} VARCHAR(16) NULL")
+                conn.commit()
+                log.info("%s: added %s column", table, col)
+            except mariadb.Error as e:
+                if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                    log.error("%s: unexpected error adding %s column: %s", table, col, e)
+
+        # Backfill from titles using the shared classifiers.
+        for table, col, classifier in (
+            ("HDD", "DriveType", classify_drive_type),
+            ("RAM", "FormFactor", classify_ram_form_factor),
+        ):
+            cur.execute(f"""
+                SELECT s.ID, e.Title FROM Scraper.{table} s
+                JOIN Scraper.EBAY e ON e.ID = s.ID
+                WHERE s.{col} IS NULL
+            """)
+            rows = cur.fetchall()
+            for ebay_id, title in rows:
+                cur.execute(
+                    f"UPDATE Scraper.{table} SET {col} = %s WHERE ID = %s",
+                    (classifier(title or ''), ebay_id),
+                )
+            if rows:
+                conn.commit()
+                log.info("%s: backfilled %s for %d row(s)", table, col, len(rows))
+    except mariadb.Error as e:
+        log.error("EnsureCategoryAttributes failed: %s", e)
+        conn.rollback()
     finally:
         conn.close()
 

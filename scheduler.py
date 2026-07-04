@@ -335,6 +335,12 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("Shipping column migration failed: %s", e)
 
+    # Sub-type attributes: HDD Internal/External + RAM DIMM/SODIMM (+ backfill).
+    try:
+        EbayScraper.EnsureCategoryAttributes()
+    except Exception as e:
+        log.error("Category attribute migration failed: %s", e)
+
     # Notification recipients table (+ bootstrap the default recipient from env).
     try:
         EbayScraper.EnsureNotifyRecipients()

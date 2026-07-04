@@ -38,18 +38,22 @@ CATEGORIES = {
     },
     'hdd': {
         'table': 'HDD', 'alias': 'h',
-        'group_cols': [('CapacityGB', False), ('Interface', True)],
+        # DriveType splits Internal vs External so a portable USB drive is never
+        # priced against a bare internal of the same capacity (null_safe: legacy
+        # rows may still be NULL between migration and backfill).
+        'group_cols': [('CapacityGB', False), ('Interface', True), ('DriveType', True)],
         'not_null': ['CapacityGB'],
-        'deal_select': ['h.Brand', 'h.CapacityGB', 'h.Interface', 'h.FormFactor', 'h.RPM'],
-        'guide_select': ['rs.CapacityGB', 'rs.Interface'],
+        'deal_select': ['h.Brand', 'h.CapacityGB', 'h.Interface', 'h.FormFactor', 'h.RPM', 'h.DriveType'],
+        'guide_select': ['rs.CapacityGB', 'rs.Interface', 'rs.DriveType'],
         'guide_order': 'rs.CapacityGB DESC, ms.AvgPrice DESC',
     },
     'ram': {
         'table': 'RAM', 'alias': 'r',
-        'group_cols': [('Type', False), ('CapacityGB', False)],
+        # FormFactor splits DIMM (desktop) vs SODIMM (laptop) — different markets.
+        'group_cols': [('Type', False), ('CapacityGB', False), ('FormFactor', True)],
         'not_null': ['Type', 'CapacityGB'],
-        'deal_select': ['r.Brand', 'r.CapacityGB', 'r.Type', 'r.Speed'],
-        'guide_select': ['rs.Type', 'rs.CapacityGB'],
+        'deal_select': ['r.Brand', 'r.CapacityGB', 'r.Type', 'r.Speed', 'r.FormFactor'],
+        'guide_select': ['rs.Type', 'rs.CapacityGB', 'rs.FormFactor'],
         'guide_order': 'rs.Type, rs.CapacityGB',
     },
 }
@@ -198,12 +202,17 @@ def model_label_for_row(product_type: str, row: dict) -> str:
     if product_type == 'hdd':
         cap = row.get('CapacityGB')
         iface = row.get('Interface') or 'SATA'
+        # Only annotate the non-default (External) — internal is the norm.
+        ext = ' External' if row.get('DriveType') == 'External' else ''
         if cap and cap >= 1000:
             tb = cap / 1000
-            return f"{int(tb)}TB {iface}" if cap % 1000 == 0 else f"{tb:.1f}TB {iface}"
-        return f"{cap}GB {iface}" if cap else iface
+            size = f"{int(tb)}TB" if cap % 1000 == 0 else f"{tb:.1f}TB"
+            return f"{size} {iface}{ext}"
+        return f"{cap}GB {iface}{ext}" if cap else f"{iface}{ext}"
     if product_type == 'ram':
         cap = row.get('CapacityGB')
         ram_type = row.get('Type') or 'RAM'
-        return f"{cap}GB {ram_type}" if cap else ram_type
+        # Only annotate the non-default (SODIMM) — DIMM is the norm.
+        so = ' SODIMM' if row.get('FormFactor') == 'SODIMM' else ''
+        return f"{cap}GB {ram_type}{so}" if cap else f"{ram_type}{so}"
     return row.get('Model')

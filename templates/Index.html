@@ -366,6 +366,19 @@
             margin-top: 2px;
         }
 
+        /* Sub-type badge (External HDD / SODIMM RAM) — flags the non-default
+           variant so it's never mistaken for an internal drive or desktop DIMM. */
+        .subtype-tag {
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            padding: 1px 4px;
+            border-radius: 2px;
+            vertical-align: middle;
+            color: var(--amber);
+            border: 1px solid var(--amber);
+        }
+
         .price-current {
             font-size: 15px;
             color: var(--amber);
@@ -1396,8 +1409,8 @@
         const rowLabel = r => {
             if (r._cat === 'gpu') return r.Model || '';
             if (r._cat === 'cpu') return r.Model || '';
-            if (r._cat === 'ram') return `${r.Type || ''} ${r.CapacityGB}GB`.trim();
-            return `${capStr(r)} ${r.Interface || ''}`.trim();
+            if (r._cat === 'ram') return `${r.Type || ''} ${r.CapacityGB}GB ${r.FormFactor === 'SODIMM' ? 'SODIMM' : ''}`.trim();
+            return `${capStr(r)} ${r.Interface || ''} ${r.DriveType === 'External' ? 'External' : ''}`.trim();
         };
 
         // Coerce decimal strings → numbers and attach sortable label
@@ -1422,8 +1435,8 @@
             const modelName = r._cat === 'hdd' ? capStr(r)
                             : r._cat === 'ram' ? `${r.CapacityGB}GB`
                             : (r.Model || '—');
-            const specLine  = r._cat === 'hdd' ? (r.Interface || '')
-                            : r._cat === 'ram' ? (r.Type || '')
+            const specLine  = r._cat === 'hdd' ? `${r.Interface || ''}${r.DriveType === 'External' ? ' · External' : ''}`
+                            : r._cat === 'ram' ? `${r.Type || ''}${r.FormFactor === 'SODIMM' ? ' · SODIMM' : ''}`
                             : '';
             const low = r.SoldCount < 5;
             const escapedLbl = lbl.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -1559,9 +1572,10 @@
             const cap = d.CapacityGB >= 1000
                 ? (d.CapacityGB / 1000).toFixed(d.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
                 : d.CapacityGB + 'GB';
+            const ext = d.DriveType === 'External' ? ' <span class="subtype-tag">EXT</span>' : '';
             return `<tr style="--i:${i}">
                 <td class="card-title">
-                    <div class="model-cell">${cap} · ${d.Interface || 'SATA'}</div>
+                    <div class="model-cell">${cap} · ${d.Interface || 'SATA'}${ext}</div>
                 </td>
                 <td data-label="Details">
                     <div class="model-cell" style="font-size:13px">${d.Brand || '—'}</div>
@@ -1571,10 +1585,11 @@
             </tr>`;
         }
         if (type === 'ram') {
+            const so = d.FormFactor === 'SODIMM' ? ' <span class="subtype-tag">SODIMM</span>' : '';
             const cap = `${d.CapacityGB}GB ${d.Type || ''}`.trim();
             return `<tr style="--i:${i}">
                 <td class="card-title">
-                    <div class="model-cell">${cap}</div>
+                    <div class="model-cell">${cap}${so}</div>
                 </td>
                 <td data-label="Brand">
                     <div class="model-cell" style="font-size:13px">${d.Brand || '—'}</div>

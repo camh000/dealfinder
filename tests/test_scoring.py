@@ -76,6 +76,56 @@ class TestQueryBuilders:
         sql = queries.build_deals_query("hdd")
         assert "<=>" in sql
 
+    def test_hdd_stats_split_by_drive_type(self):
+        """External vs internal must be a grouping dimension in every HDD query."""
+        for sql in (queries.build_deals_query("hdd"),
+                    queries.build_count_query("hdd"),
+                    queries.build_price_guide_query("hdd")):
+            assert "DriveType" in sql
+
+    def test_ram_stats_split_by_form_factor(self):
+        """SODIMM vs DIMM must be a grouping dimension in every RAM query."""
+        for sql in (queries.build_deals_query("ram"),
+                    queries.build_count_query("ram"),
+                    queries.build_price_guide_query("ram")):
+            assert "FormFactor" in sql
+
+    def test_labels_annotate_non_default_subtype(self):
+        assert queries.model_label_for_row("hdd", {"CapacityGB": 4000, "Interface": "SATA", "DriveType": "External"}) == "4TB SATA External"
+        assert queries.model_label_for_row("hdd", {"CapacityGB": 4000, "Interface": "SATA", "DriveType": "Internal"}) == "4TB SATA"
+        assert queries.model_label_for_row("ram", {"CapacityGB": 16, "Type": "DDR4", "FormFactor": "SODIMM"}) == "16GB DDR4 SODIMM"
+        assert queries.model_label_for_row("ram", {"CapacityGB": 16, "Type": "DDR4", "FormFactor": "DIMM"}) == "16GB DDR4"
+
+
+class TestSubtypeClassifiers:
+    @pytest.mark.parametrize("title,expected", [
+        ("WD Elements 4TB Portable External Hard Drive USB 3.0", "External"),
+        ("Seagate Expansion 8TB Desktop External HDD", "External"),
+        ("Toshiba Canvio 2TB", "External"),
+        ("LaCie Rugged 5TB", "External"),
+        ("Seagate Barracuda 4TB 3.5\" SATA Internal Hard Drive", "Internal"),
+        ("WD Red 8TB NAS 3.5 inch SATA", "Internal"),
+        ("HGST Ultrastar 12TB SAS 7200rpm", "Internal"),
+    ])
+    def test_drive_type(self, title, expected):
+        assert EbayScraper.classify_drive_type(title) == expected
+
+    @pytest.mark.parametrize("title,expected", [
+        ("Crucial 16GB DDR4 3200MHz SODIMM Laptop Memory", "SODIMM"),
+        ("Samsung 8GB DDR4 SO-DIMM", "SODIMM"),
+        ("Kingston 16GB DDR4 SO DIMM Notebook RAM", "SODIMM"),
+        ("Corsair Vengeance 32GB DDR4 3600MHz Desktop DIMM", "DIMM"),
+        ("G.Skill Trident Z 16GB DDR4 3200", "DIMM"),
+    ])
+    def test_ram_form_factor(self, title, expected):
+        assert EbayScraper.classify_ram_form_factor(title) == expected
+
+    def test_defaults_are_the_common_variant(self):
+        assert EbayScraper.classify_drive_type("4TB Hard Drive") == "Internal"
+        assert EbayScraper.classify_ram_form_factor("16GB DDR4 2666") == "DIMM"
+        assert EbayScraper.classify_drive_type("") == "Internal"
+        assert EbayScraper.classify_ram_form_factor("") == "DIMM"
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. Snipe-premium helpers
