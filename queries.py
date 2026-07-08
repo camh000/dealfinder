@@ -12,6 +12,15 @@ price, so discounts are postage-inclusive and apples-to-apples.
 # column existed have NULL shipping and are treated as free-postage.
 EFF = "((e.Price + COALESCE(e.Shipping, 0)) / 100)"
 
+# Units in the listing (job lots — HDD for now). NULL (pre-migration rows and
+# non-lot categories) means 1; GREATEST guards a bad 0 from ever dividing.
+QTY = "GREATEST(COALESCE(e.Quantity, 1), 1)"
+
+# Per-unit effective price — the deal-detection basis. A lot is a deal when
+# its price PER UNIT beats the single-item market median: parting out resells
+# per unit, so that's the number the discount is really on.
+EFF_UNIT = f"({EFF} / {QTY})"
+
 # Per-category config.
 #   table         satellite table name
 #   alias         SQL alias for the satellite table
@@ -94,6 +103,7 @@ def _median_ctes(cfg) -> str:
     FROM Scraper.{cfg['table']} {a}
     JOIN Scraper.EBAY e ON e.ID = {a}.ID
     WHERE e.SoldDate IS NOT NULL AND e.Price IS NOT NULL AND {not_null}
+      AND COALESCE(e.Quantity, 1) = 1
 ),
 RawStats AS (
     SELECT DISTINCT {cols},
@@ -134,17 +144,21 @@ def build_deals_query(product_type: str, window_hours: int = 2, min_discount: fl
     # min so the divisor can't explode) and damped by competition (1/(1+bids))
     # — a 25%-off item ending in 20 min with no bids outranks a 40%-off item
     # ending in 6 h with 9 bidders that will be bid up anyway.
+    # CurrentPrice is the whole listing (what you'd bid); discount and score
+    # are per-unit; PotentialGain is whole-lot (median × qty − price).
     return f"""{ctes}
 SELECT
     e.ID,
     {extra},
     ROUND({EFF}, 2)                              AS CurrentPrice,
+    {QTY}                                        AS Quantity,
+    ROUND({EFF_UNIT}, 2)                         AS PerUnitPrice,
     ms.AvgPrice                                  AS AvgMarketPrice,
     ms.MinMarketPrice,
     ms.MaxMarketPrice,
-    ROUND(ms.AvgPrice - {EFF}, 2)                AS PotentialGain,
-    ROUND((1 - {EFF} / ms.AvgPrice) * 100, 1)    AS DiscountPct,
-    ROUND(((1 - {EFF} / ms.AvgPrice) * 100)
+    ROUND(ms.AvgPrice * {QTY} - {EFF}, 2)        AS PotentialGain,
+    ROUND((1 - {EFF_UNIT} / ms.AvgPrice) * 100, 1) AS DiscountPct,
+    ROUND(((1 - {EFF_UNIT} / ms.AvgPrice) * 100)
         / GREATEST(TIMESTAMPDIFF(MINUTE, NOW(), e.EndTime) / 60.0, 0.25)
         / (1 + COALESCE(e.Bids, 0)), 2)          AS DealScore,
     e.Bids,
@@ -155,7 +169,7 @@ JOIN Scraper.{cfg['table']} {a} ON {a}.ID = e.ID
 JOIN ModelStats ms ON {_join_cond(cfg, 'ms', a)}
 WHERE
     e.SoldDate IS NULL
-    AND {EFF} < ms.AvgPrice * {threshold}
+    AND {EFF_UNIT} < ms.AvgPrice * {threshold}
     AND e.EndTime > NOW()
     AND e.EndTime < NOW() + {interval}
 ORDER BY DealScore DESC;
@@ -176,7 +190,7 @@ FROM Scraper.EBAY e
 JOIN Scraper.{cfg['table']} {a} ON {a}.ID = e.ID
 JOIN RawStats rs ON {_join_cond(cfg, 'rs', a)}
 WHERE rs.SoldCount >= 5
-  AND e.SoldDate IS NULL AND {EFF} < rs.MedPrice * {threshold}
+  AND e.SoldDate IS NULL AND {EFF_UNIT} < rs.MedPrice * {threshold}
   AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
 """
 
@@ -198,7 +212,14 @@ ORDER  BY {cfg['guide_order']};
 
 
 def model_label_for_row(product_type: str, row: dict) -> str:
-    """Human label stored in DealOutcomes.Model for a surfaced deal row."""
+    """Human label stored in DealOutcomes.Model for a surfaced deal row.
+    Multi-unit lots get a ×N suffix (e.g. '4TB SAS ×5')."""
+    label = _base_label(product_type, row)
+    qty = int(row.get('Quantity') or 1)
+    return f"{label} ×{qty}" if qty > 1 and label else label
+
+
+def _base_label(product_type: str, row: dict) -> str:
     if product_type == 'hdd':
         cap = row.get('CapacityGB')
         iface = row.get('Interface') or 'SATA'

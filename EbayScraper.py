@@ -306,6 +306,52 @@ def classify_ram_form_factor(title: str) -> str:
     return 'SODIMM' if _RAM_SODIMM_RE.search(title or '') else 'DIMM'
 
 
+# ── job-lot detection ──────────────────────────────────────────────────────────
+# Multi-unit listings ("5 x 4TB", "job lot of 10") are valued per unit against
+# the single-item market stats, and excluded from those stats (bulk discounts
+# are structural — letting lots in would drag the median down and mask the
+# very discount being hunted). HDD-only for now: drives are homogeneous and
+# quantity sits in the title; RAM kit notation (2x8GB) already means ONE kit
+# of summed capacity, so NxM there must NOT be read as a lot.
+
+# Quantity must sit adjacent to a capacity token or an explicit lot phrase —
+# a stray number misread as a quantity inflates a valuation N-fold and
+# manufactures a phantom mega-deal. (?!\.\d) rejects form factors: the 3 in
+# 'lot of 3.5" drives' is not a quantity.
+_LOT_QTY_PATTERNS = [
+    re.compile(r'\b(\d{1,2})\s*[x×]\s*\d+(?:\.\d+)?\s*(?:tb|gb)\b', re.IGNORECASE),          # 5 x 4TB
+    re.compile(r'\b(?:job\s*lot|joblot|lot|bundle|pack)\s+of\s+(\d{1,2})(?!\.\d)\b', re.IGNORECASE),  # job lot of 10
+    re.compile(r'\b\d+(?:\.\d+)?\s*(?:tb|gb)\b[^,;(]{0,20}?[x×]\s*(\d{1,2})\b', re.IGNORECASE),       # 4TB ... x5
+    re.compile(r'\b(?:job\s*lot|joblot|lot|bundle)\b[^,;(]{0,15}?[x×]\s*(\d{1,2})\b', re.IGNORECASE), # job lot x6
+]
+
+# Above this a "quantity" is more likely a misparse than a real lot; treat the
+# listing as a single so it prices itself out of the deal feed (false negative
+# beats a 50x phantom valuation).
+LOT_MAX_QTY = 30
+
+_LOT_RISK_RE = re.compile(
+    r'\buntested\b|\bspares?\b|\brepairs?\b|\bfaulty\b|\bnot\s+working\b|'
+    r'\bfor\s+parts\b|\bas[-\s]is\b|\bdead\b', re.IGNORECASE)
+
+
+def extract_lot_quantity(title: str) -> int:
+    """Number of units in a multi-item listing; 1 when not confidently a lot."""
+    for pat in _LOT_QTY_PATTERNS:
+        m = pat.search(title or '')
+        if m:
+            qty = int(m.group(1))
+            if 2 <= qty <= LOT_MAX_QTY:
+                return qty
+    return 1
+
+
+def lot_is_risky(title: str) -> bool:
+    """True for untested/spares-or-repairs wording — the market median assumes
+    working units, so risky lots must not be valued against it."""
+    return bool(_LOT_RISK_RE.search(title or ''))
+
+
 def __ParseItems(soup, query, productType):
     rawItems = soup.find_all('div', {'class': 'su-card-container su-card-container--horizontal'})
     if not rawItems:
@@ -397,6 +443,7 @@ def __ParseItems(soup, query, productType):
 
         socket = cores = capacity_gb = interface = form_factor = rpm = ram_type = speed = None
         drive_type = ram_format = None
+        quantity = 1
 
         if productType == 'GPU':
 
@@ -573,6 +620,13 @@ def __ParseItems(soup, query, productType):
             form_factor = extract_form_factor(title)
             rpm         = extract_rpm(title)
             drive_type  = classify_drive_type(title)
+            quantity    = extract_lot_quantity(title)
+
+            # Untested/spares job lots can't be valued against a working-unit
+            # median. Singles keep the old behaviour (median resists them).
+            if quantity > 1 and lot_is_risky(title):
+                log.debug("[%s] Skipping risky lot: %s", query, title[:60])
+                continue
 
         elif productType == 'RAM':
 
@@ -661,6 +715,7 @@ def __ParseItems(soup, query, productType):
             'ram-type': ram_type,
             'speed': speed,
             'ram-format': ram_format,
+            'quantity': quantity,
         }
         
         data.append(itemData)
@@ -838,6 +893,8 @@ class Product:
     ram_type: Optional[str] = None
     speed: Optional[int] = None
     ram_format: Optional[str] = None   # DIMM / SODIMM
+    # Units in the listing (job lots); deal queries price per unit.
+    quantity: int = 1
 
 def _get_connection():
     conn = mariadb.connect(
@@ -858,18 +915,19 @@ def _get_connection():
 def _upload(cur, p: Product, product_type: str) -> int:
     """Returns the EBAY rowcount: 1 = inserted, 2 = updated, 0 = no change."""
     cur.execute("""
-        INSERT INTO EBAY (ID, Title, Price, Shipping, Bids, EndTime, SoldDate, URL)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO EBAY (ID, Title, Price, Shipping, Quantity, Bids, EndTime, SoldDate, URL)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             Title = VALUES(Title),
             Price = VALUES(Price),
             Shipping = VALUES(Shipping),
+            Quantity = VALUES(Quantity),
             Bids = VALUES(Bids),
             EndTime = VALUES(EndTime),
             SoldDate = VALUES(SoldDate),
             URL = VALUES(URL);
         """, (p.id, p.title, p.price * 100, int(round((p.shipping or 0) * 100)),
-              p.bid_count, p.time_end, p.sold_date, p.url)
+              p.quantity or 1, p.bid_count, p.time_end, p.sold_date, p.url)
     )
     ebay_rc = cur.rowcount
     if product_type == 'GPU':
@@ -1111,6 +1169,7 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
                     drive_type=d.get("drive-type"),
                     ram_type=d["ram-type"], speed=d["speed"],
                     ram_format=d.get("ram-format"),
+                    quantity=d.get("quantity") or 1,
                 )
                 for d in items
             ]
@@ -1242,6 +1301,7 @@ def ScrapeTargeted(items: list) -> int:
                         ram_type=item['ram-type'],
                         speed=item['speed'],
                         ram_format=item.get('ram-format'),
+                        quantity=item.get('quantity') or 1,
                     )
                     _upload(cur, product, category)
                     log.info(
@@ -1286,6 +1346,49 @@ def EnsureShippingColumn() -> None:
         except mariadb.Error as e:
             if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
                 log.error("EBAY: unexpected error adding Shipping column: %s", e)
+    finally:
+        conn.close()
+
+
+def EnsureQuantityColumn() -> None:
+    """Add EBAY.Quantity (units per listing, default 1) on installations that
+    predate it, then backfill HDD rows by re-parsing titles so historical lot
+    sales stop polluting the single-unit market medians. NULL elsewhere is
+    treated as 1 by the queries.
+    """
+    DUP_COLUMN_ERRNO = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        added = False
+        try:
+            cur.execute("ALTER TABLE Scraper.EBAY ADD COLUMN Quantity INT NULL")
+            conn.commit()
+            added = True
+            log.info("EBAY: added Quantity column")
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("EBAY: unexpected error adding Quantity column: %s", e)
+
+        if added:
+            cur.execute("""
+                SELECT e.ID, e.Title FROM Scraper.EBAY e
+                JOIN Scraper.HDD h ON h.ID = e.ID
+                WHERE e.Quantity IS NULL
+            """)
+            rows = cur.fetchall()
+            lots = 0
+            for ebay_id, title in rows:
+                qty = extract_lot_quantity(title or '')
+                cur.execute("UPDATE Scraper.EBAY SET Quantity = %s WHERE ID = %s", (qty, ebay_id))
+                if qty > 1:
+                    lots += 1
+            if rows:
+                conn.commit()
+                log.info("EBAY: backfilled Quantity for %d HDD row(s) (%d lot(s) found)", len(rows), lots)
+    except mariadb.Error as e:
+        log.error("EnsureQuantityColumn failed: %s", e)
+        conn.rollback()
     finally:
         conn.close()
 
@@ -1361,6 +1464,10 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20) -> list[dict]:
                 continue
             for row in rows:
                 label = queries.model_label_for_row(product_type, row)
+                # SurfacedPrice is the whole-lot price, so the stored market
+                # value must be whole-lot too (median × quantity) — outcome
+                # win/loss math compares FinalPrice against AvgMarketPrice.
+                qty = int(row.get('Quantity') or 1)
                 ins.execute("""
                     INSERT IGNORE INTO Scraper.DealOutcomes
                         (EbayID, Category, Model, SurfacedPrice, AvgMarketPrice, DiscountPct, BidCount, EndTime)
@@ -1370,7 +1477,7 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20) -> list[dict]:
                     product_type.upper(),
                     label,
                     int(round(row['CurrentPrice'] * 100)),
-                    int(round(row['AvgMarketPrice'] * 100)),
+                    int(round(row['AvgMarketPrice'] * qty * 100)),
                     float(row['DiscountPct']),
                     int(row.get('Bids') or 0),
                     row['EndTime'],

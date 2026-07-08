@@ -201,6 +201,31 @@ def ensure_shipping_column():
 ensure_shipping_column()
 
 
+def ensure_quantity_column():
+    """EBAY.Quantity (units per listing) — job lots priced per unit. The
+    scraper's EnsureQuantityColumn also backfills HDD titles; this one just
+    guarantees the column exists before the deal queries reference it."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE Scraper.EBAY ADD COLUMN Quantity INT NULL")
+            conn.commit()
+            log.info("EBAY: added Quantity column")
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("EBAY: unexpected error adding Quantity column: %s", e)
+    except Exception as e:
+        log.error("Could not ensure Quantity column: %s", e)
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_quantity_column()
+
+
 def ensure_scrape_meta():
     conn = None
     try:

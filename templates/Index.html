@@ -1575,11 +1575,19 @@
     function renderRow(d, type, i) {
         const bigDiscount = d.DiscountPct >= 30;
         const fmt = v => (v != null && !isNaN(v)) ? Number(v).toFixed(2) : '—';
+        // Job lots: CurrentPrice is the whole lot (what you'd bid), so the
+        // market cell scales to lot value (median × qty) with per-unit sublines.
+        const qty   = Number(d.Quantity) || 1;
+        const isLot = qty > 1;
+        const avgShown = isLot ? d.AvgMarketPrice * qty : d.AvgMarketPrice;
+        const avgSub   = isLot ? `£${fmt(d.AvgMarketPrice)}/unit mkt`
+                               : fmtRange(d.MinMarketPrice, d.MaxMarketPrice);
+        const curSub   = isLot ? `<div class="brand-tag">£${fmt(d.PerUnitPrice)}/unit</div>` : '';
         const prices = `
-            <td data-label="Current" style="text-align:right"><div class="price-current">£${fmt(d.CurrentPrice)}</div></td>
+            <td data-label="Current" style="text-align:right"><div class="price-current">£${fmt(d.CurrentPrice)}</div>${curSub}</td>
             <td data-label="Avg" style="text-align:right">
-                <div class="price-avg">£${fmt(d.AvgMarketPrice)}</div>
-                <div class="brand-tag">${fmtRange(d.MinMarketPrice, d.MaxMarketPrice)}</div>
+                <div class="price-avg">£${fmt(avgShown)}</div>
+                <div class="brand-tag">${avgSub}</div>
             </td>
             <td data-label="Saving" style="text-align:right"><span class="gain">+£${fmt(d.PotentialGain)}</span></td>
             <td data-label="Discount"><span class="discount-badge ${bigDiscount ? 'high' : ''}">${d.DiscountPct}% OFF</span></td>
@@ -1614,9 +1622,10 @@
                 ? (d.CapacityGB / 1000).toFixed(d.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
                 : d.CapacityGB + 'GB';
             const ext = d.DriveType === 'External' ? ' <span class="subtype-tag">EXT</span>' : '';
+            const lot = isLot ? ` <span class="subtype-tag">×${qty} LOT</span>` : '';
             return `<tr style="--i:${i}">
                 <td class="card-title">
-                    <div class="model-cell">${cap} · ${d.Interface || 'SATA'}${ext}</div>
+                    <div class="model-cell">${cap} · ${d.Interface || 'SATA'}${ext}${lot}</div>
                 </td>
                 <td data-label="Details">
                     <div class="model-cell" style="font-size:13px">${d.Brand || '—'}</div>

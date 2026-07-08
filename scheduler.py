@@ -101,6 +101,9 @@ CPU_QUERY_LIST = [
 HDD_QUERY_LIST = [
     "SAS hard drive TB",
     "SATA hard drive TB",
+    # Job lots — parsed with a per-unit quantity and valued against the
+    # single-item medians (lots themselves never enter the market stats).
+    "hard drive job lot TB",
 ]
 
 RAM_QUERY_LIST = [
@@ -340,6 +343,13 @@ if __name__ == "__main__":
         EbayScraper.EnsureCategoryAttributes()
     except Exception as e:
         log.error("Category attribute migration failed: %s", e)
+
+    # Job-lot support: EBAY.Quantity (+ HDD title backfill so historical lot
+    # sales stop polluting the single-unit medians).
+    try:
+        EbayScraper.EnsureQuantityColumn()
+    except Exception as e:
+        log.error("Quantity column migration failed: %s", e)
 
     # Notification recipients table (+ bootstrap the default recipient from env).
     try:

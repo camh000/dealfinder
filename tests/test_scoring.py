@@ -96,6 +96,36 @@ class TestQueryBuilders:
         assert queries.model_label_for_row("ram", {"CapacityGB": 16, "Type": "DDR4", "FormFactor": "SODIMM"}) == "16GB DDR4 SODIMM"
         assert queries.model_label_for_row("ram", {"CapacityGB": 16, "Type": "DDR4", "FormFactor": "DIMM"}) == "16GB DDR4"
 
+    @pytest.mark.parametrize("ptype", ALL_TYPES)
+    def test_sold_stats_exclude_lots(self, ptype):
+        """Bulk discounts are structural — lots must never shape the
+        single-unit market medians, in any of the three query kinds."""
+        for sql in (queries.build_deals_query(ptype),
+                    queries.build_count_query(ptype),
+                    queries.build_price_guide_query(ptype)):
+            assert "COALESCE(e.Quantity, 1) = 1" in sql
+
+    @pytest.mark.parametrize("ptype", ALL_TYPES)
+    def test_deal_condition_is_per_unit(self, ptype):
+        """Deal detection (and the badge count) compares price PER UNIT
+        against the median, so an N-drive lot isn't priced as one drive."""
+        for sql in (queries.build_deals_query(ptype),
+                    queries.build_count_query(ptype)):
+            assert queries.QTY in sql
+
+    def test_deals_query_exposes_lot_columns(self):
+        sql = queries.build_deals_query("hdd")
+        assert "AS Quantity" in sql
+        assert "AS PerUnitPrice" in sql
+        # whole-lot gain: market value of the lot minus the lot price
+        assert f"ms.AvgPrice * {queries.QTY}" in sql
+
+    def test_labels_annotate_lots(self):
+        assert queries.model_label_for_row("hdd", {"CapacityGB": 4000, "Interface": "SAS", "DriveType": "Internal", "Quantity": 5}) == "4TB SAS ×5"
+        assert queries.model_label_for_row("hdd", {"CapacityGB": 4000, "Interface": "SAS", "DriveType": "Internal", "Quantity": 1}) == "4TB SAS"
+        # quantity untouched / missing → no suffix (non-lot categories)
+        assert queries.model_label_for_row("gpu", {"Model": "RTX 3060"}) == "RTX 3060"
+
 
 class TestSubtypeClassifiers:
     @pytest.mark.parametrize("title,expected", [
@@ -125,6 +155,41 @@ class TestSubtypeClassifiers:
         assert EbayScraper.classify_ram_form_factor("16GB DDR4 2666") == "DIMM"
         assert EbayScraper.classify_drive_type("") == "Internal"
         assert EbayScraper.classify_ram_form_factor("") == "DIMM"
+
+
+class TestLotQuantity:
+    @pytest.mark.parametrize("title,expected", [
+        ("5 x 4TB Seagate Constellation SAS Hard Drive", 5),
+        ("10x500GB WD Blue SATA", 10),
+        ("Job lot of 8 assorted hard drives 1TB SATA", 8),
+        ("Joblot of 3 Seagate 2TB drives", 3),
+        ("Bundle of 6 HGST 4TB SAS", 6),
+        ("Seagate 4TB SATA hard drive x4", 4),
+        ("Job lot x6 WD 2TB hard drives", 6),
+        # not lots
+        ("WD Red 4TB NAS Hard Drive", 1),
+        ("Seagate Barracuda 8TB 3.5\" SATA", 1),
+        # form factor must not read as a quantity
+        ("Job lot of 3.5\" SATA hard drives", 1),
+        # implausible quantity → treated as a single (prices itself out)
+        ("99 x 4TB drives", 1),
+    ])
+    def test_quantity_extraction(self, title, expected):
+        assert EbayScraper.extract_lot_quantity(title) == expected
+
+    def test_empty_and_none_are_singles(self):
+        assert EbayScraper.extract_lot_quantity("") == 1
+        assert EbayScraper.extract_lot_quantity(None) == 1
+
+    @pytest.mark.parametrize("title,risky", [
+        ("Job lot of 5 hard drives UNTESTED", True),
+        ("10 x 2TB drives spares or repairs", True),
+        ("4 x 4TB SAS faulty for parts", True),
+        ("5 x 4TB Seagate SAS wiped and tested", False),
+        ("Job lot of 8 WD 2TB fully working", False),
+    ])
+    def test_risk_filter(self, title, risky):
+        assert EbayScraper.lot_is_risky(title) is risky
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
