@@ -366,62 +366,95 @@ def __ParseItems(soup, query, productType):
     if rawItems and rawItems[0].find('a', href=re.compile(r'/itm/\d+')) is None:
         start_idx = 1
     for item in rawItems[start_idx:]:
-        
-        # Get item data — skip item entirely if critical fields can't be parsed
-        try:
-            spans = item.find(class_="s-card__title").find_all('span')
-            if spans[0].get_text(strip=True) == "New listing":
-                title = spans[1].get_text(strip=True)
-            else:
-                title = spans[0].get_text(strip=True)
-        except (AttributeError, IndexError) as e:
-            log.warning("[%s] Skipping item - could not parse title: %s", query, e)
+
+        # Get item data — skip item entirely if critical fields can't be parsed.
+        # Each field tries the 2026-07 su-item-card markup first, then falls
+        # back to the older s-card layout (eBay churns these class names every
+        # few months and A/B-tests variants, so both must keep parsing).
+        title = None
+        title_el = item.find(class_='su-item-card__title')
+        if title_el is not None:
+            title = title_el.get_text(strip=True)
+            if title.lower().startswith('new listing'):
+                title = title[len('new listing'):].strip()
+        else:
+            try:
+                spans = item.find(class_="s-card__title").find_all('span')
+                if spans[0].get_text(strip=True) == "New listing":
+                    title = spans[1].get_text(strip=True)
+                else:
+                    title = spans[0].get_text(strip=True)
+            except (AttributeError, IndexError):
+                pass
+        if not title:
+            log.warning("[%s] Skipping item - could not parse title", query)
+            continue
+        # Promoted "Shop on eBay" tiles carry a real-looking /itm/ link, so the
+        # ad-slot guard above misses them; the placeholder title is the tell.
+        if title == 'Shop on eBay':
             continue
 
         try:
-            price = __ParseRawPrice(item.find('span', {'class': 's-card__price'}).get_text(strip=True))
+            price_el = (item.find('span', {'class': 'su-item-card__price'})
+                        or item.find('span', {'class': 's-card__price'}))
+            price = __ParseRawPrice(price_el.get_text(strip=True))
             if price is None:
                 raise ValueError("Price pattern not found in text")
         except (AttributeError, TypeError, ValueError) as e:
             log.warning("[%s] Skipping item '%s...' - could not parse price: %s", query, title[:40], e)
             continue
 
-        try:
-            # eBay 2026 markup: postage lives in a flat span of this class with
-            # text like "+£3.42 delivery" / "Free delivery" (previously a nested
-            # span saying "postage" — the old selector silently returned 0).
-            # The same class also carries the bid-count span, hence the regex.
-            ship_el = item.find('span', {'class': 'su-styled-text secondary large'},
-                                string=re.compile(r'delivery|postage', re.I))
-            shipping = __ParseRawPrice(ship_el.get_text(strip=True)) if ship_el else 0
-            if shipping is None:
-                shipping = 0   # "Free delivery"
-        except (AttributeError, TypeError):
-            shipping = 0
+        shipping = __ExtractShipping(item)
 
-        try:
-            timeLeft = item.find(class_="s-card__time-left").get_text(strip=True)
-        except AttributeError:
-            timeLeft = ""
+        timeLeft = ""
+        tl_el = item.find(class_="s-card__time-left")
+        if tl_el is not None:
+            timeLeft = tl_el.get_text(strip=True)
+        else:
+            # 2026-07 markup: "<n> bids · Time left <2m|1d 3h>" countdown div.
+            cd = item.find(class_='su-bid-countdown')
+            if cd is not None:
+                m = re.search(r'time\s*left\s*((?:\d+\s*[dhms]\s*)+)',
+                              cd.get_text(' ', strip=True), re.IGNORECASE)
+                if m:
+                    timeLeft = m.group(1).strip()
 
+        timeEnd = None
         try:
-            timeEnd = item.find(class_="s-card__time-end").get_text(strip=True)
-            timeEnd = parse_ebay_endtime(timeEnd)
+            te_el = item.find(class_="s-card__time-end")
+            if te_el is not None:
+                timeEnd = parse_ebay_endtime(te_el.get_text(strip=True))
         except (AttributeError, TypeError):
             timeEnd = None
+        if timeEnd is None and timeLeft:
+            # 2026-07 markup shows only a relative countdown — derive the
+            # absolute end from it. Minute resolution is fine: the targeted
+            # scrape tiers refresh tracked items as the clock runs down.
+            delta = parse_ebay_timeleft(timeLeft)
+            if delta is not None:
+                timeEnd = datetime.now(timezone.utc).replace(tzinfo=None) + delta
 
-        try:
-            soldDate = item.find(class_="su-styled-text positive default").get_text(strip=True)
-            soldDate = soldDate.removeprefix('Sold ')
-            soldDate = parse_soldDate(soldDate)
-        except AttributeError:
-            soldDate = None
+        # Sold date: new markup uses a "signal" chip ("Sold  8 Jul 2026");
+        # older markup a positive styled-text span.
+        soldDate = None
+        for el in item.find_all('span', class_='signal'):
+            t = el.get_text(strip=True)
+            if t.startswith('Sold'):
+                soldDate = parse_soldDate(t.removeprefix('Sold').strip())
+                break
+        if soldDate is None:
+            try:
+                t = item.find(class_="su-styled-text positive default").get_text(strip=True)
+                soldDate = parse_soldDate(t.removeprefix('Sold').strip())
+            except AttributeError:
+                soldDate = None
 
-        try:
-            bidcount = item.find(class_="su-styled-text secondary large", string=re.compile("bid")).get_text(strip=True)
-            bidCount = int("".join(filter(str.isdigit, bidcount)))
-        except (AttributeError, TypeError, ValueError):
-            bidCount = 0
+        # Bid count: markup-agnostic — any span whose whole text is "N bids".
+        bidCount = 0
+        for el in item.find_all('span'):
+            if re.fullmatch(r'\d+\s*bids?', el.get_text(strip=True)):
+                bidCount = int("".join(filter(str.isdigit, el.get_text(strip=True))))
+                break
 
         try:
             reviewCount = int("".join(filter(str.isdigit, item.find(class_="s-item__reviews-count").find('span').get_text(strip=True))))
@@ -756,6 +789,31 @@ def __ParseRawPrice(string):
     else:
         return None
 
+_SHIPPING_KEYWORD_RE = re.compile(r'delivery|postage', re.IGNORECASE)
+_GBP_AMOUNT_RE = re.compile(r'£\s*([\d,]+(?:\.\d+)?)')
+
+def __ExtractShipping(item) -> float:
+    """Postage in pounds from a result card; 0.0 for free or absent.
+
+    Handles both markups: a single span ("+£4.06 delivery" / "Free delivery")
+    and the 2026-07 active-card split, where the amount ("+£36.95 ") and the
+    wording ("delivery in 2-3 days") are sibling spans. The amount parse is
+    £-anchored so "delivery in 2-3 days" can never read as £2; spans that
+    mention delivery without a findable amount (e.g. a title) are skipped in
+    favour of a later span that has one.
+    """
+    for el in item.find_all('span'):
+        if not _SHIPPING_KEYWORD_RE.search(el.get_text(' ', strip=True)):
+            continue
+        m = _GBP_AMOUNT_RE.search(el.get_text(' ', strip=True))
+        if m is None:
+            prev = el.find_previous_sibling('span')
+            if prev is not None:
+                m = _GBP_AMOUNT_RE.search(prev.get_text(' ', strip=True))
+        if m:
+            return float(m.group(1).replace(',', ''))
+    return 0.0
+
 def __Average(numberList):
 
     if len(list(numberList)) == 0: return 0
@@ -853,6 +911,22 @@ def parse_ebay_endtime(endtime_str: str, reference_date: datetime = None):
         return _display_wall_to_utc(wall, tz)
 
     return None
+
+_TIMELEFT_TOKEN_RE = re.compile(r'(\d+)\s*([dhms])', re.IGNORECASE)
+
+
+def parse_ebay_timeleft(timeleft_str: str) -> timedelta | None:
+    """Parse a relative eBay countdown ("2m", "1d 3h", "6d 23h left") into a
+    timedelta. None when no time tokens are present. Used to derive an
+    absolute EndTime on the 2026-07 markup, which no longer shows one."""
+    if not timeleft_str:
+        return None
+    units = {'d': 'days', 'h': 'hours', 'm': 'minutes', 's': 'seconds'}
+    kwargs = {}
+    for num, unit in _TIMELEFT_TOKEN_RE.findall(timeleft_str):
+        kwargs.setdefault(units[unit.lower()], int(num))
+    return timedelta(**kwargs) if kwargs else None
+
 
 def parse_soldDate(date_str: str):
     if not date_str:
