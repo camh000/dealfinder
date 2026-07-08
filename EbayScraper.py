@@ -602,6 +602,15 @@ def __ParseItems(soup, query, productType):
 
         elif productType == 'HDD':
 
+            # Flash media isn't a hard drive — the job-lot search in particular
+            # returns USB-stick lots that would otherwise pollute HDD groups.
+            _tl = title.lower()
+            if any(k in _tl for k in ['flash drive', 'memory stick', 'pen drive',
+                                       'pendrive', 'thumb drive', 'usb stick',
+                                       'sd card', 'micro sd', 'microsd']):
+                log.debug("[%s] Skipping flash media: %s", query, title[:60])
+                continue
+
             HDD_BRANDS = ['SEAGATE','TOSHIBA','SAMSUNG','HITACHI','HGST','FUJITSU','MAXTOR']
 
             def extract_hdd_brand(title: str):

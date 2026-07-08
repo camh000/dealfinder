@@ -181,6 +181,19 @@ class TestLotQuantity:
         assert EbayScraper.extract_lot_quantity("") == 1
         assert EbayScraper.extract_lot_quantity(None) == 1
 
+    def test_flash_media_lots_skipped_from_hdd(self):
+        """USB-stick job lots must not enter the HDD category at all."""
+        from bs4 import BeautifulSoup
+        # Minimal new-markup card wrapping a flash-drive lot title
+        html = """
+        <div class="su-card-container su-card-container--horizontal">
+          <a href="https://www.ebay.co.uk/itm/111222333444">x</a>
+          <a class="su-link su-item-card__title"><span>Job Lot 64GB x 2 Sandisk USB 3.0 Flash Drive Memory Stick</span></a>
+          <span class="su-item-card__price">£6.50</span>
+        </div>"""
+        parse_items = vars(EbayScraper)["__ParseItems"]
+        assert parse_items(BeautifulSoup(html, 'html.parser'), "t", "HDD") == []
+
     @pytest.mark.parametrize("title,risky", [
         ("Job lot of 5 hard drives UNTESTED", True),
         ("10 x 2TB drives spares or repairs", True),
