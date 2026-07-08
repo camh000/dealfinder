@@ -1591,7 +1591,10 @@
             </td>
             <td data-label="Saving" style="text-align:right"><span class="gain">+£${fmt(d.PotentialGain)}</span></td>
             <td data-label="Discount"><span class="discount-badge ${bigDiscount ? 'high' : ''}">${d.DiscountPct}% OFF</span></td>
-            <td data-label="Bids" style="text-align:right"><span class="bid-count">${d.Bids || 0} bids</span></td>
+            <td data-label="Bids" style="text-align:right"><span class="bid-count">${d.Bids || 0} bids</span>${
+                d.SellerFeedbackPct != null && d.SellerFeedbackCount >= 3
+                    ? `<div class="brand-tag">${d.SellerFeedbackPct}% seller</div>` : ''
+            }</td>
             <td data-label="Ends In"><span class="time-cell" ${endsAttrs(d.EndTime)}>${d.EndTime ? '' : '—'}</span></td>
             <td class="card-action"><a href="${safeUrl(d.URL)}" target="_blank" rel="noopener noreferrer" class="link-btn">VIEW →</a></td>`;
 

@@ -3,6 +3,7 @@ from flask.json.provider import DefaultJSONProvider
 from datetime import timezone
 from decimal import Decimal
 import hashlib
+import hmac
 import mariadb
 import os
 import logging
@@ -27,6 +28,28 @@ class _JSONProvider(DefaultJSONProvider):
 
 app = Flask(__name__)
 app.json = _JSONProvider(app)
+
+
+# Optional HTTP Basic Auth — enabled when both env vars are set. Guards every
+# route (the notify-settings API manages HA tokens, so nothing is left open).
+# Browsers cache the credentials, so the PWA/service worker keeps working.
+HTTP_USER = os.environ.get('HTTP_USER', '')
+HTTP_PASS = os.environ.get('HTTP_PASS', '')
+if HTTP_USER and HTTP_PASS:
+    log.info("HTTP Basic Auth enabled for all routes")
+
+
+@app.before_request
+def _basic_auth_gate():
+    if not (HTTP_USER and HTTP_PASS):
+        return None
+    auth = request.authorization
+    if (auth is not None and auth.type == 'basic'
+            and hmac.compare_digest(auth.username or '', HTTP_USER)
+            and hmac.compare_digest(auth.password or '', HTTP_PASS)):
+        return None
+    return ('Authentication required', 401,
+            {'WWW-Authenticate': 'Basic realm="dealfinder"'})
 
 
 def _iso_utc(dt):
@@ -224,6 +247,31 @@ def ensure_quantity_column():
 
 
 ensure_quantity_column()
+
+
+def ensure_seller_feedback_columns():
+    """EBAY.SellerFeedbackPct/-Count — the deal queries reference them, so the
+    web container must guarantee they exist even if it starts first."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        for col_sql in ("SellerFeedbackPct FLOAT NULL", "SellerFeedbackCount INT NULL"):
+            try:
+                cur.execute(f"ALTER TABLE Scraper.EBAY ADD COLUMN {col_sql}")
+                conn.commit()
+                log.info("EBAY: added %s column", col_sql.split()[0])
+            except mariadb.Error as e:
+                if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                    log.error("EBAY: unexpected error adding %s: %s", col_sql.split()[0], e)
+    except Exception as e:
+        log.error("Could not ensure seller feedback columns: %s", e)
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_seller_feedback_columns()
 
 
 def ensure_scrape_meta():

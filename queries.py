@@ -7,6 +7,7 @@ Pricing basis: EFFECTIVE price = item price + shipping (both stored in pence).
 Shipping applies to both the sold-market statistics and the live listing
 price, so discounts are postage-inclusive and apples-to-apples.
 """
+import os
 
 # Effective listing price in pounds. Older rows scraped before the Shipping
 # column existed have NULL shipping and are treated as free-postage.
@@ -20,6 +21,14 @@ QTY = "GREATEST(COALESCE(e.Quantity, 1), 1)"
 # its price PER UNIT beats the single-item market median: parting out resells
 # per unit, so that's the number the discount is really on.
 EFF_UNIT = f"({EFF} / {QTY})"
+
+# Seller-quality gate for the deal feed (stats are unaffected — a sold price
+# is market data regardless of who sold it). The percentage is only trusted
+# once the seller has real history: "0% positive (0)" is a brand-new account,
+# not a scammer, and NULL is a row not re-scraped since the column landed.
+MIN_SELLER_FEEDBACK_PCT = float(os.environ.get('MIN_SELLER_FEEDBACK_PCT', '90'))
+FEEDBACK_OK = ("(e.SellerFeedbackCount IS NULL OR e.SellerFeedbackCount < 3 "
+               f"OR e.SellerFeedbackPct >= {MIN_SELLER_FEEDBACK_PCT})")
 
 # Per-category config.
 #   table         satellite table name
@@ -162,6 +171,8 @@ SELECT
         / GREATEST(TIMESTAMPDIFF(MINUTE, NOW(), e.EndTime) / 60.0, 0.25)
         / (1 + COALESCE(e.Bids, 0)), 2)          AS DealScore,
     e.Bids,
+    e.SellerFeedbackPct,
+    e.SellerFeedbackCount,
     e.EndTime,
     e.URL
 FROM Scraper.EBAY e
@@ -170,6 +181,7 @@ JOIN ModelStats ms ON {_join_cond(cfg, 'ms', a)}
 WHERE
     e.SoldDate IS NULL
     AND {EFF_UNIT} < ms.AvgPrice * {threshold}
+    AND {FEEDBACK_OK}
     AND e.EndTime > NOW()
     AND e.EndTime < NOW() + {interval}
 ORDER BY DealScore DESC;
@@ -191,6 +203,7 @@ JOIN Scraper.{cfg['table']} {a} ON {a}.ID = e.ID
 JOIN RawStats rs ON {_join_cond(cfg, 'rs', a)}
 WHERE rs.SoldCount >= 5
   AND e.SoldDate IS NULL AND {EFF_UNIT} < rs.MedPrice * {threshold}
+  AND {FEEDBACK_OK}
   AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
 """
 

@@ -351,6 +351,12 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("Quantity column migration failed: %s", e)
 
+    # Seller feedback columns (fill in as listings are re-scraped).
+    try:
+        EbayScraper.EnsureSellerFeedbackColumns()
+    except Exception as e:
+        log.error("Seller feedback migration failed: %s", e)
+
     # Notification recipients table (+ bootstrap the default recipient from env).
     try:
         EbayScraper.EnsureNotifyRecipients()

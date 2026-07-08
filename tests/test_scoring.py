@@ -113,6 +113,16 @@ class TestQueryBuilders:
                     queries.build_count_query(ptype)):
             assert queries.QTY in sql
 
+    @pytest.mark.parametrize("ptype", ALL_TYPES)
+    def test_deal_feed_gates_on_seller_feedback(self, ptype):
+        """Low-feedback sellers are hidden from deals + counts, but only once
+        they have real history (count >= 3); stats are unaffected."""
+        for sql in (queries.build_deals_query(ptype),
+                    queries.build_count_query(ptype)):
+            assert queries.FEEDBACK_OK in sql
+        assert "SellerFeedback" not in queries.build_price_guide_query(ptype)
+        assert "e.SellerFeedbackCount < 3" in queries.FEEDBACK_OK
+
     def test_deals_query_exposes_lot_columns(self):
         sql = queries.build_deals_query("hdd")
         assert "AS Quantity" in sql

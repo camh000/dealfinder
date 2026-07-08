@@ -117,6 +117,17 @@ def test_active_fixture_derives_end_times():
         assert now - timedelta(days=1) < i['time-end'] < now + timedelta(days=11)
 
 
+@pytest.mark.parametrize("fixture", ALL_FIXTURES)
+def test_fixture_parses_seller_feedback(fixture):
+    """Both markups carry 'N% positive (count)' on every card."""
+    items = parse_fixture(fixture)
+    with_fb = [i for i in items if i['feedback-pct'] is not None]
+    assert len(with_fb) / len(items) >= 0.8, "most cards should yield seller feedback"
+    for i in with_fb:
+        assert 0 <= i['feedback-pct'] <= 100
+        assert i['feedback-count'] >= 0
+
+
 def test_active_fixture_parses_bids_and_shipping():
     """Split-span delivery ("+£36.95 " + "delivery in 2-3 days") and the
     bid-countdown div are active-page features — some rows must yield both."""

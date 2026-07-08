@@ -456,6 +456,15 @@ def __ParseItems(soup, query, productType):
                 bidCount = int("".join(filter(str.isdigit, el.get_text(strip=True))))
                 break
 
+        # Seller feedback — every card in both markups carries
+        # "seller 100% positive (290)". A (0) count means a no-history
+        # seller, not a bad one; consumers must gate on the count.
+        feedback_pct = feedback_count = None
+        fb = _FEEDBACK_RE.search(item.get_text(' ', strip=True))
+        if fb:
+            feedback_pct = float(fb.group(1))
+            feedback_count = int(fb.group(2).replace(',', ''))
+
         try:
             reviewCount = int("".join(filter(str.isdigit, item.find(class_="s-item__reviews-count").find('span').get_text(strip=True))))
         except (AttributeError, TypeError, ValueError):
@@ -758,6 +767,8 @@ def __ParseItems(soup, query, productType):
             'speed': speed,
             'ram-format': ram_format,
             'quantity': quantity,
+            'feedback-pct': feedback_pct,
+            'feedback-count': feedback_count,
         }
         
         data.append(itemData)
@@ -797,6 +808,8 @@ def __ParseRawPrice(string):
         return float(parsedPrice.group())
     else:
         return None
+
+_FEEDBACK_RE = re.compile(r'(\d{1,3}(?:\.\d+)?)%\s*positive\s*\((\d[\d,]*)\)', re.IGNORECASE)
 
 _SHIPPING_KEYWORD_RE = re.compile(r'delivery|postage', re.IGNORECASE)
 _GBP_AMOUNT_RE = re.compile(r'£\s*([\d,]+(?:\.\d+)?)')
@@ -978,6 +991,9 @@ class Product:
     ram_format: Optional[str] = None   # DIMM / SODIMM
     # Units in the listing (job lots); deal queries price per unit.
     quantity: int = 1
+    # Seller feedback from the result card; count 0 = no-history seller.
+    feedback_pct: Optional[float] = None
+    feedback_count: Optional[int] = None
 
 def _get_connection():
     conn = mariadb.connect(
@@ -998,8 +1014,9 @@ def _get_connection():
 def _upload(cur, p: Product, product_type: str) -> int:
     """Returns the EBAY rowcount: 1 = inserted, 2 = updated, 0 = no change."""
     cur.execute("""
-        INSERT INTO EBAY (ID, Title, Price, Shipping, Quantity, Bids, EndTime, SoldDate, URL)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO EBAY (ID, Title, Price, Shipping, Quantity, Bids, EndTime, SoldDate, URL,
+                          SellerFeedbackPct, SellerFeedbackCount)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             Title = VALUES(Title),
             Price = VALUES(Price),
@@ -1008,9 +1025,12 @@ def _upload(cur, p: Product, product_type: str) -> int:
             Bids = VALUES(Bids),
             EndTime = VALUES(EndTime),
             SoldDate = VALUES(SoldDate),
-            URL = VALUES(URL);
+            URL = VALUES(URL),
+            SellerFeedbackPct = VALUES(SellerFeedbackPct),
+            SellerFeedbackCount = VALUES(SellerFeedbackCount);
         """, (p.id, p.title, p.price * 100, int(round((p.shipping or 0) * 100)),
-              p.quantity or 1, p.bid_count, p.time_end, p.sold_date, p.url)
+              p.quantity or 1, p.bid_count, p.time_end, p.sold_date, p.url,
+              p.feedback_pct, p.feedback_count)
     )
     ebay_rc = cur.rowcount
     if product_type == 'GPU':
@@ -1253,6 +1273,8 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
                     ram_type=d["ram-type"], speed=d["speed"],
                     ram_format=d.get("ram-format"),
                     quantity=d.get("quantity") or 1,
+                    feedback_pct=d.get("feedback-pct"),
+                    feedback_count=d.get("feedback-count"),
                 )
                 for d in items
             ]
@@ -1385,6 +1407,8 @@ def ScrapeTargeted(items: list) -> int:
                         speed=item['speed'],
                         ram_format=item.get('ram-format'),
                         quantity=item.get('quantity') or 1,
+                        feedback_pct=item.get('feedback-pct'),
+                        feedback_count=item.get('feedback-count'),
                     )
                     _upload(cur, product, category)
                     log.info(
@@ -1472,6 +1496,28 @@ def EnsureQuantityColumn() -> None:
     except mariadb.Error as e:
         log.error("EnsureQuantityColumn failed: %s", e)
         conn.rollback()
+    finally:
+        conn.close()
+
+
+def EnsureSellerFeedbackColumns() -> None:
+    """Add EBAY.SellerFeedbackPct/-Count on installations that predate them.
+    No backfill possible — feedback only exists on the scraped card, so rows
+    fill in as listings are re-scraped (NULL = not seen since the migration).
+    """
+    DUP_COLUMN_ERRNO = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        for col_sql in ("SellerFeedbackPct FLOAT NULL",
+                        "SellerFeedbackCount INT NULL"):
+            try:
+                cur.execute(f"ALTER TABLE Scraper.EBAY ADD COLUMN {col_sql}")
+                conn.commit()
+                log.info("EBAY: added %s column", col_sql.split()[0])
+            except mariadb.Error as e:
+                if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                    log.error("EBAY: unexpected error adding %s: %s", col_sql.split()[0], e)
     finally:
         conn.close()
 
