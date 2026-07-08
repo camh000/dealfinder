@@ -599,12 +599,13 @@
         .price-search-input:focus { outline:none; border-color:var(--accent); }
         .price-search-input::placeholder { color:var(--text-dim); }
         .price-cat-filter { display:flex; gap:6px; }
-        .pcat-btn {
+        .pcat-btn, .ocat-btn {
             background:none; border:1px solid var(--border); color:var(--text-dim);
             padding:4px 12px; border-radius:3px; cursor:pointer;
             font-family:var(--sans); font-size:12px; font-weight:700; letter-spacing:.5px;
         }
-        .pcat-btn.active, .pcat-btn:hover { border-color:var(--accent); color:var(--accent); }
+        .pcat-btn.active, .pcat-btn:hover,
+        .ocat-btn.active, .ocat-btn:hover { border-color:var(--accent); color:var(--accent); }
 
         /* Build basket */
         #basket { margin-top:20px; border:1px solid var(--border); border-radius:4px; overflow:hidden; }
@@ -821,6 +822,14 @@
     </div>
 
     <div id="panel-outcomes" style="display:none">
+        <div class="price-cat-filter" id="outcome-cat-filter" style="margin-bottom:14px">
+            <button class="ocat-btn active" data-cat="all" onclick="setOutcomeCat('all')">All</button>
+            <button class="ocat-btn" data-cat="gpu" onclick="setOutcomeCat('gpu')">GPU</button>
+            <button class="ocat-btn" data-cat="cpu" onclick="setOutcomeCat('cpu')">CPU</button>
+            <button class="ocat-btn" data-cat="hdd" onclick="setOutcomeCat('hdd')">HDD</button>
+            <button class="ocat-btn" data-cat="ram" onclick="setOutcomeCat('ram')">RAM</button>
+        </div>
+
         <div id="outcome-stats" class="outcome-stats"></div>
 
         <div class="subsection-header">Resolved</div>
@@ -910,6 +919,10 @@
     // ── Sort state ──────────────────────────────────────────────────────────
     let dealsData    = [], dealsType    = '';
     let resolvedData = [], pendingData  = [];
+    let outcomesSummary = null;      // last /api/outcomes summary (gave_up isn't per-category)
+    let activeOutcomeCat = 'all';    // outcomes category filter: all/gpu/cpu/hdd/ram
+    const inOutcomeCat = r =>
+        activeOutcomeCat === 'all' || (r.Category || '').toLowerCase() === activeOutcomeCat;
     let dealsSort      = { col: null,         asc: true  };
     let resolvedSort   = { col: 'EndTime',    asc: false }; // newest-first (ended)
     let pendingSort    = { col: 'EndTime',    asc: true  }; // soonest-first
@@ -1254,29 +1267,31 @@
 
     function renderOutcomes(data) {
         const { summary, resolved, pending } = data;
-        resolvedData = resolved;
-        pendingData  = pending;
+        resolvedData    = resolved;
+        pendingData     = pending;
+        outcomesSummary = summary;
+        renderOutcomesFiltered();
+    }
 
-        const gaveUp = summary.gave_up || 0;
-        const total = summary.total_resolved + summary.total_pending + gaveUp;
-        const gaveUpCard = gaveUp > 0
-            ? `<div class="stat-card" title="Surfaced deals the verifier could no longer look up on eBay (completed listings roll off search after ~90 days). Never resolved.">
-                   <div class="stat-label">Gave Up</div><div class="stat-value amber">${gaveUp}</div></div>`
-            : '';
-        document.getElementById('outcome-stats').innerHTML = `
-            <div class="stat-card"><div class="stat-label">Tracked</div><div class="stat-value">${total}</div></div>
-            <div class="stat-card"><div class="stat-label">Resolved</div><div class="stat-value">${summary.total_resolved}</div></div>
-            <div class="stat-card"><div class="stat-label">Beat Market</div><div class="stat-value green">${summary.beat_market}</div></div>
-            <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-value ${summary.win_rate >= 50 ? 'green' : 'amber'}">${summary.win_rate}%</div></div>
-            <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value">${summary.total_pending}</div></div>
-            ${gaveUpCard}
-        `;
+    function setOutcomeCat(cat) {
+        activeOutcomeCat = cat;
+        document.querySelectorAll('.ocat-btn').forEach(b =>
+            b.classList.toggle('active', b.dataset.cat === cat));
+        renderOutcomesFiltered();
+    }
 
+    // Re-render stat cards + both tables from the cached data through the
+    // category filter. Stats are recomputed client-side with the same rules
+    // as the API summary (EndedUnsold and priceless rows excluded), so the
+    // per-category win rate is directly comparable to the overall one.
+    function renderOutcomesFiltered() {
+        renderOutcomeStats();
         renderResolvedTable();
 
+        const pendingVisible = pendingData.filter(inOutcomeCat);
         const ph = document.getElementById('pending-header');
         const pw = document.getElementById('pending-wrap');
-        if (pending.length > 0) {
+        if (pendingVisible.length > 0) {
             ph.style.display = '';
             pw.style.display = '';
             renderPendingTable();
@@ -1286,13 +1301,39 @@
         }
     }
 
+    function renderOutcomeStats() {
+        const resolved = resolvedData.filter(inOutcomeCat);
+        const pending  = pendingData.filter(inOutcomeCat);
+        const priced   = resolved.filter(r => !r.EndedUnsold && r.FinalPrice != null);
+        const beat     = priced.filter(r => Number(r.FinalPrice) < Number(r.AvgMarketPrice)).length;
+        const winRate  = priced.length ? Math.round(beat / priced.length * 1000) / 10 : 0;
+        // Gave-up rows aren't in either list and the API only reports a total,
+        // so the card (and its share of Tracked) only shows on the All view.
+        const gaveUp = activeOutcomeCat === 'all' ? (outcomesSummary?.gave_up || 0) : 0;
+        const total  = priced.length + pending.length + gaveUp;
+        const gaveUpCard = gaveUp > 0
+            ? `<div class="stat-card" title="Surfaced deals the verifier could no longer look up on eBay (completed listings roll off search after ~90 days). Never resolved.">
+                   <div class="stat-label">Gave Up</div><div class="stat-value amber">${gaveUp}</div></div>`
+            : '';
+        document.getElementById('outcome-stats').innerHTML = `
+            <div class="stat-card"><div class="stat-label">Tracked</div><div class="stat-value">${total}</div></div>
+            <div class="stat-card"><div class="stat-label">Resolved</div><div class="stat-value">${priced.length}</div></div>
+            <div class="stat-card"><div class="stat-label">Beat Market</div><div class="stat-value green">${beat}</div></div>
+            <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-value ${winRate >= 50 ? 'green' : 'amber'}">${winRate}%</div></div>
+            <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value">${pending.length}</div></div>
+            ${gaveUpCard}
+        `;
+    }
+
     function renderResolvedTable() {
         document.getElementById('outcomes-resolved-head').innerHTML = resolvedHeader();
         const body = document.getElementById('outcomes-resolved-body');
         // Filter out EndedUnsold rows — no final price data, clutter the history
-        const visible = resolvedData.filter(r => !r.EndedUnsold);
+        const visible = resolvedData.filter(r => !r.EndedUnsold && inOutcomeCat(r));
         if (visible.length === 0) {
-            body.innerHTML = '<tr class="state-row"><td colspan="9">No resolved deals yet — they appear here once auctions end and the scraper picks them up as sold.</td></tr>';
+            body.innerHTML = activeOutcomeCat !== 'all'
+                ? `<tr class="state-row"><td colspan="9">No resolved ${activeOutcomeCat.toUpperCase()} deals yet.</td></tr>`
+                : '<tr class="state-row"><td colspan="9">No resolved deals yet — they appear here once auctions end and the scraper picks them up as sold.</td></tr>';
             return;
         }
         // SavingGbp: positive = paid under market (a save). Attached here so
@@ -1332,7 +1373,7 @@
 
     function renderPendingTable() {
         document.getElementById('outcomes-pending-head').innerHTML = pendingHeader();
-        const sorted = sortData(pendingData, pendingSort.col, pendingSort.asc);
+        const sorted = sortData(pendingData.filter(inOutcomeCat), pendingSort.col, pendingSort.asc);
         document.getElementById('outcomes-pending-body').innerHTML = sorted.map((r, i) => {
             // Pending rows are always still in flight (gave-up rows are filtered
             // out server-side): show a live countdown, or AWAITING once ended.
