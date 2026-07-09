@@ -321,9 +321,12 @@ _DUAL_VRAM_MODELS = {
     'RTX 3060':    (8, 12),
     'RTX 3080':    (10, 12),
     'RTX 4060 TI': (8, 16),
+    'RTX 5060 TI': (8, 16),
     'RX 570':      (4, 8),
     'RX 580':      (4, 8),
     'RX 7600':     (8, 16),
+    'RX 9060 XT':  (8, 16),
+    'ARC A770':    (8, 16),
 }
 
 
@@ -528,7 +531,7 @@ def __ParseItems(soup, query, productType):
             BRANDS = [
                 "ASUS", "MSI", "GIGABYTE", "ZOTAC", "PALIT",
                 "EVGA", "PNY", "SAPPHIRE", "XFX", "INNO3D",
-                "GAINWARD", "AORUS"
+                "GAINWARD", "AORUS", "SPARKLE", "ASROCK", "ACER"
             ]
 
             # Flexible GPU model pattern
@@ -539,10 +542,17 @@ def __ParseItems(soup, query, productType):
                 re.IGNORECASE
             )
 
+            # Intel Arc: letter-prefixed numbers (A750, B580) — separate
+            # pattern since the letter is part of the model, not a variant.
+            arc_pattern = re.compile(r'\bARC\s*-?\s*([AB]\d{3})\b', re.IGNORECASE)
+
             # VRAM pattern
             vram_pattern = re.compile(r'(\d{1,2})\s*GB', re.IGNORECASE)
 
             def extract_model(title: str):
+                m = arc_pattern.search(title)
+                if m:
+                    return f"ARC {m.group(1).upper()}"
                 match = model_pattern.search(title)
                 if match:
                     series = match.group('series').upper()
@@ -562,6 +572,10 @@ def __ParseItems(soup, query, productType):
                 for brand in BRANDS:
                     if brand in title_upper:
                         return brand.title()
+                # Intel detection (Arc) — before the AMD heuristics, which
+                # would otherwise never be reached for an Intel card.
+                if re.search(r'\bARC\b', title_upper) or "INTEL" in title_upper:
+                    return "Intel"
                 # AMD detection
                 if "RX" in title_upper or "RADEON" in title_upper or "XT" in title_upper or "XTX" in title_upper:
                     return "AMD"
@@ -572,25 +586,39 @@ def __ParseItems(soup, query, productType):
             brand = extract_brand(title)
         elif productType == 'CPU':
 
-            # Drop complete-system listings (mini PCs etc.) that mention a CPU
+            # Drop complete-system listings (mini PCs, whole servers,
+            # CPU+motherboard combos) that mention a CPU
             _tl = title.lower()
             _is_system = (
                 any(k in _tl for k in ['mini pc', 'mini-pc', ' nuc', 'barebones',
                                         'desktop pc', 'all-in-one', 'laptop', 'notebook',
                                         'gaming pc', 'gaming computer', 'custom pc',
-                                        'full pc', 'complete pc', 'pc bundle', 'pc build'])
+                                        'full pc', 'complete pc', 'pc bundle', 'pc build',
+                                        'poweredge', 'proliant', 'supermicro', 'thinkserver',
+                                        'rack server', 'tower server', 'server bundle'])
                 or (bool(re.search(r'\d+\s*gb\s*(ddr\d?|ram)', _tl))
                     and bool(re.search(r'\d+\s*(tb|gb)\s*(ssd|nvme|hdd|m\.2)', _tl)))
+                or (('motherboard' in _tl or ' mobo' in _tl)
+                    and bool(re.search(r'\bddr\d|\bram\b', _tl)))
             )
             if _is_system:
                 log.debug("[%s] Skipping system listing: %s", query, title[:60])
                 continue
 
+            # Matched pairs/quads ("2x Xeon E5-2690" for dual-socket boards)
+            # are multi-unit listings — same per-unit treatment as HDD lots.
+            pair_m = re.search(r'\b(\d)\s*[x×]\s*(?:intel\s+)?xeon\b', _tl)
+            if pair_m and 2 <= int(pair_m.group(1)) <= 8:
+                quantity = int(pair_m.group(1))
+                if lot_is_risky(title):
+                    log.debug("[%s] Skipping risky CPU lot: %s", query, title[:60])
+                    continue
+
             def extract_cpu_brand(title: str):
                 t = title.upper()
                 if 'AMD' in t:
                     return 'AMD'
-                if 'INTEL' in t:
+                if 'INTEL' in t or 'XEON' in t:
                     return 'Intel'
                 return ''
 
@@ -607,15 +635,46 @@ def __ParseItems(soup, query, productType):
                 re.IGNORECASE
             )
 
+            # Xeon families, in matching priority order:
+            #   Scalable: "Xeon Silver 4114", "Gold 6248R", "Platinum 8168"
+            #   E3/E5/E7: "Xeon E5-2680 v4" (the vN is part of the market —
+            #             a 2680 v3 and v4 are different chips at different money)
+            #   W/E/D dash: "Xeon W-2145", "E-2224G", "D-1541"
+            #   Legacy:   "Xeon X5670", "L5640", "E5620", "W3680"
+            xeon_scalable_pattern = re.compile(
+                r'XEON\s+(BRONZE|SILVER|GOLD|PLATINUM)\s*-?\s*(\d{4}[A-Z]{0,2})', re.IGNORECASE)
+            # Suffix letter only when not followed by a digit — "2690v3" is
+            # model 2690 + revision v3, not model "2690V".
+            xeon_e_pattern = re.compile(
+                r'XEON\s+(E[357])[-\s](\d{3,4}(?:[A-Z](?!\d))?)(?:\s*(V\s*\d))?', re.IGNORECASE)
+            xeon_dash_pattern = re.compile(
+                r'XEON\s+([WED])-(\d{4,5}[A-Z]{0,2})', re.IGNORECASE)
+            xeon_legacy_pattern = re.compile(
+                r'XEON\s+([XLEW]\d{4}[A-Z]?)\b', re.IGNORECASE)
+
             def extract_cpu_model(title: str):
                 # AMD — normalise to "Ryzen 9 7940HS"
                 m = amd_model_pattern.search(title)
                 if m:
                     return f"Ryzen {m.group(1)} {m.group(2).upper()}"
-                # Intel — normalise to "i5-6600K"
+                # Intel Core — normalise to "i5-6600K"
                 m = intel_model_pattern.search(title)
                 if m:
                     return f"i{m.group(1)}-{m.group(2).upper()}"
+                # Intel Xeon
+                m = xeon_scalable_pattern.search(title)
+                if m:
+                    return f"Xeon {m.group(1).title()} {m.group(2).upper()}"
+                m = xeon_e_pattern.search(title)
+                if m:
+                    v = f" {m.group(3).upper().replace(' ', '')}" if m.group(3) else ""
+                    return f"Xeon {m.group(1).upper()}-{m.group(2).upper()}{v}"
+                m = xeon_dash_pattern.search(title)
+                if m:
+                    return f"Xeon {m.group(1).upper()}-{m.group(2).upper()}"
+                m = xeon_legacy_pattern.search(title)
+                if m:
+                    return f"Xeon {m.group(1).upper()}"
                 return None
 
             socket_pattern = re.compile(r'(LGA\s*\d{3,4}|AM\s*[2345]|FM[12]|TR[X]?\d+)', re.IGNORECASE)

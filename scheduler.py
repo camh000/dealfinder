@@ -85,12 +85,16 @@ _TARGETED_TIERS = [
 GPU_QUERY_LIST = [
     "NVIDIA GTX 9",
     "NVIDIA GTX 10",
+    "NVIDIA GTX 16",
     "NVIDIA RTX 20",
     "NVIDIA RTX 30",
     "NVIDIA RTX 40",
+    "NVIDIA RTX 50",
     "AMD RX 5000",
     "AMD RX 6000",
     "AMD RX 7000",
+    "AMD RX 9000",
+    "Intel Arc",
 ]
 
 CPU_QUERY_LIST = [
@@ -98,6 +102,10 @@ CPU_QUERY_LIST = [
     "Intel Core i5",
     "Intel Core i7",
     "Intel Core i9",
+    "Intel Xeon E3",
+    "Intel Xeon E5",
+    "Intel Xeon Silver",
+    "Intel Xeon Gold",
     "AMD Ryzen 3",
     "AMD Ryzen 5",
     "AMD Ryzen 7",

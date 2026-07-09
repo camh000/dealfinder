@@ -258,6 +258,86 @@ class TestGpuVramSplit:
         assert items[0]['vram'] == 12
 
 
+def _card(title, price="£100.00", item_id="111222333444"):
+    """Minimal new-markup result card for parse tests."""
+    from bs4 import BeautifulSoup
+    html = f"""
+    <div class="su-card-container su-card-container--horizontal">
+      <a href="https://www.ebay.co.uk/itm/{item_id}">x</a>
+      <a class="su-link su-item-card__title"><span>{title}</span></a>
+      <span class="su-item-card__price">{price}</span>
+    </div>"""
+    return BeautifulSoup(html, 'html.parser')
+
+
+def _parse_one(title, product_type, **kw):
+    items = vars(EbayScraper)["__ParseItems"](_card(title, **kw), "t", product_type)
+    return items[0] if items else None
+
+
+class TestArcGpuParsing:
+    @pytest.mark.parametrize("title,model,brand,vram", [
+        ("Sparkle Intel Arc A750 8GB GDDR6 Graphics Card", "ARC A750", "Sparkle", 8),
+        ("Intel Arc B580 12GB Limited Edition GPU", "ARC B580", "Intel", 12),
+        ("ASRock Intel Arc A380 Challenger 6GB", "ARC A380", "Asrock", 6),
+    ])
+    def test_arc_models(self, title, model, brand, vram):
+        item = _parse_one(title, "GPU")
+        assert item['model'] == model
+        assert item['brand'] == brand
+        assert item['vram'] == vram
+
+    def test_a770_vram_variants_split(self):
+        assert _parse_one("Intel Arc A770 16GB Graphics Card", "GPU")['model'] == "ARC A770 16GB"
+        assert _parse_one("Intel Arc A770 8GB Graphics Card", "GPU")['model'] == "ARC A770 8GB"
+
+    def test_arc_does_not_hijack_other_gpus(self):
+        assert _parse_one("MSI RTX 4070 Gaming X 12GB", "GPU")['model'] == "RTX 4070"
+        assert _parse_one("Sapphire RX 6700 XT 12GB", "GPU")['brand'] == "Sapphire"
+
+
+class TestXeonParsing:
+    @pytest.mark.parametrize("title,model", [
+        ("Intel Xeon E5-2680 V4 14 Core 2.4GHz LGA2011-3 CPU", "Xeon E5-2680 V4"),
+        ("Intel Xeon E5-2690v3 12-Core Processor", "Xeon E5-2690 V3"),
+        ("Intel Xeon E3-1230 V2 Quad Core CPU", "Xeon E3-1230 V2"),
+        ("Intel Xeon Gold 6248R 24 Core CPU", "Xeon Gold 6248R"),
+        ("Intel Xeon Silver 4114 2.2GHz 10 Core", "Xeon Silver 4114"),
+        ("Intel Xeon Platinum 8168 CPU", "Xeon Platinum 8168"),
+        ("Intel Xeon W-2145 8 Core Workstation CPU", "Xeon W-2145"),
+        ("Intel Xeon E-2224G 4-Core CPU", "Xeon E-2224G"),
+        ("Intel Xeon X5670 Six Core 2.93GHz", "Xeon X5670"),
+    ])
+    def test_xeon_models(self, title, model):
+        item = _parse_one(title, "CPU")
+        assert item is not None, f"listing dropped: {title}"
+        assert item['model'] == model
+        assert item['brand'] == "Intel"
+
+    def test_xeon_socket_and_cores_extracted(self):
+        item = _parse_one("Intel Xeon E5-2680 V4 14 Core 2.4GHz LGA2011-3 CPU", "CPU")
+        assert item['socket'] == "LGA2011"
+        assert item['cores'] == 14
+
+    def test_matched_pair_is_a_lot(self):
+        item = _parse_one("2x Intel Xeon E5-2690 V4 Matched Pair 14 Core", "CPU")
+        assert item['quantity'] == 2
+        assert item['model'] == "Xeon E5-2690 V4"
+
+    def test_untested_pair_skipped(self):
+        assert _parse_one("2x Intel Xeon Gold 6132 untested spares", "CPU") is None
+
+    def test_whole_servers_skipped(self):
+        assert _parse_one("Dell PowerEdge R730 2x Xeon E5-2680 V4 64GB Server", "CPU") is None
+        assert _parse_one("HP ProLiant DL380 Gen9 Xeon E5-2650", "CPU") is None
+
+    def test_cpu_motherboard_ram_combo_skipped(self):
+        assert _parse_one("Intel Xeon E5-2680 V4 + X99 Motherboard + 32GB DDR4 RAM Combo", "CPU") is None
+
+    def test_core_i_models_unaffected(self):
+        assert _parse_one("Intel Core i7-9700K 8 Core CPU", "CPU")['model'] == "i7-9700K"
+
+
 class TestFieldCoverage:
     def _healthy(self):
         return {'items': 1000, 'feedback': 950, 'shipping': 400,
