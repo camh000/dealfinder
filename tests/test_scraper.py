@@ -426,7 +426,7 @@ class TestVerifyPendingOutcomes:
         """When _scrape_item_by_id returns the item with a sold-date, UPDATE is called."""
         sold_dt = datetime(2026, 2, 27, 10, 0, 0)
         end_time = datetime(2026, 2, 27, 8, 0, 0)
-        pending_row = (123456789, 'GPU', 'ASUS RTX 4090 24GB OC Gaming', end_time)
+        pending_row = (123456789, 'GPU', 'ASUS RTX 4090 24GB OC Gaming', end_time, 0)
         conn, cur = self._make_conn([pending_row])
         cur.rowcount = 0  # Phase 1: no items gave up
 
@@ -460,10 +460,11 @@ class TestVerifyPendingOutcomes:
         assert args[3] == 123456789       # ID
         conn.commit.assert_called_once()
 
-    def test_item_not_found_logs_error(self):
-        """When both sold and completed searches return None, log.error is called."""
+    def test_first_miss_warns_and_counts(self):
+        """First not-found pass: log a warning, bump VerifyMisses, don't resolve
+        — one miss could be eBay indexing lag."""
         end_time = datetime(2026, 2, 20, 12, 0, 0)
-        pending_row = (555666777, 'CPU', 'Intel Core i9-14900K', end_time)
+        pending_row = (555666777, 'CPU', 'Intel Core i9-14900K', end_time, 0)
         conn, cur = self._make_conn([pending_row])
         cur.rowcount = 0  # Phase 1: no items gave up
 
@@ -474,14 +475,37 @@ class TestVerifyPendingOutcomes:
             result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
 
         assert result == 0
-        mock_log.error.assert_called_once()
-        error_args = mock_log.error.call_args[0]
-        assert '555666777' in str(error_args) or 555666777 in error_args
+        mock_log.error.assert_not_called()
+        assert any('555666777' in str(c) for c in mock_log.warning.call_args_list)
+        # VerifyMisses bumped to 1 (last execute call)
+        args = cur.execute.call_args_list[-1][0][1]
+        assert args == (1, 555666777)
+
+    def test_second_miss_closes_as_removed(self):
+        """Second consecutive not-found pass: the listing was cancelled/removed
+        — close it as EndedUnsold so it leaves the pending panel."""
+        end_time = datetime(2026, 2, 20, 12, 0, 0)
+        pending_row = (555666777, 'CPU', 'Intel Core i9-14900K', end_time, 1)
+        conn, cur = self._make_conn([pending_row])
+        cur.rowcount = 0  # Phase 1: no items gave up
+
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, '_scrape_item_by_id', return_value=None), \
+             patch.object(EbayScraper, '_scrape_item_completed', return_value=None):
+            result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
+
+        assert result == 1
+        executed = [str(c[0][0]) for c in cur.execute.call_args_list]
+        assert any('EndedUnsold = 1' in sql for sql in executed)
+        # EBAY row closed with the end time as SoldDate and a NULLed price
+        ebay_update = [c for c in cur.execute.call_args_list
+                       if 'SoldDate' in str(c[0][0]) and 'UPDATE Scraper.EBAY' in str(c[0][0])]
+        assert ebay_update and ebay_update[0][0][1] == (end_time, 555666777)
 
     def test_ended_unsold_marks_outcome(self):
         """When sold search finds nothing but completed search does, EndedUnsold=1 is set."""
         end_time = datetime(2026, 2, 20, 18, 0, 0)
-        pending_row = (777888999, 'GPU', 'MSI RTX 3080 Gaming X Trio', end_time)
+        pending_row = (777888999, 'GPU', 'MSI RTX 3080 Gaming X Trio', end_time, 0)
         conn, cur = self._make_conn([pending_row])
         cur.rowcount = 0  # Phase 1: no items gave up
 
