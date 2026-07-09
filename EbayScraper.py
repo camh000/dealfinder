@@ -1245,7 +1245,12 @@ def VerifyPendingOutcomes(hours_after: int = 6, give_up_days: int = 7) -> int:
                 unresolved is flagged GaveUp=1 and will never be retried.
       Phase 2 — verify in-window items: items between `hours_after` hours
                 and `give_up_days` days old are looked up by ID in eBay
-                sold results.  If not found an ERROR is logged.
+                sold results, then all-completed results.
+
+    Cancelled listings appear in NEITHER search (sellers pull auctions that
+    are going too cheap — the best deals attract cancellations). Two
+    consecutive not-found passes with successful fetches ⇒ the listing was
+    removed: close it as EndedUnsold instead of retrying for a week.
 
     Returns the number of outcomes successfully resolved this run.
     """
@@ -1270,7 +1275,7 @@ def VerifyPendingOutcomes(hours_after: int = 6, give_up_days: int = 7) -> int:
 
         # ── Phase 2: verify in-window items ──────────────────────────────────
         cur.execute("""
-            SELECT o.EbayID, o.Category, e.Title, o.EndTime
+            SELECT o.EbayID, o.Category, e.Title, o.EndTime, o.VerifyMisses
             FROM   Scraper.DealOutcomes o
             JOIN   Scraper.EBAY e ON e.ID = o.EbayID
             WHERE  o.EndTime < NOW() - INTERVAL %s HOUR
@@ -1288,7 +1293,7 @@ def VerifyPendingOutcomes(hours_after: int = 6, give_up_days: int = 7) -> int:
         log.info("Outcome verification: checking %d item(s) in window (%dh–%dd)", len(pending), hours_after, give_up_days)
         resolved = 0
 
-        for ebay_id, category, title, end_time in pending:
+        for ebay_id, category, title, end_time, verify_misses in pending:
             try:
                 # ── Pass 1: sold-only search ──────────────────────────────────
                 item = _scrape_item_by_id(ebay_id, category, sold=True)
@@ -1333,12 +1338,41 @@ def VerifyPendingOutcomes(hours_after: int = 6, give_up_days: int = 7) -> int:
                     )
                     resolved += 1
                 else:
-                    log.error(
-                        "Outcome NOT found in sold or completed results — "
-                        "ID=%s category=%s end_time=%s title='%s'; "
-                        "check search params or eBay availability",
-                        ebay_id, category, end_time, title[:80],
-                    )
+                    # Both fetches succeeded and the listing is in neither
+                    # sold nor completed results — removed/cancelled by the
+                    # seller. One miss could be indexing lag; two consecutive
+                    # passes (~an hour apart, 6h+ after end) is conclusive.
+                    misses = (verify_misses or 0) + 1
+                    if misses >= 2:
+                        cur.execute("""
+                            UPDATE Scraper.EBAY
+                            SET    SoldDate = %s,
+                                   Price    = NULL
+                            WHERE  ID       = %s
+                              AND  SoldDate IS NULL
+                        """, (end_time, ebay_id))
+                        cur.execute("""
+                            UPDATE Scraper.DealOutcomes
+                            SET    EndedUnsold = 1, VerifyMisses = %s
+                            WHERE  EbayID = %s
+                        """, (misses, ebay_id))
+                        log.info(
+                            "Outcome closed as removed/cancelled after %d not-found passes: "
+                            "ID=%s category=%s end_time=%s title='%s'",
+                            misses, ebay_id, category, end_time, title[:80],
+                        )
+                        resolved += 1
+                    else:
+                        cur.execute("""
+                            UPDATE Scraper.DealOutcomes
+                            SET    VerifyMisses = %s
+                            WHERE  EbayID = %s
+                        """, (misses, ebay_id))
+                        log.warning(
+                            "Outcome not found in sold or completed results (pass %d/2) — "
+                            "ID=%s category=%s title='%s'; will close as removed on next miss",
+                            misses, ebay_id, category, title[:80],
+                        )
             except Exception as e:
                 log.warning("Outcome verification skipped for item %s: %s", ebay_id, e)
 
@@ -1601,6 +1635,27 @@ def EnsureQuantityColumn() -> None:
     except mariadb.Error as e:
         log.error("EnsureQuantityColumn failed: %s", e)
         conn.rollback()
+    finally:
+        conn.close()
+
+
+def EnsureOutcomeColumns() -> None:
+    """DealOutcomes columns the scheduler writes (PredictedFinal, VerifyMisses)
+    — App.py's ensure_outcomes_table also adds these, but the scraper must not
+    depend on the web container having booted first."""
+    DUP_COLUMN_ERRNO = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        for col_sql in ("PredictedFinal INT NULL",
+                        "VerifyMisses INT NOT NULL DEFAULT 0"):
+            try:
+                cur.execute(f"ALTER TABLE Scraper.DealOutcomes ADD COLUMN {col_sql}")
+                conn.commit()
+                log.info("DealOutcomes: added %s column", col_sql.split()[0])
+            except mariadb.Error as e:
+                if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                    log.error("DealOutcomes: unexpected error adding %s: %s", col_sql.split()[0], e)
     finally:
         conn.close()
 

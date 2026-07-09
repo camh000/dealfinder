@@ -180,6 +180,7 @@ def ensure_outcomes_table():
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN EndedUnsold TINYINT(1) NOT NULL DEFAULT 0",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN FinalPrice INT NULL",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN PredictedFinal INT NULL",
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN VerifyMisses INT NOT NULL DEFAULT 0",
         ]:
             col_name = col_sql.split("ADD COLUMN ")[1].split()[0]
             try:

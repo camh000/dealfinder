@@ -398,6 +398,12 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("URL canonicalisation failed: %s", e)
 
+    # DealOutcomes columns the scheduler itself writes.
+    try:
+        EbayScraper.EnsureOutcomeColumns()
+    except Exception as e:
+        log.error("Outcome column migration failed: %s", e)
+
     # Notification recipients table (+ bootstrap the default recipient from env).
     try:
         EbayScraper.EnsureNotifyRecipients()
