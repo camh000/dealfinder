@@ -103,6 +103,7 @@ SELECT
     d.EndTime,
     d.SurfacedAt,
     ROUND(COALESCE(d.FinalPrice, e.Price) / 100, 2)          AS FinalPrice,
+    ROUND(d.PredictedFinal / 100, 2)                         AS PredictedFinal,
     e.SoldDate,
     ROUND((1 - COALESCE(d.FinalPrice, e.Price) / d.AvgMarketPrice) * 100, 1) AS ActualDiscountPct,
     d.EndedUnsold,
@@ -178,6 +179,7 @@ def ensure_outcomes_table():
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN GaveUp TINYINT(1) NOT NULL DEFAULT 0",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN EndedUnsold TINYINT(1) NOT NULL DEFAULT 0",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN FinalPrice INT NULL",
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN PredictedFinal INT NULL",
         ]:
             col_name = col_sql.split("ADD COLUMN ")[1].split()[0]
             try:
@@ -404,6 +406,15 @@ def deals():
         # the scheduler (EbayScraper.SurfaceDeals) — this endpoint is now
         # read-only, so page loads no longer have DB write side effects and
         # deals are tracked even when nobody has the dashboard open.
+
+        # Outcome-calibrated predictions: re-rank on the PREDICTED discount
+        # (contested auctions get bid past their current price) and expose
+        # the predicted final so the UI can show it. Must run before the
+        # ISO conversion — the annotator needs EndTime as a datetime.
+        pcur = conn.cursor()
+        pcur.execute(queries.SNIPE_PREMIUM_QUERY)
+        premiums = queries.median_ratios(pcur.fetchall())
+        queries.annotate_predictions(rows, product_type, premiums)
 
         for row in rows:
             if row.get("EndTime"):

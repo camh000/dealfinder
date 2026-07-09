@@ -1583,8 +1583,13 @@
         const avgSub   = isLot ? `£${fmt(d.AvgMarketPrice)}/unit mkt`
                                : fmtRange(d.MinMarketPrice, d.MaxMarketPrice);
         const curSub   = isLot ? `<div class="brand-tag">£${fmt(d.PerUnitPrice)}/unit</div>` : '';
+        // Outcome-calibrated prediction — only shown when real history backs
+        // it (PremiumSamples > 0) and it says the price will move.
+        const predSub  = (d.PremiumSamples > 0 && d.PredictedFinalPrice != null
+                          && d.PredictedFinalPrice !== d.CurrentPrice)
+            ? `<div class="brand-tag">~£${fmt(d.PredictedFinalPrice)} final</div>` : '';
         const prices = `
-            <td data-label="Current" style="text-align:right"><div class="price-current">£${fmt(d.CurrentPrice)}</div>${curSub}</td>
+            <td data-label="Current" style="text-align:right"><div class="price-current">£${fmt(d.CurrentPrice)}</div>${curSub}${predSub}</td>
             <td data-label="Avg" style="text-align:right">
                 <div class="price-avg">£${fmt(avgShown)}</div>
                 <div class="brand-tag">${avgSub}</div>
@@ -1602,7 +1607,7 @@
             return `<tr style="--i:${i}">
                 <td class="card-title">
                     <div class="model-cell">${d.Model || '—'}</div>
-                    <div class="brand-tag">${d.Brand || ''}${d.VRAM ? ' · ' + d.VRAM + 'GB' : ''}</div>
+                    <div class="brand-tag">${d.Brand || ''}${d.VRAM && !(d.Model || '').includes('GB') ? ' · ' + d.VRAM + 'GB' : ''}</div>
                 </td>
                 ${prices}
             </tr>`;

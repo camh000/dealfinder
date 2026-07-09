@@ -64,6 +64,12 @@ HA_NOTIFY_SERVICE = os.environ.get('HA_NOTIFY_SERVICE', '')
 SURFACE_WINDOW_HOURS = int(os.environ.get('SURFACE_WINDOW_HOURS', '2'))
 SURFACE_MIN_DISCOUNT = float(os.environ.get('SURFACE_MIN_DISCOUNT', '20'))
 
+# Notification gate on the outcome-calibrated prediction: skip the push when
+# history says bidding will close the gap (predicted discount below this).
+# Deals are still recorded in DealOutcomes either way — the validation dataset
+# must include the ones the gate suppressed, or we can't tell if it works.
+SURFACE_MIN_PREDICTED_DISCOUNT = float(os.environ.get('SURFACE_MIN_PREDICTED_DISCOUNT', '10'))
+
 # Targeted-scrape tiers: (threshold_minutes, interval_minutes)
 # When a tracked deal has <= threshold_minutes remaining, scrape it every interval_minutes.
 # Evaluated in ascending threshold order — first matching tier wins.
@@ -138,11 +144,20 @@ def notify_new_deals(deals: list) -> None:
     recipients = EbayScraper.GetNotifyRecipients()
     if not recipients:
         return
-    # Outcome-calibrated premiums: median FinalPrice/SurfacedPrice per
-    # (category, bid-bucket). Fetched once per batch; {} when history is thin.
-    premiums = EbayScraper.GetSnipePremiums()
     for row in deals:
         category = (row.get('_category') or '').upper()
+        # Prediction gate: history says this one gets bid past its value —
+        # don't wake anyone up for it. (Still recorded in DealOutcomes.)
+        pred_disc = row.get('PredictedDiscountPct')
+        if (row.get('PremiumSamples') and pred_disc is not None
+                and pred_disc < SURFACE_MIN_PREDICTED_DISCOUNT):
+            log.info(
+                "Deal %s suppressed: predicted discount %.1f%% < %.0f%% gate "
+                "(current %.1f%%, predicted final £%.2f)",
+                row.get('ID'), pred_disc, SURFACE_MIN_PREDICTED_DISCOUNT,
+                row.get('DiscountPct') or 0, row.get('PredictedFinalPrice') or 0,
+            )
+            continue
         for r in recipients:
             cats = [c.strip().upper() for c in (r.get('Categories') or '').split(',') if c.strip()]
             if category not in cats:
@@ -160,11 +175,9 @@ def notify_new_deals(deals: list) -> None:
                 else:
                     end_txt = str(end)
                 message = f"Market avg £{avg:.2f} · {bids} bid(s) · ends {end_txt}"
-                entry = (premiums.get((category, EbayScraper._bid_bucket(bids)))
-                         or premiums.get((category, 'all')))
-                if entry:
-                    ratio, n = entry
-                    message += f" · predicted final ~£{price * ratio:.0f} (n={n})"
+                if row.get('PremiumSamples'):
+                    message += (f" · predicted final ~£{row['PredictedFinalPrice']:.0f}"
+                                f" (n={row['PremiumSamples']})")
                 requests.post(
                     f"{r['HaUrl'].rstrip('/')}/api/services/notify/{r['NotifyService']}",
                     headers={"Authorization": f"Bearer {r['HaToken']}"},
@@ -196,6 +209,7 @@ def run_full_scrape():
     log.info("Starting full scrape run...")
     # Fresh curl-cffi session per full run so Akamai cookies are re-established.
     EbayScraper.reset_direct_session()
+    EbayScraper.reset_field_coverage()
     common = dict(
         country=SCRAPE_COUNTRY,
         condition=SCRAPE_CONDITION,
@@ -250,8 +264,16 @@ def run_full_scrape():
     # succeeded AND at least one row was inserted/updated. A healthy hourly run
     # always touches rows (existing active listings get re-upserted), so zero
     # rows means the parser or every fetch is broken — let Kuma flag it.
+    # Field-coverage collapse ALSO withholds the heartbeat: partial markup
+    # drift (a single field's parser going blind, like the old silent-£0
+    # shipping bug) is invisible to the row count.
+    coverage = EbayScraper.get_field_coverage()
+    alerts = EbayScraper.coverage_alerts(coverage)
+    for a in alerts:
+        log.error("Field-coverage alert: %s — eBay markup has likely drifted "
+                  "for this field. Kuma heartbeat withheld.", a)
     kuma_heartbeat(
-        ok=(categories_ok > 0 and total_rows > 0),
+        ok=(categories_ok > 0 and total_rows > 0 and not alerts),
         msg=f"full scrape ok: {total_rows} rows across {categories_ok}/4 categories",
     )
     if categories_ok > 0 and total_rows == 0:
@@ -356,6 +378,12 @@ if __name__ == "__main__":
         EbayScraper.EnsureSellerFeedbackColumns()
     except Exception as e:
         log.error("Seller feedback migration failed: %s", e)
+
+    # Dual-VRAM GPU models: split historical rows into per-variant groups.
+    try:
+        EbayScraper.EnsureGpuVramSplit()
+    except Exception as e:
+        log.error("GPU VRAM split migration failed: %s", e)
 
     # Notification recipients table (+ bootstrap the default recipient from env).
     try:

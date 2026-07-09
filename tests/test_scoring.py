@@ -215,6 +215,131 @@ class TestLotQuantity:
         assert EbayScraper.lot_is_risky(title) is risky
 
 
+class TestGpuVramSplit:
+    def test_dual_vram_models_get_suffixed(self):
+        assert EbayScraper.qualify_gpu_model("RTX 3060", 12) == "RTX 3060 12GB"
+        assert EbayScraper.qualify_gpu_model("RTX 3060", 8) == "RTX 3060 8GB"
+        assert EbayScraper.qualify_gpu_model("GTX 1060", 6) == "GTX 1060 6GB"
+        assert EbayScraper.qualify_gpu_model("RX 580", 4) == "RX 580 4GB"
+
+    def test_unknown_or_implausible_vram_keeps_bare_name(self):
+        # No VRAM parsed → thin bare-name group, excluded by the stats floor
+        assert EbayScraper.qualify_gpu_model("RTX 3060", None) == "RTX 3060"
+        # 24GB isn't a real 3060 variant — a bundle's system RAM misread
+        assert EbayScraper.qualify_gpu_model("RTX 3060", 24) == "RTX 3060"
+
+    def test_single_variant_models_unchanged(self):
+        assert EbayScraper.qualify_gpu_model("RTX 3060 TI", 8) == "RTX 3060 TI"
+        assert EbayScraper.qualify_gpu_model("RTX 4090", 24) == "RTX 4090"
+        assert EbayScraper.qualify_gpu_model(None, 8) is None
+
+    def test_parse_integration(self):
+        from bs4 import BeautifulSoup
+        html = """
+        <div class="su-card-container su-card-container--horizontal">
+          <a href="https://www.ebay.co.uk/itm/111222333444">x</a>
+          <a class="su-link su-item-card__title"><span>MSI GeForce RTX 3060 12GB Gaming X Graphics Card</span></a>
+          <span class="su-item-card__price">£220.00</span>
+        </div>"""
+        parse_items = vars(EbayScraper)["__ParseItems"]
+        items = parse_items(BeautifulSoup(html, 'html.parser'), "t", "GPU")
+        assert items[0]['model'] == "RTX 3060 12GB"
+        assert items[0]['vram'] == 12
+
+
+class TestFieldCoverage:
+    def _healthy(self):
+        return {'items': 1000, 'feedback': 950, 'shipping': 400,
+                'sold_items': 500, 'sold_date': 480,
+                'active_items': 500, 'end_time': 470, 'bids': 200}
+
+    def test_healthy_run_raises_nothing(self):
+        assert EbayScraper.coverage_alerts(self._healthy()) == []
+
+    def test_collapsed_field_alerts(self):
+        cov = self._healthy()
+        cov['shipping'] = 0          # the silent-£0 shipping bug, redetected
+        alerts = EbayScraper.coverage_alerts(cov)
+        assert len(alerts) == 1 and 'shipping' in alerts[0]
+
+    def test_multiple_collapses_all_reported(self):
+        cov = self._healthy()
+        cov['sold_date'] = 0
+        cov['end_time'] = 0
+        assert len(EbayScraper.coverage_alerts(cov)) == 2
+
+    def test_small_runs_never_alert(self):
+        """A failed/partial run mustn't flap the alarm — the zero-rows guard
+        owns that case."""
+        cov = {k: 0 for k in self._healthy()}
+        cov['items'] = 40
+        assert EbayScraper.coverage_alerts(cov) == []
+
+    def test_thin_denominator_skipped(self):
+        cov = self._healthy()
+        cov['sold_items'] = 10      # only 10 sold items seen this run
+        cov['sold_date'] = 0        # ...none dated: too few to judge
+        assert EbayScraper.coverage_alerts(cov) == []
+
+    def test_none_coverage_is_quiet(self):
+        assert EbayScraper.coverage_alerts(None) == []
+
+
+class TestAnnotatePredictions:
+    def _row(self, **kw):
+        from datetime import datetime
+        base = {'ID': 1, 'CurrentPrice': 100.0, 'AvgMarketPrice': 150.0,
+                'Quantity': 1, 'Bids': 0, 'DiscountPct': 33.3, 'DealScore': 5.0,
+                'EndTime': datetime(2026, 7, 9, 14, 0)}
+        base.update(kw)
+        return base
+
+    NOW = None
+
+    def setup_method(self):
+        from datetime import datetime
+        type(self).NOW = datetime(2026, 7, 9, 12, 0)  # rows end 2h later
+
+    def test_premium_ratio_applied_by_bucket(self):
+        rows = [self._row(Bids=5)]
+        premiums = {('GPU', '4+'): (1.2, 10)}
+        queries.annotate_predictions(rows, 'gpu', premiums, now=self.NOW)
+        assert rows[0]['PredictedFinalPrice'] == 120.0
+        assert rows[0]['PremiumSamples'] == 10
+        assert rows[0]['PredictedDiscountPct'] == 20.0   # 1 - 120/150
+
+    def test_category_all_fallback(self):
+        rows = [self._row(Bids=1)]
+        premiums = {('GPU', 'all'): (1.1, 8)}            # no '1-3' bucket
+        queries.annotate_predictions(rows, 'gpu', premiums, now=self.NOW)
+        assert rows[0]['PredictedFinalPrice'] == 110.0
+
+    def test_no_history_is_identity(self):
+        rows = [self._row()]
+        queries.annotate_predictions(rows, 'gpu', {}, now=self.NOW)
+        assert rows[0]['PredictedFinalPrice'] == 100.0
+        assert rows[0]['PremiumSamples'] == 0
+        # predicted == current → predicted discount == current discount
+        assert rows[0]['PredictedDiscountPct'] == 33.3
+
+    def test_lot_market_scaling(self):
+        # ×5 lot at £100 total, £30/unit market → lot market £150
+        rows = [self._row(Quantity=5, AvgMarketPrice=30.0)]
+        queries.annotate_predictions(rows, 'hdd', {}, now=self.NOW)
+        assert rows[0]['PredictedDiscountPct'] == 33.3
+
+    def test_dealscore_recomputed_and_resorted(self):
+        # Same current discount; the contested row's premium erases its edge.
+        contested = self._row(ID=1, Bids=6)
+        quiet = self._row(ID=2, Bids=0)
+        rows = [contested, quiet]
+        premiums = {('HDD', '4+'): (1.56, 12)}           # HDD snipe premium
+        queries.annotate_predictions(rows, 'hdd', premiums, now=self.NOW)
+        assert rows[0]['ID'] == 2, "quiet auction should now outrank the contested one"
+        assert contested['PredictedDiscountPct'] < 0     # predicted OVER market
+        assert contested['DealScore'] == 0.0             # negative discount floors to 0
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. Snipe-premium helpers
 # ═══════════════════════════════════════════════════════════════════════════════

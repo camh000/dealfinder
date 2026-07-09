@@ -224,6 +224,88 @@ ORDER  BY {cfg['guide_order']};
 """
 
 
+# ── snipe-premium predictions ──────────────────────────────────────────────────
+# Lives here (not EbayScraper) because the web image ships only App.py +
+# queries.py, and both containers need to annotate deal rows identically.
+
+def bid_bucket(bids) -> str:
+    """Bucket a bid count for premium stats: '0', '1-3' or '4+'."""
+    if not bids:
+        return '0'
+    return '1-3' if bids <= 3 else '4+'
+
+
+def median_ratios(rows, min_samples: int = 5) -> dict:
+    """rows: (category, bid_count, surfaced_price, final_price) tuples.
+
+    Returns {(category, bucket): (median_final_over_surfaced, sample_count)}
+    where bucket is a bid_bucket value plus an 'all' category-level fallback.
+    Groups below min_samples are dropped — too little history to trust.
+    """
+    import statistics
+    groups = {}
+    for cat, bids, surfaced, final in rows:
+        if not surfaced or final is None:
+            continue
+        ratio = float(final) / float(surfaced)
+        groups.setdefault((cat, bid_bucket(bids)), []).append(ratio)
+        groups.setdefault((cat, 'all'), []).append(ratio)
+    return {
+        key: (round(statistics.median(vals), 3), len(vals))
+        for key, vals in groups.items()
+        if len(vals) >= min_samples
+    }
+
+
+# Resolved outcomes that feed the premium model (sold, not ended-unsold).
+SNIPE_PREMIUM_QUERY = """
+SELECT d.Category, d.BidCount, d.SurfacedPrice,
+       COALESCE(d.FinalPrice, e.Price)
+FROM Scraper.DealOutcomes d
+JOIN Scraper.EBAY e ON e.ID = d.EbayID
+WHERE e.SoldDate IS NOT NULL
+  AND d.EndedUnsold = 0
+  AND d.SurfacedPrice > 0
+  AND COALESCE(d.FinalPrice, e.Price) IS NOT NULL;
+"""
+
+
+def annotate_predictions(rows: list, product_type: str, premiums: dict, now=None) -> list:
+    """Add outcome-calibrated final-price predictions to deal rows, in place.
+
+    History says contested auctions close above their spotted price (e.g. HDD
+    4+ bids ~1.56×), so a raw current-price discount overstates many deals.
+    Each row gains PredictedFinalPrice / PredictedDiscountPct / PremiumSamples,
+    and DealScore is recomputed on the PREDICTED discount, then rows re-sorted.
+    Ratio fallback: (cat, bucket) → (cat, 'all') → 1.0, so with no history the
+    prediction equals the current price and nothing changes.
+    """
+    from datetime import datetime, timezone
+    cat = product_type.upper()
+    if now is None:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for row in rows:
+        bids = int(row.get('Bids') or 0)
+        entry = premiums.get((cat, bid_bucket(bids))) or premiums.get((cat, 'all'))
+        ratio, samples = entry if entry else (1.0, 0)
+        price = float(row.get('CurrentPrice') or 0)
+        qty = int(row.get('Quantity') or 1)
+        market_lot = float(row.get('AvgMarketPrice') or 0) * qty
+        predicted = round(price * ratio, 2)
+        row['PredictedFinalPrice'] = predicted
+        row['PremiumSamples'] = samples
+        row['PredictedDiscountPct'] = (
+            round((1 - predicted / market_lot) * 100, 1) if market_lot > 0 else None)
+        end = row.get('EndTime')
+        hours = 0.25
+        if end is not None and hasattr(end, 'timestamp'):
+            hours = max((end - now).total_seconds() / 3600.0, 0.25)
+        row['DealScore'] = round(
+            max(row['PredictedDiscountPct'] or 0, 0) / hours / (1 + bids), 2)
+    rows.sort(key=lambda r: r.get('DealScore') or 0, reverse=True)
+    return rows
+
+
 def model_label_for_row(product_type: str, row: dict) -> str:
     """Human label stored in DealOutcomes.Model for a surfaced deal row.
     Multi-unit lots get a ×N suffix (e.g. '4TB SAS ×5')."""

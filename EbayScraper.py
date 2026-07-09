@@ -1,7 +1,6 @@
 import re
 import time
 import logging
-import statistics
 import requests
 import urllib.parse
 from bs4 import BeautifulSoup
@@ -13,6 +12,8 @@ import mariadb
 import os
 from dataclasses import dataclass
 from typing import Optional
+
+import queries
 
 log = logging.getLogger(__name__)
 
@@ -306,6 +307,33 @@ def classify_ram_form_factor(title: str) -> str:
     return 'SODIMM' if _RAM_SODIMM_RE.search(title or '') else 'DIMM'
 
 
+# GPU models genuinely sold in two memory variants with different markets.
+# For these, VRAM becomes part of the model label ("RTX 3060 12GB") so each
+# variant prices against its own comparables — a 3060 12GB judged against a
+# blended 8/12GB median can look like a phantom deal (or hide a real one).
+# Listings of these models WITHOUT a parseable VRAM keep the bare name, which
+# groups them into a thin bucket that never reaches the 5-sold stats floor —
+# safer excluded than mispriced. Keys match extract_model() output exactly.
+_DUAL_VRAM_MODELS = {
+    'GTX 1060':    (3, 6),
+    'RTX 2060':    (6, 12),
+    'RTX 3050':    (6, 8),
+    'RTX 3060':    (8, 12),
+    'RTX 3080':    (10, 12),
+    'RTX 4060 TI': (8, 16),
+    'RX 570':      (4, 8),
+    'RX 580':      (4, 8),
+    'RX 7600':     (8, 16),
+}
+
+
+def qualify_gpu_model(model: str | None, vram: int | None) -> str | None:
+    """Append the VRAM size to dual-memory-variant models ('RTX 3060 12GB')."""
+    if model and vram and vram in _DUAL_VRAM_MODELS.get(model, ()):
+        return f"{model} {vram}GB"
+    return model
+
+
 # ── job-lot detection ──────────────────────────────────────────────────────────
 # Multi-unit listings ("5 x 4TB", "job lot of 10") are valued per unit against
 # the single-item market stats, and excluded from those stats (bulk discounts
@@ -531,8 +559,8 @@ def __ParseItems(soup, query, productType):
                     return "AMD"
                 return "NVIDIA"
 
-            model = extract_model(title)
             vram  = extract_vram(title)
+            model = qualify_gpu_model(extract_model(title), vram)
             brand = extract_brand(title)
         elif productType == 'CPU':
 
@@ -1115,6 +1143,67 @@ def _scrape_item_completed(ebay_id: int, category: str) -> dict | None:
     return None
 
 
+# ── field-coverage canary ──────────────────────────────────────────────────────
+# Zero-row runs are caught by the scheduler's Kuma guard, but PARTIAL markup
+# drift is silent: the pre-audit shipping parser returned £0 for everything
+# for weeks without a single error. Per-field coverage over a full scrape run
+# turns that rot into a same-day alert (heartbeat withheld → Kuma flags down).
+
+_coverage: dict | None = None
+
+
+def reset_field_coverage() -> None:
+    """Start a fresh coverage window (call at the top of each full run)."""
+    global _coverage
+    _coverage = {'items': 0, 'feedback': 0, 'shipping': 0,
+                 'sold_items': 0, 'sold_date': 0,
+                 'active_items': 0, 'end_time': 0, 'bids': 0}
+
+
+def _record_coverage(items: list, sold: bool) -> None:
+    if _coverage is None:
+        return
+    c = _coverage
+    c['items'] += len(items)
+    c['feedback'] += sum(1 for i in items if i.get('feedback-pct') is not None)
+    c['shipping'] += sum(1 for i in items if (i.get('shipping') or 0) > 0)
+    if sold:
+        c['sold_items'] += len(items)
+        c['sold_date'] += sum(1 for i in items if i.get('sold-date'))
+    else:
+        c['active_items'] += len(items)
+        c['end_time'] += sum(1 for i in items if i.get('time-end'))
+        c['bids'] += sum(1 for i in items if (i.get('bid-count') or 0) > 0)
+
+
+def get_field_coverage() -> dict | None:
+    return dict(_coverage) if _coverage is not None else None
+
+
+def coverage_alerts(cov: dict | None, min_items: int = 100) -> list[str]:
+    """Fields whose parse coverage collapsed this run, as alert strings.
+
+    Floors are deliberately loose — they alert on collapse (a parser going
+    blind), not on natural variation. Free postage is common, so the shipping
+    floor is low; plenty of auctions legitimately sit at 0 bids. Each check
+    also needs a meaningful denominator so one bad page can't flap the alarm.
+    """
+    if not cov or cov['items'] < min_items:
+        return []
+    checks = [
+        ('sold-date',       cov['sold_date'], cov['sold_items'],   0.80),
+        ('end-time',        cov['end_time'],  cov['active_items'], 0.70),
+        ('seller-feedback', cov['feedback'],  cov['items'],        0.50),
+        ('shipping',        cov['shipping'],  cov['items'],        0.10),
+        ('bid-count',       cov['bids'],      cov['active_items'], 0.05),
+    ]
+    alerts = []
+    for name, got, of, floor in checks:
+        if of >= 50 and got / of < floor:
+            alerts.append(f"{name} coverage {got}/{of} ({got/of:.0%}) below {floor:.0%} floor")
+    return alerts
+
+
 def Scrape(query, product_type, country='us', condition='all', listing_type='all', cache=False):
     if country not in countryDict:
         raise Exception('Country not supported, please use one of the following: ' + ', '.join(countryDict.keys()))
@@ -1128,6 +1217,9 @@ def Scrape(query, product_type, country='us', condition='all', listing_type='all
 
     sold_items = __ParseItems(sold_soup, query, product_type)
     active_items = __ParseItems(active_soup, query, product_type)
+
+    _record_coverage(sold_items, sold=True)
+    _record_coverage(active_items, sold=False)
 
     return sold_items + active_items
 
@@ -1500,6 +1592,35 @@ def EnsureQuantityColumn() -> None:
         conn.close()
 
 
+def EnsureGpuVramSplit() -> None:
+    """Backfill: rewrite bare dual-VRAM GPU model names to their qualified form
+    ('RTX 3060' + VRAM 12 → 'RTX 3060 12GB') so historical sold data lands in
+    the per-variant groups. Idempotent — suffixed rows no longer match the bare
+    name; rows with NULL/unknown VRAM keep the bare name (thin group, excluded
+    from stats by the 5-sold floor).
+    """
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        changed = 0
+        for model, variants in _DUAL_VRAM_MODELS.items():
+            placeholders = ', '.join(['%s'] * len(variants))
+            cur.execute(f"""
+                UPDATE Scraper.GPU
+                SET Model = CONCAT(Model, ' ', VRAM, 'GB')
+                WHERE Model = %s AND VRAM IN ({placeholders})
+            """, (model, *variants))
+            changed += cur.rowcount
+        conn.commit()
+        if changed:
+            log.info("GPU: split %d row(s) into VRAM-variant model groups", changed)
+    except mariadb.Error as e:
+        log.error("EnsureGpuVramSplit failed: %s", e)
+        conn.rollback()
+    finally:
+        conn.close()
+
+
 def EnsureSellerFeedbackColumns() -> None:
     """Add EBAY.SellerFeedbackPct/-Count on installations that predate them.
     No backfill possible — feedback only exists on the scraped card, so rows
@@ -1577,9 +1698,8 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20) -> list[dict]:
     This replaces the old browser-driven surfacing in /api/deals — deals are
     now captured even when nobody has the dashboard open.
     """
-    import queries
-
     new_deals = []
+    premiums = GetSnipePremiums()
     conn = _get_connection()
     try:
         cur = conn.cursor(dictionary=True)
@@ -1591,16 +1711,21 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20) -> list[dict]:
             except mariadb.Error as e:
                 log.error("SurfaceDeals: %s query failed: %s", product_type, e)
                 continue
+            queries.annotate_predictions(rows, product_type, premiums)
             for row in rows:
                 label = queries.model_label_for_row(product_type, row)
                 # SurfacedPrice is the whole-lot price, so the stored market
                 # value must be whole-lot too (median × quantity) — outcome
                 # win/loss math compares FinalPrice against AvgMarketPrice.
                 qty = int(row.get('Quantity') or 1)
+                # PredictedFinal is stored at surfacing so resolved outcomes
+                # can grade the premium model itself (predicted vs actual).
+                predicted = (int(round(row['PredictedFinalPrice'] * 100))
+                             if row.get('PremiumSamples') else None)
                 ins.execute("""
                     INSERT IGNORE INTO Scraper.DealOutcomes
-                        (EbayID, Category, Model, SurfacedPrice, AvgMarketPrice, DiscountPct, BidCount, EndTime)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        (EbayID, Category, Model, SurfacedPrice, AvgMarketPrice, DiscountPct, BidCount, EndTime, PredictedFinal)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     row['ID'],
                     product_type.upper(),
@@ -1610,6 +1735,7 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20) -> list[dict]:
                     float(row['DiscountPct']),
                     int(row.get('Bids') or 0),
                     row['EndTime'],
+                    predicted,
                 ))
                 if ins.rowcount == 1:
                     row['_label'] = label
@@ -1732,57 +1858,26 @@ def PruneStaleListings(days: int = 14) -> int:
 
 
 # ── snipe-premium model ───────────────────────────────────────────────────────
+# Bucket + ratio math lives in queries.py (the web image needs it too);
+# these aliases keep this module's historical API for callers and tests.
 
-def _bid_bucket(bids) -> str:
-    """Bucket a bid count for premium stats: '0', '1-3' or '4+'."""
-    if not bids:
-        return '0'
-    return '1-3' if bids <= 3 else '4+'
-
-
-def _median_ratios(rows, min_samples: int = 5) -> dict:
-    """rows: (category, bid_count, surfaced_price, final_price) tuples.
-
-    Returns {(category, bucket): (median_final_over_surfaced, sample_count)}
-    where bucket is a _bid_bucket value plus an 'all' category-level fallback.
-    Groups below min_samples are dropped — too little history to trust.
-    """
-    groups = {}
-    for cat, bids, surfaced, final in rows:
-        if not surfaced or final is None:
-            continue
-        ratio = float(final) / float(surfaced)
-        groups.setdefault((cat, _bid_bucket(bids)), []).append(ratio)
-        groups.setdefault((cat, 'all'), []).append(ratio)
-    return {
-        key: (round(statistics.median(vals), 3), len(vals))
-        for key, vals in groups.items()
-        if len(vals) >= min_samples
-    }
+_bid_bucket = queries.bid_bucket
+_median_ratios = queries.median_ratios
 
 
 def GetSnipePremiums(min_samples: int = 5) -> dict:
     """Learn how far above their surfaced price our deals actually close.
 
     Median FinalPrice/SurfacedPrice ratio from resolved DealOutcomes (sold,
-    not ended-unsold), per category and bid bucket. The scheduler uses this
-    to annotate notifications with a predicted final price. Ratios are
+    not ended-unsold), per category and bid bucket. Feeds deal-row predictions
+    (queries.annotate_predictions) and notification gating. Ratios are
     unit-agnostic (both prices in pence). {} on error or thin history.
     """
     try:
         conn = _get_connection()
         try:
             cur = conn.cursor()
-            cur.execute("""
-                SELECT d.Category, d.BidCount, d.SurfacedPrice,
-                       COALESCE(d.FinalPrice, e.Price)
-                FROM Scraper.DealOutcomes d
-                JOIN Scraper.EBAY e ON e.ID = d.EbayID
-                WHERE e.SoldDate IS NOT NULL
-                  AND d.EndedUnsold = 0
-                  AND d.SurfacedPrice > 0
-                  AND COALESCE(d.FinalPrice, e.Price) IS NOT NULL
-            """)
+            cur.execute(queries.SNIPE_PREMIUM_QUERY)
             rows = cur.fetchall()
         finally:
             conn.close()
