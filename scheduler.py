@@ -391,6 +391,13 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("LastSeenAt migration failed: %s", e)
 
+    # Strip tracking params from stored listing URLs (new rows are
+    # canonicalised at parse time).
+    try:
+        EbayScraper.EnsureCanonicalUrls()
+    except Exception as e:
+        log.error("URL canonicalisation failed: %s", e)
+
     # Notification recipients table (+ bootstrap the default recipient from env).
     try:
         EbayScraper.EnsureNotifyRecipients()

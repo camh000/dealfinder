@@ -73,7 +73,9 @@ def test_fixture_items_have_critical_fields(fixture):
         assert item['id'], "every item must have an eBay ID"
         assert item['price'] is not None and item['price'] > 0
         assert item['title']
-        assert item['url'].startswith('http')
+        # URLs are canonicalised at parse time — bare /itm/<id>, no ~800-char
+        # tracking query string (which overflowed the VARCHAR(500) column).
+        assert item['url'] == f"https://www.ebay.co.uk/itm/{item['id']}"
 
 
 @pytest.mark.parametrize("fixture", ALL_FIXTURES)

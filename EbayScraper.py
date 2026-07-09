@@ -507,6 +507,14 @@ def __ParseItems(soup, query, productType):
             if id_match is None:
                 raise ValueError(f"Could not extract item ID from URL: {url}")
             id = id_match.group(1)
+            # Canonicalise: search-page hrefs carry ~800 chars of tracking
+            # params, overflowing the VARCHAR(500) URL column (truncated
+            # links). The bare /itm/<id> form is stable and sufficient.
+            parts = urllib.parse.urlsplit(url)
+            if parts.scheme and parts.netloc:
+                url = f"{parts.scheme}://{parts.netloc}/itm/{id}"
+            else:
+                url = f"https://www.ebay.co.uk/itm/{id}"
         except (TypeError, KeyError, ValueError) as e:
             log.warning("[%s] Skipping item '%s...' - could not parse URL/ID: %s", query, title[:40], e)
             continue
@@ -1592,6 +1600,32 @@ def EnsureQuantityColumn() -> None:
                 log.info("EBAY: backfilled Quantity for %d HDD row(s) (%d lot(s) found)", len(rows), lots)
     except mariadb.Error as e:
         log.error("EnsureQuantityColumn failed: %s", e)
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def EnsureCanonicalUrls() -> None:
+    """Strip tracking query strings from stored listing URLs.
+
+    Search-page hrefs carried ~800 chars of tracking params that overflowed
+    the VARCHAR(500) URL column (truncated, sometimes broken links). New rows
+    are canonicalised at parse time; this cleans what's already stored.
+    Idempotent — after the first pass no row contains a '?'.
+    """
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE Scraper.EBAY
+            SET URL = SUBSTRING_INDEX(URL, '?', 1)
+            WHERE URL LIKE '%?%'
+        """)
+        conn.commit()
+        if cur.rowcount:
+            log.info("EBAY: canonicalised %d stored URL(s)", cur.rowcount)
+    except mariadb.Error as e:
+        log.error("EnsureCanonicalUrls failed: %s", e)
         conn.rollback()
     finally:
         conn.close()
