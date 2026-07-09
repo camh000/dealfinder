@@ -123,6 +123,17 @@ class TestQueryBuilders:
         assert "SellerFeedback" not in queries.build_price_guide_query(ptype)
         assert "e.SellerFeedbackCount < 3" in queries.FEEDBACK_OK
 
+    @pytest.mark.parametrize("ptype", ALL_TYPES)
+    def test_deal_feed_drops_unseen_listings(self, ptype):
+        """Seller-cancelled listings vanish from search but keep a future
+        EndTime — the feed (and its badge count) must require a recent
+        LastSeenAt so phantoms drop within one scrape cycle. Stats and the
+        price guide are sold-history and never gate on freshness."""
+        for sql in (queries.build_deals_query(ptype),
+                    queries.build_count_query(ptype)):
+            assert queries.FRESH_OK in sql
+        assert "LastSeenAt" not in queries.build_price_guide_query(ptype)
+
     def test_deals_query_exposes_lot_columns(self):
         sql = queries.build_deals_query("hdd")
         assert "AS Quantity" in sql

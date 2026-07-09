@@ -1041,10 +1041,14 @@ def _get_connection():
 
 def _upload(cur, p: Product, product_type: str) -> int:
     """Returns the EBAY rowcount: 1 = inserted, 2 = updated, 0 = no change."""
+    # LastSeenAt = the last time a scrape actually saw this listing on eBay.
+    # Seller-cancelled listings vanish from search but keep a future EndTime —
+    # the deal queries use this stamp to drop them instead of showing phantom
+    # deals until the original end time.
     cur.execute("""
         INSERT INTO EBAY (ID, Title, Price, Shipping, Quantity, Bids, EndTime, SoldDate, URL,
-                          SellerFeedbackPct, SellerFeedbackCount)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                          SellerFeedbackPct, SellerFeedbackCount, LastSeenAt)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
             Title = VALUES(Title),
             Price = VALUES(Price),
@@ -1055,7 +1059,8 @@ def _upload(cur, p: Product, product_type: str) -> int:
             SoldDate = VALUES(SoldDate),
             URL = VALUES(URL),
             SellerFeedbackPct = VALUES(SellerFeedbackPct),
-            SellerFeedbackCount = VALUES(SellerFeedbackCount);
+            SellerFeedbackCount = VALUES(SellerFeedbackCount),
+            LastSeenAt = NOW();
         """, (p.id, p.title, p.price * 100, int(round((p.shipping or 0) * 100)),
               p.quantity or 1, p.bid_count, p.time_end, p.sold_date, p.url,
               p.feedback_pct, p.feedback_count)
@@ -1588,6 +1593,29 @@ def EnsureQuantityColumn() -> None:
     except mariadb.Error as e:
         log.error("EnsureQuantityColumn failed: %s", e)
         conn.rollback()
+    finally:
+        conn.close()
+
+
+def EnsureLastSeenColumn() -> None:
+    """Add EBAY.LastSeenAt and stamp existing rows with NOW() so everything
+    starts fresh — live listings are re-stamped within one scrape cycle;
+    already-cancelled phantoms age out of the deal feed 90 minutes later.
+    """
+    DUP_COLUMN_ERRNO = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE Scraper.EBAY ADD COLUMN LastSeenAt DATETIME NULL")
+            conn.commit()
+            log.info("EBAY: added LastSeenAt column")
+            cur.execute("UPDATE Scraper.EBAY SET LastSeenAt = NOW() WHERE LastSeenAt IS NULL")
+            conn.commit()
+            log.info("EBAY: stamped LastSeenAt on %d existing row(s)", cur.rowcount)
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("EBAY: unexpected error adding LastSeenAt column: %s", e)
     finally:
         conn.close()
 

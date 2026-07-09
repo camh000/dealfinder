@@ -385,6 +385,12 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("GPU VRAM split migration failed: %s", e)
 
+    # LastSeenAt: freshness stamp so cancelled listings drop out of deals.
+    try:
+        EbayScraper.EnsureLastSeenColumn()
+    except Exception as e:
+        log.error("LastSeenAt migration failed: %s", e)
+
     # Notification recipients table (+ bootstrap the default recipient from env).
     try:
         EbayScraper.EnsureNotifyRecipients()

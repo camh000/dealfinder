@@ -276,6 +276,32 @@ def ensure_seller_feedback_columns():
 ensure_seller_feedback_columns()
 
 
+def ensure_last_seen_column():
+    """EBAY.LastSeenAt — deal queries filter on it; see EnsureLastSeenColumn
+    in EbayScraper for the stamped backfill (this just guarantees existence)."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE Scraper.EBAY ADD COLUMN LastSeenAt DATETIME NULL")
+            conn.commit()
+            cur.execute("UPDATE Scraper.EBAY SET LastSeenAt = NOW() WHERE LastSeenAt IS NULL")
+            conn.commit()
+            log.info("EBAY: added LastSeenAt column")
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("EBAY: unexpected error adding LastSeenAt column: %s", e)
+    except Exception as e:
+        log.error("Could not ensure LastSeenAt column: %s", e)
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_last_seen_column()
+
+
 def ensure_scrape_meta():
     conn = None
     try:

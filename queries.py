@@ -22,6 +22,15 @@ QTY = "GREATEST(COALESCE(e.Quantity, 1), 1)"
 # per unit, so that's the number the discount is really on.
 EFF_UNIT = f"({EFF} / {QTY})"
 
+# Freshness gate: only surface deals the scraper has actually SEEN recently.
+# Seller-cancelled listings vanish from eBay search but keep a future EndTime
+# in the DB — without this they'd show as phantom deals (dead link, "listing
+# was ended by the seller") until the original end time passed. Default 90 min
+# = one full-scrape cycle plus margin; targeted scrapes re-stamp tracked deals
+# far more often than that in their final hour.
+STALE_DEAL_MINUTES = int(os.environ.get('STALE_DEAL_MINUTES', '90'))
+FRESH_OK = f"e.LastSeenAt > NOW() - INTERVAL {STALE_DEAL_MINUTES} MINUTE"
+
 # Seller-quality gate for the deal feed (stats are unaffected — a sold price
 # is market data regardless of who sold it). The percentage is only trusted
 # once the seller has real history: "0% positive (0)" is a brand-new account,
@@ -182,6 +191,7 @@ WHERE
     e.SoldDate IS NULL
     AND {EFF_UNIT} < ms.AvgPrice * {threshold}
     AND {FEEDBACK_OK}
+    AND {FRESH_OK}
     AND e.EndTime > NOW()
     AND e.EndTime < NOW() + {interval}
 ORDER BY DealScore DESC;
@@ -204,6 +214,7 @@ JOIN RawStats rs ON {_join_cond(cfg, 'rs', a)}
 WHERE rs.SoldCount >= 5
   AND e.SoldDate IS NULL AND {EFF_UNIT} < rs.MedPrice * {threshold}
   AND {FEEDBACK_OK}
+  AND {FRESH_OK}
   AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
 """
 
