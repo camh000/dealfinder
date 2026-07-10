@@ -366,6 +366,34 @@ def ensure_ram_table():
 ensure_ram_table()
 
 
+def ensure_ssd_table():
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.SSD (
+                ID         BIGINT      NOT NULL PRIMARY KEY,
+                Brand      VARCHAR(50),
+                CapacityGB INT,
+                Interface  VARCHAR(10),
+                FormFactor VARCHAR(10),
+                DriveType  VARCHAR(16),
+                Gen        TINYINT     NULL,
+                FOREIGN KEY (ID) REFERENCES Scraper.EBAY(ID)
+            )
+        """)
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_ssd_table()
+
+
 def _compute_sw_version() -> str:
     """Produce a short version tag used for the SW cache name.
 
@@ -420,8 +448,8 @@ def index():
 @app.route("/api/deals")
 def deals():
     product_type = request.args.get('type', 'gpu').lower()
-    if product_type not in ('gpu', 'cpu', 'hdd', 'ram'):
-        return jsonify({"status": "error", "message": f"Unknown type '{product_type}'. Use gpu, cpu, hdd, or ram."}), 400
+    if product_type not in ('gpu', 'cpu', 'hdd', 'ssd', 'ram'):
+        return jsonify({"status": "error", "message": f"Unknown type '{product_type}'. Use gpu, cpu, hdd, ssd, or ram."}), 400
 
     # Parse window parameter (default 2 hours, max 24)
     try:
@@ -501,7 +529,7 @@ def deal_counts():
         pcur.execute(queries.SNIPE_PREMIUM_QUERY)
         premiums = queries.median_ratios(pcur.fetchall())
         counts = {}
-        for key in ('gpu', 'cpu', 'hdd', 'ram'):
+        for key in ('gpu', 'cpu', 'hdd', 'ssd', 'ram'):
             cur.execute(get_deals_query(key, window_hours, min_discount))
             rows = cur.fetchall()
             queries.annotate_predictions(rows, key, premiums)
@@ -627,7 +655,7 @@ def outcomes():
             conn.close()
 
 
-VALID_CATEGORIES = ('GPU', 'CPU', 'HDD', 'RAM')
+VALID_CATEGORIES = ('GPU', 'CPU', 'HDD', 'SSD', 'RAM')
 
 
 def ensure_notify_recipients_table():
@@ -771,7 +799,7 @@ def price_guide():
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
         result = {}
-        for cat in ('gpu', 'cpu', 'hdd', 'ram'):
+        for cat in ('gpu', 'cpu', 'hdd', 'ssd', 'ram'):
             cur.execute(queries.build_price_guide_query(cat))
             result[cat] = cur.fetchall()
         return jsonify({"status": "ok", "components": result})

@@ -298,6 +298,12 @@ def classify_drive_type(title: str) -> str:
     return 'External' if _HDD_EXTERNAL_RE.search(title or '') else 'Internal'
 
 
+# Flash media (USB sticks, SD cards) masquerades as storage in both the HDD
+# and SSD searches — one shared skip list.
+_FLASH_MEDIA_KEYWORDS = ['flash drive', 'memory stick', 'pen drive', 'pendrive',
+                         'thumb drive', 'usb stick', 'sd card', 'micro sd', 'microsd']
+
+
 _RAM_SODIMM_RE = re.compile(
     r'so.?dimm|small\s*outline|\blaptop\b|\bnotebook\b', re.IGNORECASE)
 
@@ -523,7 +529,7 @@ def __ParseItems(soup, query, productType):
             continue
 
         socket = cores = capacity_gb = interface = form_factor = rpm = ram_type = speed = None
-        drive_type = ram_format = None
+        drive_type = ram_format = pcie_gen = None
         quantity = 1
 
         if productType == 'GPU':
@@ -709,9 +715,7 @@ def __ParseItems(soup, query, productType):
             # Flash media isn't a hard drive — the job-lot search in particular
             # returns USB-stick lots that would otherwise pollute HDD groups.
             _tl = title.lower()
-            if any(k in _tl for k in ['flash drive', 'memory stick', 'pen drive',
-                                       'pendrive', 'thumb drive', 'usb stick',
-                                       'sd card', 'micro sd', 'microsd']):
+            if any(k in _tl for k in _FLASH_MEDIA_KEYWORDS):
                 log.debug("[%s] Skipping flash media: %s", query, title[:60])
                 continue
 
@@ -770,6 +774,75 @@ def __ParseItems(soup, query, productType):
 
             # Untested/spares job lots can't be valued against a working-unit
             # median. Singles keep the old behaviour (median resists them).
+            if quantity > 1 and lot_is_risky(title):
+                log.debug("[%s] Skipping risky lot: %s", query, title[:60])
+                continue
+
+        elif productType == 'SSD':
+
+            _tl = title.lower()
+            # Flash media isn't an SSD; SSHDs are hybrids priced like neither;
+            # whole machines ("laptop, 1TB SSD") mention SSDs constantly.
+            if any(k in _tl for k in _FLASH_MEDIA_KEYWORDS) or 'sshd' in _tl:
+                log.debug("[%s] Skipping non-SSD storage: %s", query, title[:60])
+                continue
+            _is_system_ssd = (
+                any(k in _tl for k in ['gaming pc', 'desktop pc', 'mini pc',
+                                        'all-in-one', 'complete pc', 'pc bundle'])
+                or (('laptop' in _tl or 'notebook' in _tl)
+                    and bool(re.search(r'\d+\s*gb\s*(ddr\d?|ram)', _tl)))
+            )
+            if _is_system_ssd:
+                log.debug("[%s] Skipping system listing: %s", query, title[:60])
+                continue
+
+            ssd_cap_pattern = re.compile(r'(\d+(?:\.\d+)?)\s*(TB|GB)', re.IGNORECASE)
+
+            def extract_ssd_capacity_gb(title: str):
+                m = ssd_cap_pattern.search(title)
+                if m:
+                    val, unit = float(m.group(1)), m.group(2).upper()
+                    return int(val * 1000) if unit == 'TB' else int(val)
+                return None
+
+            capacity_gb = extract_ssd_capacity_gb(title)
+            if capacity_gb is None or capacity_gb < 60 or capacity_gb > 8000:
+                continue
+
+            # Interface: NVMe unless it's explicitly SATA. Bare "M.2" without
+            # "SATA" is treated as NVMe — M.2 SATA drives always say so.
+            _has_m2 = bool(re.search(r'\bm[.\s]?2\b', _tl))
+            if 'nvme' in _tl or (_has_m2 and 'sata' not in _tl):
+                interface = 'NVMe'
+            else:
+                interface = 'SATA'
+            form_factor = 'M.2' if (_has_m2 or 'nvme' in _tl) else '2.5"'
+
+            # PCIe generation — display-only, not a market-group dimension
+            # (most titles omit it; grouping on it would fragment forever).
+            gen_m = re.search(r'(?:pcie|pci-e)?\s*gen\s*([345])\b|pcie\s*([345])\.0', _tl)
+            pcie_gen = int(gen_m.group(1) or gen_m.group(2)) if gen_m else None
+
+            SSD_BRAND_MAP = {
+                'SAMSUNG': 'Samsung', 'CRUCIAL': 'Crucial', 'WESTERN DIGITAL': 'Western Digital',
+                'WD ': 'Western Digital', 'SANDISK': 'SanDisk', 'KINGSTON': 'Kingston',
+                'SEAGATE': 'Seagate', 'CORSAIR': 'Corsair', 'ADATA': 'ADATA', 'PNY': 'PNY',
+                'LEXAR': 'Lexar', 'INTEL': 'Intel', 'SK HYNIX': 'Hynix', 'HYNIX': 'Hynix',
+                'NETAC': 'Netac', 'FANXIANG': 'Fanxiang', 'INTEGRAL': 'Integral',
+                'TEAMGROUP': 'TeamGroup', 'TEAM GROUP': 'TeamGroup', 'PATRIOT': 'Patriot',
+                'SABRENT': 'Sabrent', 'GIGABYTE': 'Gigabyte', 'KIOXIA': 'Kioxia',
+            }
+            title_up = title.upper()
+            brand = next((v for k, v in SSD_BRAND_MAP.items() if k in title_up), '')
+            model = None
+            vram = None
+            drive_type = classify_drive_type(title)
+            if drive_type == 'External':
+                # Portable SSDs (T7, Extreme, enclosures) present over USB —
+                # their internal protocol is invisible and irrelevant to price.
+                interface = 'USB'
+                form_factor = 'Ext'
+            quantity = extract_lot_quantity(title)
             if quantity > 1 and lot_is_risky(title):
                 log.debug("[%s] Skipping risky lot: %s", query, title[:60])
                 continue
@@ -862,6 +935,7 @@ def __ParseItems(soup, query, productType):
             'speed': speed,
             'ram-format': ram_format,
             'quantity': quantity,
+            'pcie-gen': pcie_gen,
             'feedback-pct': feedback_pct,
             'feedback-count': feedback_count,
         }
@@ -1089,6 +1163,8 @@ class Product:
     # Seller feedback from the result card; count 0 = no-history seller.
     feedback_pct: Optional[float] = None
     feedback_count: Optional[int] = None
+    # SSD field — PCIe generation when the title states it (display only).
+    pcie_gen: Optional[int] = None
 
 def _get_connection():
     conn = mariadb.connect(
@@ -1166,6 +1242,19 @@ def _upload(cur, p: Product, product_type: str) -> int:
                 RPM = VALUES(RPM),
                 DriveType = VALUES(DriveType);
             """, (p.id, p.brand, p.capacity_gb, p.interface, p.form_factor, p.rpm, p.drive_type)
+        )
+    elif product_type == 'SSD':
+        cur.execute("""
+            INSERT INTO SSD (ID, Brand, CapacityGB, Interface, FormFactor, DriveType, Gen)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                Brand      = VALUES(Brand),
+                CapacityGB = VALUES(CapacityGB),
+                Interface  = VALUES(Interface),
+                FormFactor = VALUES(FormFactor),
+                DriveType  = VALUES(DriveType),
+                Gen        = VALUES(Gen);
+            """, (p.id, p.brand, p.capacity_gb, p.interface, p.form_factor, p.drive_type, p.pcie_gen)
         )
     elif product_type == 'RAM':
         cur.execute("""
@@ -1471,6 +1560,7 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
                     ram_type=d["ram-type"], speed=d["speed"],
                     ram_format=d.get("ram-format"),
                     quantity=d.get("quantity") or 1,
+                    pcie_gen=d.get("pcie-gen"),
                     feedback_pct=d.get("feedback-pct"),
                     feedback_count=d.get("feedback-count"),
                 )
@@ -1605,6 +1695,7 @@ def ScrapeTargeted(items: list) -> int:
                         speed=item['speed'],
                         ram_format=item.get('ram-format'),
                         quantity=item.get('quantity') or 1,
+                        pcie_gen=item.get('pcie-gen'),
                         feedback_pct=item.get('feedback-pct'),
                         feedback_count=item.get('feedback-count'),
                     )
@@ -1699,6 +1790,30 @@ def EnsureQuantityColumn() -> None:
     except mariadb.Error as e:
         log.error("EnsureQuantityColumn failed: %s", e)
         conn.rollback()
+    finally:
+        conn.close()
+
+
+def EnsureSsdTable() -> None:
+    """Create the SSD satellite table (Gen = PCIe generation, display-only)."""
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.SSD (
+                ID         BIGINT      NOT NULL PRIMARY KEY,
+                Brand      VARCHAR(50),
+                CapacityGB INT,
+                Interface  VARCHAR(10),
+                FormFactor VARCHAR(10),
+                DriveType  VARCHAR(16),
+                Gen        TINYINT     NULL,
+                FOREIGN KEY (ID) REFERENCES Scraper.EBAY(ID)
+            )
+        """)
+        conn.commit()
+    except mariadb.Error as e:
+        log.error("EnsureSsdTable failed: %s", e)
     finally:
         conn.close()
 
@@ -2083,7 +2198,7 @@ def PruneStaleListings(days: int = 14) -> int:
             AND e.EndTime < NOW() - INTERVAL %s DAY
             AND e.ID NOT IN (SELECT EbayID FROM Scraper.DealOutcomes)
         """
-        for sat in ('GPU', 'CPU', 'HDD', 'RAM'):
+        for sat in ('GPU', 'CPU', 'HDD', 'RAM', 'SSD'):
             cur.execute(f"""
                 DELETE s FROM Scraper.{sat} s
                 JOIN Scraper.EBAY e ON e.ID = s.ID

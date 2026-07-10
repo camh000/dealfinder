@@ -30,7 +30,8 @@
 - [ ] **Reserve price detection** — BLOCKED: eBay search results don't expose reserve status in any current markup (2026-07 audit of sold+active pages); it only appears on the item detail page, which we don't fetch
 - [x] **Seller feedback filter** — parsed from the result card ("100% positive (290)"), stored on EBAY, deals hidden below `MIN_SELLER_FEEDBACK_PCT` (default 90); only trusted once a seller has 3+ feedback so new accounts aren't penalised
 - [x] **Job lots (HDD)** — multi-drive lots ("5 x 4TB") priced per unit vs single-item medians, excluded from market stats, untested/spares lots skipped, ×N LOT badge in UI
-- [ ] **More categories** — SSDs or motherboards (RAM done)
+- [x] **SSD category** — capacity + NVMe/SATA interface grouping, portable/external split via the shared DriveType classifier, PCIe gen display-only (grouping on it would fragment — most titles omit it), flash-media/SSHD/system-listing skips, job-lot support inherited
+- [ ] **Motherboard category** — group by chipset (B450/B550/Z690… regex-extractable) with a chipset→socket map (B550→AM4, Z690→LGA1700); null-safe DDR4-vs-DDR5 split for dual-gen chipsets; must skip mobo+CPU combos (mirror of the CPU-side combo filter); accept wide in-group spread — board tier (Prime vs ROG) doubles prices within one chipset, so medians are a valuation aid more than a deal signal. PSU deliberately NOT planned: brand tier dominates within wattage/rating groups and surfacing used PSUs as “deals” is anti-advice
 - [ ] **Monitor curl_cffi stability in Docker/Linux** — `chrome120` appears to be working across recent full scrape runs; keep an eye on whether it holds or regresses intermittently (Zyte still covers any failures)
 
 ## Ranking & Scoring

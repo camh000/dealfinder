@@ -74,6 +74,18 @@ CATEGORIES = {
         'guide_select': ['rs.CapacityGB', 'rs.Interface', 'rs.DriveType'],
         'guide_order': 'rs.CapacityGB DESC, ms.AvgPrice DESC',
     },
+    'ssd': {
+        'table': 'SSD', 'alias': 's',
+        # DriveType splits portable/external USB SSDs from internal drives —
+        # different markets, same reasoning as HDD. Gen deliberately NOT a
+        # group dimension: most titles omit it and grouping on it would
+        # fragment forever; it's display-only.
+        'group_cols': [('CapacityGB', False), ('Interface', True), ('DriveType', True)],
+        'not_null': ['CapacityGB'],
+        'deal_select': ['s.Brand', 's.CapacityGB', 's.Interface', 's.FormFactor', 's.DriveType', 's.Gen'],
+        'guide_select': ['rs.CapacityGB', 'rs.Interface', 'rs.DriveType'],
+        'guide_order': 'rs.CapacityGB DESC, ms.AvgPrice DESC',
+    },
     'ram': {
         'table': 'RAM', 'alias': 'r',
         # FormFactor splits DIMM (desktop) vs SODIMM (laptop) — different markets.
@@ -355,16 +367,18 @@ def model_label_for_row(product_type: str, row: dict) -> str:
 
 
 def _base_label(product_type: str, row: dict) -> str:
-    if product_type == 'hdd':
+    if product_type in ('hdd', 'ssd'):
         cap = row.get('CapacityGB')
         iface = row.get('Interface') or 'SATA'
+        # 'SSD' suffix distinguishes "1TB SATA SSD" from the HDD "1TB SATA".
+        kind = ' SSD' if product_type == 'ssd' else ''
         # Only annotate the non-default (External) — internal is the norm.
         ext = ' External' if row.get('DriveType') == 'External' else ''
         if cap and cap >= 1000:
             tb = cap / 1000
             size = f"{int(tb)}TB" if cap % 1000 == 0 else f"{tb:.1f}TB"
-            return f"{size} {iface}{ext}"
-        return f"{cap}GB {iface}{ext}" if cap else f"{iface}{ext}"
+            return f"{size} {iface}{kind}{ext}"
+        return f"{cap}GB {iface}{kind}{ext}" if cap else f"{iface}{kind}{ext}"
     if product_type == 'ram':
         cap = row.get('CapacityGB')
         ram_type = row.get('Type') or 'RAM'

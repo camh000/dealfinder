@@ -126,6 +126,13 @@ HDD_QUERY_LIST = [
     "hard drive job lot TB",
 ]
 
+SSD_QUERY_LIST = [
+    "NVMe M.2 SSD",
+    "SATA 2.5 SSD",
+    "SSD 2TB",
+    "SSD job lot",
+]
+
 RAM_QUERY_LIST = [
     "8gb ddr3 ram",
     "16gb ddr3 ram",
@@ -236,6 +243,7 @@ def run_full_scrape():
         (GPU_QUERY_LIST, 'GPU'),
         (CPU_QUERY_LIST, 'CPU'),
         (HDD_QUERY_LIST, 'HDD'),
+        (SSD_QUERY_LIST, 'SSD'),
         (RAM_QUERY_LIST, 'RAM'),
     ]:
         try:
@@ -289,7 +297,7 @@ def run_full_scrape():
                   "for this field. Kuma heartbeat withheld.", a)
     kuma_heartbeat(
         ok=(categories_ok > 0 and total_rows > 0 and not alerts),
-        msg=f"full scrape ok: {total_rows} rows across {categories_ok}/4 categories",
+        msg=f"full scrape ok: {total_rows} rows across {categories_ok}/5 categories",
     )
     if categories_ok > 0 and total_rows == 0:
         log.error(
@@ -418,6 +426,12 @@ if __name__ == "__main__":
         EbayScraper.EnsureOutcomeColumns()
     except Exception as e:
         log.error("Outcome column migration failed: %s", e)
+
+    # SSD satellite table (new category).
+    try:
+        EbayScraper.EnsureSsdTable()
+    except Exception as e:
+        log.error("SSD table setup failed: %s", e)
 
     # Deal price-trajectory table (feeds future time-aware premiums).
     try:

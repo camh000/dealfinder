@@ -770,6 +770,7 @@
     <button class="tab-btn active" data-type="gpu" onclick="switchTab('gpu')">GPU<span class="tab-badge" id="badge-gpu"></span></button>
     <button class="tab-btn" data-type="cpu" onclick="switchTab('cpu')">CPU<span class="tab-badge" id="badge-cpu"></span></button>
     <button class="tab-btn" data-type="hdd" onclick="switchTab('hdd')">HDD<span class="tab-badge" id="badge-hdd"></span></button>
+    <button class="tab-btn" data-type="ssd" onclick="switchTab('ssd')">SSD<span class="tab-badge" id="badge-ssd"></span></button>
     <button class="tab-btn" data-type="ram" onclick="switchTab('ram')">RAM<span class="tab-badge" id="badge-ram"></span></button>
     <button class="tab-btn" data-type="outcomes" onclick="switchTab('outcomes')">OUTCOMES</button>
     <button class="tab-btn" data-type="prices"   onclick="switchTab('prices')">PRICES</button>
@@ -827,6 +828,7 @@
             <button class="ocat-btn" data-cat="gpu" onclick="setOutcomeCat('gpu')">GPU</button>
             <button class="ocat-btn" data-cat="cpu" onclick="setOutcomeCat('cpu')">CPU</button>
             <button class="ocat-btn" data-cat="hdd" onclick="setOutcomeCat('hdd')">HDD</button>
+            <button class="ocat-btn" data-cat="ssd" onclick="setOutcomeCat('ssd')">SSD</button>
             <button class="ocat-btn" data-cat="ram" onclick="setOutcomeCat('ram')">RAM</button>
         </div>
 
@@ -864,6 +866,7 @@
                 <button class="pcat-btn" data-cat="gpu" onclick="setPriceCat('gpu')">GPU</button>
                 <button class="pcat-btn" data-cat="cpu" onclick="setPriceCat('cpu')">CPU</button>
                 <button class="pcat-btn" data-cat="hdd" onclick="setPriceCat('hdd')">HDD</button>
+                <button class="pcat-btn" data-cat="ssd" onclick="setPriceCat('ssd')">SSD</button>
                 <button class="pcat-btn" data-cat="ram" onclick="setPriceCat('ram')">RAM</button>
             </div>
         </div>
@@ -998,6 +1001,7 @@
         if (type === 'gpu') return `<tr><th>Model</th>${prices}</tr>`;
         if (type === 'cpu') return `<tr><th>Model</th><th>Socket / Cores</th>${prices}</tr>`;
         if (type === 'hdd') return `<tr><th>Capacity</th><th>Details</th>${prices}</tr>`;
+        if (type === 'ssd') return `<tr><th>Capacity</th><th>Details</th>${prices}</tr>`;
         if (type === 'ram') return `<tr><th>Type / Capacity</th><th>Brand / Speed</th>${prices}</tr>`;
         return '';
     }
@@ -1122,7 +1126,7 @@
     }
 
     // ── Notification settings ───────────────────────────────────────────────
-    const NOTIFY_CATS = ['GPU', 'CPU', 'HDD', 'RAM'];
+    const NOTIFY_CATS = ['GPU', 'CPU', 'HDD', 'SSD', 'RAM'];
     let recipientsCache = [];
 
     function escSet(s) {
@@ -1444,7 +1448,7 @@
         document.getElementById('price-guide-head').innerHTML = priceGuideHeader();
         const q    = document.getElementById('price-search').value.trim().toLowerCase();
         const body = document.getElementById('price-guide-body');
-        const cats = activePriceCat === 'all' ? ['gpu', 'cpu', 'hdd', 'ram'] : [activePriceCat];
+        const cats = activePriceCat === 'all' ? ['gpu', 'cpu', 'hdd', 'ssd', 'ram'] : [activePriceCat];
 
         // Flatten + tag rows
         let rows = [];
@@ -1482,10 +1486,10 @@
         const sorted = sortData(rows, priceGuideSort.col, priceGuideSort.asc);
         body.innerHTML = sorted.map(r => {
             const lbl = r._label;
-            const modelName = r._cat === 'hdd' ? capStr(r)
+            const modelName = (r._cat === 'hdd' || r._cat === 'ssd') ? capStr(r)
                             : r._cat === 'ram' ? `${r.CapacityGB}GB`
                             : (r.Model || '—');
-            const specLine  = r._cat === 'hdd' ? `${r.Interface || ''}${r.DriveType === 'External' ? ' · External' : ''}`
+            const specLine  = (r._cat === 'hdd' || r._cat === 'ssd') ? `${r.Interface || ''}${r._cat === 'ssd' ? ' SSD' : ''}${r.DriveType === 'External' ? ' · External' : ''}`
                             : r._cat === 'ram' ? `${r.Type || ''}${r.FormFactor === 'SODIMM' ? ' · SODIMM' : ''}`
                             : '';
             const low = r.SoldCount < 5;
@@ -1656,6 +1660,23 @@
                 ${prices}
             </tr>`;
         }
+        if (type === 'ssd') {
+            const cap = d.CapacityGB >= 1000
+                ? (d.CapacityGB / 1000).toFixed(d.CapacityGB % 1000 === 0 ? 0 : 1) + 'TB'
+                : d.CapacityGB + 'GB';
+            const ext = d.DriveType === 'External' ? ' <span class="subtype-tag">EXT</span>' : '';
+            const lot = isLot ? ` <span class="subtype-tag">×${qty} LOT</span>` : '';
+            return `<tr style="--i:${i}">
+                <td class="card-title">
+                    <div class="model-cell">${cap} · ${d.Interface || 'SATA'}${ext}${lot}</div>
+                </td>
+                <td data-label="Details">
+                    <div class="model-cell" style="font-size:13px">${d.Brand || '—'}</div>
+                    <div class="brand-tag">${d.FormFactor || ''}${d.Gen ? ' · Gen' + d.Gen : ''}</div>
+                </td>
+                ${prices}
+            </tr>`;
+        }
         if (type === 'ram') {
             const so = d.FormFactor === 'SODIMM' ? ' <span class="subtype-tag">SODIMM</span>' : '';
             const cap = `${d.CapacityGB}GB ${d.Type || ''}`.trim();
@@ -1697,7 +1718,7 @@
             const res  = await fetch(`/api/deal-counts?window=${currentFilters.window}&min_discount=${currentFilters.minDiscount}`);
             const data = await res.json();
             if (data.status !== 'ok') return;
-            ['gpu', 'cpu', 'hdd', 'ram'].forEach(type => {
+            ['gpu', 'cpu', 'hdd', 'ssd', 'ram'].forEach(type => {
                 const badge = document.getElementById(`badge-${type}`);
                 const count = data.counts[type];
                 if (count > 0) {
@@ -1808,7 +1829,7 @@
         document.getElementById('deal-count').textContent = `${filtered.length} deal${filtered.length !== 1 ? 's' : ''}`;
     }
 
-    const DEAL_TYPES = ['gpu', 'cpu', 'hdd', 'ram'];
+    const DEAL_TYPES = ['gpu', 'cpu', 'hdd', 'ssd', 'ram'];
 
     async function loadDeals() {
         // Guard: on non-deal tabs (outcomes/prices/settings) there is nothing

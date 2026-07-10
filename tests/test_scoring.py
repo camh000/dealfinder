@@ -467,6 +467,53 @@ class TestAnnotatePredictions:
         assert contested['DealScore'] == 0.0             # negative discount floors to 0
 
 
+class TestSsdParsing:
+    @pytest.mark.parametrize("title,cap,iface,ff,dtype", [
+        ("Samsung 970 EVO Plus 1TB NVMe M.2 SSD", 1000, "NVMe", "M.2", "Internal"),
+        ("Crucial MX500 1TB 2.5\" SATA SSD", 1000, "SATA", "2.5\"", "Internal"),
+        ("WD Blue SN580 2TB M.2 PCIe Gen4 SSD", 2000, "NVMe", "M.2", "Internal"),
+        ("Samsung 860 EVO M.2 SATA SSD 500GB", 500, "SATA", "M.2", "Internal"),
+        ("Samsung T7 1TB Portable SSD USB-C", 1000, "USB", "Ext", "External"),
+        ("Kingston A400 240GB SATA SSD", 240, "SATA", "2.5\"", "Internal"),
+    ])
+    def test_ssd_fields(self, title, cap, iface, ff, dtype):
+        item = _parse_one(title, "SSD")
+        assert item is not None, f"listing dropped: {title}"
+        assert item['capacity-gb'] == cap
+        assert item['interface'] == iface
+        assert item['form-factor'] == ff
+        assert item['drive-type'] == dtype
+
+    def test_gen_extracted_for_display(self):
+        assert _parse_one("WD Black SN850X 1TB NVMe Gen4 SSD", "SSD")['pcie-gen'] == 4
+        assert _parse_one("Crucial P3 Plus 1TB PCIe 4.0 NVMe", "SSD")['pcie-gen'] == 4
+        assert _parse_one("Samsung 980 Pro 1TB NVMe", "SSD")['pcie-gen'] is None
+
+    def test_ssd_lots_supported(self):
+        item = _parse_one("Job lot of 5 240GB SATA SSDs tested working", "SSD")
+        assert item['quantity'] == 5
+
+    @pytest.mark.parametrize("title", [
+        "SanDisk Ultra 128GB USB 3.0 Flash Drive",       # flash media
+        "Seagate FireCuda 2TB SSHD Hybrid Drive",        # hybrid
+        "Dell Gaming PC i5 16GB RAM 1TB SSD",            # whole system
+        "HP Laptop 15.6 8GB RAM 512GB SSD",              # laptop
+        "MicroSD Card 256GB with SSD-like speeds",       # flash media
+    ])
+    def test_non_ssds_skipped(self, title):
+        assert _parse_one(title, "SSD") is None
+
+    def test_implausible_capacity_skipped(self):
+        assert _parse_one("32GB SSD industrial module", "SSD") is None
+
+    def test_labels(self):
+        assert queries.model_label_for_row("ssd", {"CapacityGB": 1000, "Interface": "NVMe", "DriveType": "Internal"}) == "1TB NVMe SSD"
+        assert queries.model_label_for_row("ssd", {"CapacityGB": 500, "Interface": "SATA", "DriveType": "External"}) == "500GB SATA SSD External"
+        assert queries.model_label_for_row("ssd", {"CapacityGB": 240, "Interface": "SATA", "DriveType": "Internal", "Quantity": 5}) == "240GB SATA SSD ×5"
+        # HDD labels unchanged
+        assert queries.model_label_for_row("hdd", {"CapacityGB": 4000, "Interface": "SAS", "DriveType": "Internal"}) == "4TB SAS"
+
+
 class TestNearMissCohort:
     def test_premium_training_excludes_cohort(self):
         """Premiums must stay trained on the population they predict for —
