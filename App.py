@@ -332,6 +332,14 @@ def ensure_scrape_meta():
             )
         """)
         conn.commit()
+        # /api/health reads LastRunStats — must exist even before the
+        # scraper's first run of the new code writes it.
+        try:
+            cur.execute("ALTER TABLE Scraper.ScrapeMeta ADD COLUMN LastRunStats TEXT NULL")
+            conn.commit()
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("ScrapeMeta: unexpected error adding LastRunStats: %s", e)
     except Exception:
         pass
     finally:
