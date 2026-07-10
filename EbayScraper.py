@@ -313,6 +313,30 @@ def classify_ram_form_factor(title: str) -> str:
     return 'SODIMM' if _RAM_SODIMM_RE.search(title or '') else 'DIMM'
 
 
+# Kit composition is a real market dimension: at the same total capacity,
+# fewer/bigger sticks command a premium (2x8 DDR4-16GB sold ~31% above 1x16
+# and ~56% above 4x4 on 120d data) — upgrade headroom and platform age.
+_RAM_KIT_RE = re.compile(r'(\d+)\s*[xX×]\s*(\d+)\s*GB', re.IGNORECASE)
+_RAM_KIT_REV_RE = re.compile(r'(\d+)\s*GB\s*[xX×]\s*(\d+)', re.IGNORECASE)
+
+
+def extract_ram_kit(title: str):
+    """('2x8', 16) — kit config + total GB; (None, None) when unstated.
+    Handles both '2x8GB' and '8GB x2' orderings; implausible stick counts
+    or sizes are treated as unstated rather than guessed."""
+    m = _RAM_KIT_RE.search(title or '')
+    if m:
+        sticks, size = int(m.group(1)), int(m.group(2))
+    else:
+        m = _RAM_KIT_REV_RE.search(title or '')
+        if not m:
+            return None, None
+        size, sticks = int(m.group(1)), int(m.group(2))
+    if 1 <= sticks <= 8 and 1 <= size <= 128:
+        return f"{sticks}x{size}", sticks * size
+    return None, None
+
+
 # GPU models genuinely sold in two memory variants with different markets.
 # For these, VRAM becomes part of the model label ("RTX 3060 12GB") so each
 # variant prices against its own comparables — a 3060 12GB judged against a
@@ -557,7 +581,7 @@ def __ParseItems(soup, query, productType):
             continue
 
         socket = cores = capacity_gb = interface = form_factor = rpm = ram_type = speed = None
-        drive_type = ram_format = pcie_gen = None
+        drive_type = ram_format = pcie_gen = kit_config = None
         quantity = 1
 
         if productType == 'GPU':
@@ -889,11 +913,12 @@ def __ParseItems(soup, query, productType):
                 continue
             ram_type = type_m.group(1).upper()
 
-            # Capacity — total kit GB
+            # Capacity — total kit GB; kit composition is its own market
+            # dimension (2x8 vs 1x16 price differently).
             title_up = title.upper()
-            kit_m = re.search(r'(\d+)\s*[xX×]\s*(\d+)\s*GB', title_up)
-            if kit_m:
-                capacity_gb = int(kit_m.group(1)) * int(kit_m.group(2))
+            kit_config, kit_total = extract_ram_kit(title)
+            if kit_total:
+                capacity_gb = kit_total
             else:
                 all_gb = [int(m) for m in re.findall(r'(\d+)\s*GB', title_up)]
                 capacity_gb = max(all_gb) if all_gb else None
@@ -952,6 +977,7 @@ def __ParseItems(soup, query, productType):
             'ram-format': ram_format,
             'quantity': quantity,
             'pcie-gen': pcie_gen,
+            'kit-config': kit_config,
             'feedback-pct': feedback_pct,
             'feedback-count': feedback_count,
         }
@@ -1181,6 +1207,8 @@ class Product:
     feedback_count: Optional[int] = None
     # SSD field — PCIe generation when the title states it (display only).
     pcie_gen: Optional[int] = None
+    # RAM kit composition ('2x8'); None when the title doesn't state it.
+    kit_config: Optional[str] = None
 
 def _get_connection():
     conn = mariadb.connect(
@@ -1274,15 +1302,16 @@ def _upload(cur, p: Product, product_type: str) -> int:
         )
     elif product_type == 'RAM':
         cur.execute("""
-            INSERT INTO RAM (ID, Brand, CapacityGB, Type, Speed, FormFactor)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO RAM (ID, Brand, CapacityGB, Type, Speed, FormFactor, KitConfig)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 Brand      = VALUES(Brand),
                 CapacityGB = VALUES(CapacityGB),
                 Type       = VALUES(Type),
                 Speed      = VALUES(Speed),
-                FormFactor = VALUES(FormFactor);
-            """, (p.id, p.brand, p.capacity_gb, p.ram_type, p.speed, p.ram_format)
+                FormFactor = VALUES(FormFactor),
+                KitConfig  = VALUES(KitConfig);
+            """, (p.id, p.brand, p.capacity_gb, p.ram_type, p.speed, p.ram_format, p.kit_config)
         )
     return ebay_rc
 
@@ -1577,6 +1606,7 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
                     ram_format=d.get("ram-format"),
                     quantity=d.get("quantity") or 1,
                     pcie_gen=d.get("pcie-gen"),
+                    kit_config=d.get("kit-config"),
                     feedback_pct=d.get("feedback-pct"),
                     feedback_count=d.get("feedback-count"),
                 )
@@ -1712,6 +1742,7 @@ def ScrapeTargeted(items: list) -> int:
                         ram_format=item.get('ram-format'),
                         quantity=item.get('quantity') or 1,
                         pcie_gen=item.get('pcie-gen'),
+                        kit_config=item.get('kit-config'),
                         feedback_pct=item.get('feedback-pct'),
                         feedback_count=item.get('feedback-count'),
                     )
@@ -1806,6 +1837,40 @@ def EnsureQuantityColumn() -> None:
     except mariadb.Error as e:
         log.error("EnsureQuantityColumn failed: %s", e)
         conn.rollback()
+    finally:
+        conn.close()
+
+
+def EnsureRamKitConfig() -> None:
+    """Add RAM.KitConfig and backfill from stored titles. NULL = unstated
+    (a valid value), so the backfill only runs when the column is new."""
+    DUP_COLUMN_ERRNO = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        added = False
+        try:
+            cur.execute("ALTER TABLE Scraper.RAM ADD COLUMN KitConfig VARCHAR(10) NULL")
+            conn.commit()
+            added = True
+            log.info("RAM: added KitConfig column")
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("RAM: unexpected error adding KitConfig: %s", e)
+        if added:
+            cur.execute("""
+                SELECT r.ID, e.Title FROM Scraper.RAM r
+                JOIN Scraper.EBAY e ON e.ID = r.ID
+            """)
+            rows = cur.fetchall()
+            stated = 0
+            for ram_id, title in rows:
+                cfg, _total = extract_ram_kit(title or '')
+                if cfg:
+                    cur.execute("UPDATE Scraper.RAM SET KitConfig = %s WHERE ID = %s", (cfg, ram_id))
+                    stated += 1
+            conn.commit()
+            log.info("RAM: backfilled KitConfig for %d/%d row(s)", stated, len(rows))
     finally:
         conn.close()
 

@@ -366,6 +366,29 @@ def ensure_ram_table():
 ensure_ram_table()
 
 
+def ensure_ram_kit_column():
+    """RAM.KitConfig — deal/guide queries reference it; the scraper's
+    EnsureRamKitConfig does the title backfill."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE Scraper.RAM ADD COLUMN KitConfig VARCHAR(10) NULL")
+            conn.commit()
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("RAM: unexpected error adding KitConfig: %s", e)
+    except Exception:
+        pass
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_ram_kit_column()
+
+
 def ensure_ssd_table():
     conn = None
     try:
