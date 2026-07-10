@@ -147,6 +147,14 @@ class TestQueryBuilders:
         sql = queries.build_deals_query("hdd")
         assert "AS Quantity" in sql
         assert "AS PerUnitPrice" in sql
+
+    def test_deals_query_exposes_price_breakdown(self):
+        """UI shows the eBay listing price with delivery as its own line —
+        the query must expose both alongside the effective CurrentPrice."""
+        sql = queries.build_deals_query("gpu")
+        assert "AS ItemPrice" in sql
+        assert "AS Shipping" in sql
+        assert "AS CurrentPrice" in sql
         # whole-lot gain: market value of the lot minus the lot price
         assert f"ms.AvgPrice * {queries.QTY}" in sql
 

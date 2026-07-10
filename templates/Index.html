@@ -988,8 +988,8 @@
         const th  = (label, col, extra = '') =>
             `<th class="${cls(col)}${extra}" onclick="sortDeals('${col}')">${label}${si(col)}</th>`;
         const prices = `
-            ${th('Current',    'CurrentPrice',   ' right')}
-            ${th('Avg Market', 'AvgMarketPrice', ' right')}
+            ${th('Price',           'ItemPrice',      ' right')}
+            ${th('Avg inc P&amp;P', 'AvgMarketPrice', ' right')}
             ${th('You Save',   'PotentialGain',  ' right')}
             ${th('Discount',   'DiscountPct')}
             ${th('Bids',       'Bids',           ' right')}
@@ -1588,8 +1588,13 @@
         const predSub  = (d.PremiumSamples > 0 && d.PredictedFinalPrice != null
                           && d.PredictedFinalPrice !== d.CurrentPrice)
             ? `<div class="brand-tag">~£${fmt(d.PredictedFinalPrice)} final</div>` : '';
+        // Headline matches the price eBay shows on the listing; delivery is
+        // its own line. Deal maths stays delivery-inclusive behind the scenes.
+        const itemPrice = d.ItemPrice != null ? d.ItemPrice : d.CurrentPrice;
+        const ship = Number(d.Shipping) || 0;
+        const shipSub = `<div class="brand-tag">${ship > 0 ? '+£' + fmt(ship) + ' delivery' : 'Free delivery'}</div>`;
         const prices = `
-            <td data-label="Current" style="text-align:right"><div class="price-current">£${fmt(d.CurrentPrice)}</div>${curSub}${predSub}</td>
+            <td data-label="Price" style="text-align:right"><div class="price-current">£${fmt(itemPrice)}</div>${shipSub}${curSub}${predSub}</td>
             <td data-label="Avg" style="text-align:right">
                 <div class="price-avg">£${fmt(avgShown)}</div>
                 <div class="brand-tag">${avgSub}</div>

@@ -176,6 +176,8 @@ SELECT
     e.ID,
     {extra},
     ROUND({EFF}, 2)                              AS CurrentPrice,
+    ROUND(e.Price / 100, 2)                      AS ItemPrice,
+    ROUND(COALESCE(e.Shipping, 0) / 100, 2)      AS Shipping,
     {QTY}                                        AS Quantity,
     ROUND({EFF_UNIT}, 2)                         AS PerUnitPrice,
     ms.AvgPrice                                  AS AvgMarketPrice,
