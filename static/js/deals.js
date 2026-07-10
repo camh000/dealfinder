@@ -36,6 +36,7 @@ function identity(d) {
     if (d.Cores) chips.push(`<span class="chip">${d.Cores} cores</span>`);
   } else if (CAT === 'ram') {
     title = `${d.CapacityGB}GB ${d.Type || ''}`.trim();
+    if (d.KitConfig) chips.push(`<span class="chip">${esc(d.KitConfig)}</span>`);
     if (d.FormFactor === 'SODIMM') chips.push('<span class="chip">SODIMM</span>');
     if (d.Brand) chips.push(`<span class="chip">${esc(d.Brand)}</span>`);
     if (d.Speed) chips.push(`<span class="chip">${d.Speed}MHz</span>`);

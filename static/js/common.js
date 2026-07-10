@@ -111,6 +111,7 @@ function modelHref(cat, row) {
   else if (cat === 'ram') {
     p.set('Type', row.Type ?? ''); p.set('CapacityGB', row.CapacityGB ?? '');
     p.set('FormFactor', row.FormFactor ?? '');
+    p.set('KitConfig', row.KitConfig ?? '');
   } else {
     p.set('CapacityGB', row.CapacityGB ?? ''); p.set('Interface', row.Interface ?? '');
     p.set('DriveType', row.DriveType ?? '');
@@ -121,7 +122,7 @@ function modelHref(cat, row) {
 function groupLabel(cat, g) {
   if (cat === 'gpu' || cat === 'cpu') return g.Model || '—';
   if (cat === 'ram')
-    return `${g.CapacityGB}GB ${g.Type || ''}${g.FormFactor === 'SODIMM' ? ' SODIMM' : ''}`.trim();
+    return `${g.CapacityGB}GB ${g.Type || ''}${g.FormFactor === 'SODIMM' ? ' SODIMM' : ''}${g.KitConfig ? ' (' + g.KitConfig + ')' : ''}`.trim();
   const kind = cat === 'ssd' ? ' SSD' : '';
   return `${fmtCap(Number(g.CapacityGB))} ${g.Interface || ''}${kind}${g.DriveType === 'External' ? ' External' : ''}`.trim();
 }
