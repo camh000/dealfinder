@@ -419,6 +419,25 @@ class TestAnnotatePredictions:
         queries.annotate_predictions(rows, 'hdd', {}, now=self.NOW)
         assert rows[0]['PredictedDiscountPct'] == 33.3
 
+    def test_filter_drops_predicted_over_market(self):
+        """The feed only shows deals predicted to close BELOW market."""
+        rows = [self._row(ID=1, Bids=6), self._row(ID=2, Bids=0)]
+        premiums = {('HDD', '4+'): (1.56, 12)}   # erases the contested row's edge
+        queries.annotate_predictions(rows, 'hdd', premiums, now=self.NOW)
+        kept = queries.filter_predicted_deals(rows)
+        assert [r['ID'] for r in kept] == [2]
+
+    def test_filter_keeps_rows_without_history(self):
+        """No premium data → prediction equals current price → passes through."""
+        rows = [self._row()]
+        queries.annotate_predictions(rows, 'gpu', {}, now=self.NOW)
+        assert queries.filter_predicted_deals(rows) == rows
+
+    def test_filter_keeps_none_predicted_discount(self):
+        """Rows the annotator couldn't price (no market value) aren't dropped."""
+        assert queries.filter_predicted_deals(
+            [{'PredictedDiscountPct': None}]) == [{'PredictedDiscountPct': None}]
+
     def test_dealscore_recomputed_and_resorted(self):
         # Same current discount; the contested row's premium erases its edge.
         contested = self._row(ID=1, Bids=6)

@@ -317,6 +317,23 @@ def annotate_predictions(rows: list, product_type: str, premiums: dict, now=None
     return rows
 
 
+def filter_predicted_deals(rows: list) -> list:
+    """Keep only deals predicted to close BELOW their market value.
+
+    A row with premium history whose predicted final lands at/above the
+    (lot-scaled) median is a deal in name only — history says bidding will
+    erase the discount. Rows without premium history pass through unchanged:
+    their prediction equals the current price, so PredictedDiscountPct is the
+    current discount, which already met the feed threshold.
+
+    Display/notification gate only — SurfaceDeals records every first
+    sighting regardless, so resolved outcomes can prove (or disprove) that
+    the rows this hides really would have been bid past their value.
+    """
+    return [r for r in rows
+            if r.get('PredictedDiscountPct') is None or r['PredictedDiscountPct'] > 0]
+
+
 def model_label_for_row(product_type: str, row: dict) -> str:
     """Human label stored in DealOutcomes.Model for a surfaced deal row.
     Multi-unit lots get a ×N suffix (e.g. '4TB SAS ×5')."""

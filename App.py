@@ -435,13 +435,15 @@ def deals():
         # deals are tracked even when nobody has the dashboard open.
 
         # Outcome-calibrated predictions: re-rank on the PREDICTED discount
-        # (contested auctions get bid past their current price) and expose
-        # the predicted final so the UI can show it. Must run before the
-        # ISO conversion — the annotator needs EndTime as a datetime.
+        # (contested auctions get bid past their current price) and drop
+        # rows history says will close at/above market — a deal in name
+        # only. Must run before the ISO conversion — the annotator needs
+        # EndTime as a datetime.
         pcur = conn.cursor()
         pcur.execute(queries.SNIPE_PREMIUM_QUERY)
         premiums = queries.median_ratios(pcur.fetchall())
         queries.annotate_predictions(rows, product_type, premiums)
+        rows = queries.filter_predicted_deals(rows)
 
         for row in rows:
             if row.get("EndTime"):
@@ -476,10 +478,19 @@ def deal_counts():
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
+        # Badges count the same rows the list shows: full deals query,
+        # prediction-annotated, predicted-over-market rows dropped. The
+        # plain count query can't apply the prediction gate (it lives in
+        # Python), and a badge that disagrees with its list reads as a bug.
+        pcur = conn.cursor()
+        pcur.execute(queries.SNIPE_PREMIUM_QUERY)
+        premiums = queries.median_ratios(pcur.fetchall())
         counts = {}
         for key in ('gpu', 'cpu', 'hdd', 'ram'):
-            cur.execute(get_count_query(key, window_hours, min_discount))
-            counts[key] = cur.fetchone()['cnt']
+            cur.execute(get_deals_query(key, window_hours, min_discount))
+            rows = cur.fetchall()
+            queries.annotate_predictions(rows, key, premiums)
+            counts[key] = len(queries.filter_predicted_deals(rows))
         return jsonify({"status": "ok", "counts": counts})
     except Exception as e:
         log.error("deal_counts error: %s", e)
