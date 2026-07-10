@@ -514,6 +514,40 @@ class TestSsdParsing:
         assert queries.model_label_for_row("hdd", {"CapacityGB": 4000, "Interface": "SAS", "DriveType": "Internal"}) == "4TB SAS"
 
 
+class TestRamKitConfig:
+    @pytest.mark.parametrize("title,cfg,total", [
+        ("Corsair Vengeance 16GB (2x8GB) DDR4 3200", "2x8", 16),
+        ("Crucial 32GB 2 x 16GB DDR4 2666 kit", "2x16", 32),
+        ("Samsung 8GB x 2 DDR3 1600 desktop RAM", "2x8", 16),
+        ("Kingston 16GB DDR4 2400 single stick", None, None),
+        ("HyperX 4x4GB DDR3 1866", "4x4", 16),
+    ])
+    def test_extract_ram_kit(self, title, cfg, total):
+        assert EbayScraper.extract_ram_kit(title) == (cfg, total)
+
+    def test_implausible_kits_unstated(self):
+        # "32GB X99 motherboard combo" — X99 must not read as 99 sticks
+        assert EbayScraper.extract_ram_kit("32GB X99 bundle DDR4") == (None, None)
+
+    def test_parse_sets_kit_and_capacity(self):
+        item = _parse_one("Corsair Vengeance 16GB (2x8GB) DDR4 3200MHz DIMM", "RAM")
+        assert item['kit-config'] == "2x8"
+        assert item['capacity-gb'] == 16
+        single = _parse_one("Kingston 16GB DDR4 2666 DIMM", "RAM")
+        assert single['kit-config'] is None
+        assert single['capacity-gb'] == 16
+
+    def test_ram_market_groups_split_by_kit(self):
+        for sql in (queries.build_deals_query("ram"),
+                    queries.build_count_query("ram"),
+                    queries.build_price_guide_query("ram")):
+            assert "KitConfig" in sql
+
+    def test_labels_annotate_kit(self):
+        assert queries.model_label_for_row("ram", {"CapacityGB": 16, "Type": "DDR4", "FormFactor": "DIMM", "KitConfig": "2x8"}) == "16GB DDR4 (2x8)"
+        assert queries.model_label_for_row("ram", {"CapacityGB": 16, "Type": "DDR4", "FormFactor": "DIMM"}) == "16GB DDR4"
+
+
 class TestJunkListingGate:
     """Damaged items and accessory listings must never enter any category —
     phantom deals when live, median-poison when sold."""

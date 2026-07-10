@@ -438,6 +438,12 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("Outcome column migration failed: %s", e)
 
+    # RAM kit composition (2x8 vs 1x16 markets) + title backfill.
+    try:
+        EbayScraper.EnsureRamKitConfig()
+    except Exception as e:
+        log.error("RAM KitConfig migration failed: %s", e)
+
     # SSD satellite table (new category).
     try:
         EbayScraper.EnsureSsdTable()

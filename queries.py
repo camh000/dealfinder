@@ -88,11 +88,14 @@ CATEGORIES = {
     },
     'ram': {
         'table': 'RAM', 'alias': 'r',
-        # FormFactor splits DIMM (desktop) vs SODIMM (laptop) — different markets.
-        'group_cols': [('Type', False), ('CapacityGB', False), ('FormFactor', True)],
+        # FormFactor splits DIMM (desktop) vs SODIMM (laptop); KitConfig splits
+        # stick composition — at the same total capacity, 2x8 sold ~31% above
+        # 1x16 and ~56% above 4x4 (120d data). NULL KitConfig (unstated titles)
+        # forms its own blended group via the null-safe join.
+        'group_cols': [('Type', False), ('CapacityGB', False), ('FormFactor', True), ('KitConfig', True)],
         'not_null': ['Type', 'CapacityGB'],
-        'deal_select': ['r.Brand', 'r.CapacityGB', 'r.Type', 'r.Speed', 'r.FormFactor'],
-        'guide_select': ['rs.Type', 'rs.CapacityGB', 'rs.FormFactor'],
+        'deal_select': ['r.Brand', 'r.CapacityGB', 'r.Type', 'r.Speed', 'r.FormFactor', 'r.KitConfig'],
+        'guide_select': ['rs.Type', 'rs.CapacityGB', 'rs.FormFactor', 'rs.KitConfig'],
         'guide_order': 'rs.Type, rs.CapacityGB',
     },
 }
@@ -406,5 +409,6 @@ def _base_label(product_type: str, row: dict) -> str:
         ram_type = row.get('Type') or 'RAM'
         # Only annotate the non-default (SODIMM) — DIMM is the norm.
         so = ' SODIMM' if row.get('FormFactor') == 'SODIMM' else ''
-        return f"{cap}GB {ram_type}{so}" if cap else f"{ram_type}{so}"
+        kit = f" ({row['KitConfig']})" if row.get('KitConfig') else ''
+        return f"{cap}GB {ram_type}{so}{kit}" if cap else f"{ram_type}{so}{kit}"
     return row.get('Model')
