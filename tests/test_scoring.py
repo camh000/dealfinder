@@ -514,6 +514,41 @@ class TestSsdParsing:
         assert queries.model_label_for_row("hdd", {"CapacityGB": 4000, "Interface": "SAS", "DriveType": "Internal"}) == "4TB SAS"
 
 
+class TestJunkListingGate:
+    """Damaged items and accessory listings must never enter any category —
+    phantom deals when live, median-poison when sold."""
+
+    @pytest.mark.parametrize("title", [
+        "Nvidia RTX 4090 Founders Edition Heatsink, with fans and box (no GPU)",
+        "Gigabyte RTX 4090 Gaming OC Heatsink&box Only!!",
+        "Palit RTX 5090 GameRock 32GB Heatsink & Box Only",
+        "ASUS TUF RTX 4090 OC box only",
+        "*DAMAGED* PALIT RTX 4090 GAMEROCK 24GB GDDR6X Graphics Card",
+        "MSI RTX 3080 10GB - FAULTY for parts",
+        "EVGA RTX 3070 8GB untested no display",
+    ])
+    def test_junk_gpu_listings_skipped(self, title):
+        assert _parse_one(title, "GPU") is None
+
+    @pytest.mark.parametrize("title", [
+        "MSI RTX 3070 Gaming X Trio 8GB GDDR6",
+        "ASUS RTX 3080 10GB with backplate and original box",
+        "Sapphire RX 6800 XT 16GB boxed",
+    ])
+    def test_real_cards_not_caught(self, title):
+        item = _parse_one(title, "GPU")
+        assert item is not None, f"real card wrongly skipped: {title}"
+
+    def test_damaged_skipped_in_every_category(self):
+        assert _parse_one("Seagate 4TB SATA hard drive - faulty, clicking", "HDD") is None
+        assert _parse_one("Intel Xeon Gold 6248 - dead, bent pins", "CPU") is None
+        assert _parse_one("Samsung 970 EVO 1TB NVMe SSD damaged", "SSD") is None
+
+    def test_accessory_detector_direct(self):
+        assert EbayScraper.is_accessory_listing("RTX 4090 heatsink and fans (no gpu)") is True
+        assert EbayScraper.is_accessory_listing("RTX 4090 24GB Gaming OC") is False
+
+
 class TestNearMissCohort:
     def test_premium_training_excludes_cohort(self):
         """Premiums must stay trained on the population they predict for —

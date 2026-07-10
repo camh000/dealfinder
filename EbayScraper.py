@@ -369,7 +369,18 @@ LOT_MAX_QTY = 30
 
 _LOT_RISK_RE = re.compile(
     r'\buntested\b|\bspares?\b|\brepairs?\b|\bfaulty\b|\bnot\s+working\b|'
-    r'\bfor\s+parts\b|\bas[-\s]is\b|\bdead\b', re.IGNORECASE)
+    r'\bfor\s+parts\b|\bas[-\s]is\b|\bdead\b|\bdamaged\b|\bbroken\b|'
+    r'\bnon[-\s]?functional\b', re.IGNORECASE)
+
+# Accessory listings masquerading as the component: "RTX 4090 Founders
+# Edition Heatsink, with fans and box (no GPU)" parses as a 4090 and shows
+# as 98% off. Only explicit tells — a real card saying "with backplate"
+# must not be skipped.
+_ACCESSORY_RE = re.compile(
+    r'no\s+gpu\b|not\s+included\b|\bno\s+(?:graphics\s+)?card\b|\bempty\s+box\b|'
+    r'\b(?:box|heatsink|cooler|fans?|shroud|backplate|bracket|stand)\s*only\b|'
+    r'\bheatsink\s*(?:&|and|\+|,)\s*(?:box|fans?|shroud)\b|'
+    r'\bbox\s*(?:&|and|\+|,)\s*(?:manual|heatsink)\b', re.IGNORECASE)
 
 
 def extract_lot_quantity(title: str) -> int:
@@ -384,9 +395,17 @@ def extract_lot_quantity(title: str) -> int:
 
 
 def lot_is_risky(title: str) -> bool:
-    """True for untested/spares-or-repairs wording — the market median assumes
-    working units, so risky lots must not be valued against it."""
+    """True for untested/spares-or-repairs/damaged wording — the market median
+    assumes working units, so these must not be valued against it. Applied to
+    every listing at parse time (not just lots): a *DAMAGED* 4090 at £565 vs
+    a £1,787 working median is a phantom 68%-off deal, and its sold price
+    would drag the working-card median down."""
     return bool(_LOT_RISK_RE.search(title or ''))
+
+
+def is_accessory_listing(title: str) -> bool:
+    """True for boxes/heatsinks/brackets sold under the component's name."""
+    return bool(_ACCESSORY_RE.search(title or ''))
 
 
 def __ParseItems(soup, query, productType):
@@ -528,6 +547,15 @@ def __ParseItems(soup, query, productType):
             log.warning("[%s] Skipping item '%s...' - could not parse URL/ID: %s", query, title[:40], e)
             continue
 
+        # Junk gate (all categories): damaged/untested/for-parts items can't
+        # be valued against working-unit medians — as live listings they're
+        # phantom deals, as sold history they drag the medians down. And
+        # accessory listings ("Heatsink, with fans and box (no GPU)") aren't
+        # the component at all.
+        if lot_is_risky(title) or is_accessory_listing(title):
+            log.debug("[%s] Skipping risky/accessory listing: %s", query, title[:60])
+            continue
+
         socket = cores = capacity_gb = interface = form_factor = rpm = ram_type = speed = None
         drive_type = ram_format = pcie_gen = None
         quantity = 1
@@ -616,9 +644,6 @@ def __ParseItems(soup, query, productType):
             pair_m = re.search(r'\b(\d)\s*[x×]\s*(?:intel\s+)?xeon\b', _tl)
             if pair_m and 2 <= int(pair_m.group(1)) <= 8:
                 quantity = int(pair_m.group(1))
-                if lot_is_risky(title):
-                    log.debug("[%s] Skipping risky CPU lot: %s", query, title[:60])
-                    continue
 
             def extract_cpu_brand(title: str):
                 t = title.upper()
@@ -772,12 +797,6 @@ def __ParseItems(soup, query, productType):
             drive_type  = classify_drive_type(title)
             quantity    = extract_lot_quantity(title)
 
-            # Untested/spares job lots can't be valued against a working-unit
-            # median. Singles keep the old behaviour (median resists them).
-            if quantity > 1 and lot_is_risky(title):
-                log.debug("[%s] Skipping risky lot: %s", query, title[:60])
-                continue
-
         elif productType == 'SSD':
 
             _tl = title.lower()
@@ -843,9 +862,6 @@ def __ParseItems(soup, query, productType):
                 interface = 'USB'
                 form_factor = 'Ext'
             quantity = extract_lot_quantity(title)
-            if quantity > 1 and lot_is_risky(title):
-                log.debug("[%s] Skipping risky lot: %s", query, title[:60])
-                continue
 
         elif productType == 'RAM':
 
