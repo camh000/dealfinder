@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Price guide — PC/DEALS{% endblock %}
+{% block page %}prices{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Price guide</h1>
+  <span class="sub">delivery-inclusive medians over the last 120 days of sold auctions</span>
+</div>
+
+<div class="toolbar">
+  <input type="search" id="q" placeholder="Search models, specs…">
+  <div class="pills" id="cat-pills">
+    <button class="pill active" data-cat="all">All</button>
+    <button class="pill" data-cat="gpu">GPU</button>
+    <button class="pill" data-cat="cpu">CPU</button>
+    <button class="pill" data-cat="hdd">HDD</button>
+    <button class="pill" data-cat="ssd">SSD</button>
+    <button class="pill" data-cat="ram">RAM</button>
+  </div>
+</div>
+
+<div class="split">
+  <div class="tbl-wrap">
+    <table class="tbl" id="guide-tbl">
+      <thead></thead>
+      <tbody><tr><td class="state" colspan="8"><span class="loader"></span>loading…</td></tr></tbody>
+    </table>
+  </div>
+  <aside class="basket">
+    <h2>Build basket <button class="btn-ghost" id="basket-clear" style="padding:2px 8px;font-size:11px">clear</button></h2>
+    <div class="basket-items" id="basket-items"><div class="state" style="padding:14px;font-size:12.5px">Add components with +</div></div>
+    <div class="basket-total"><span>Total</span><span class="num" id="basket-total">£0.00</span></div>
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/prices.js"></script>
+{% endblock %}

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}PC/DEALS{% endblock %}</title>
+<link rel="manifest" href="/static/manifest.json">
+<link rel="icon" href="/static/favicon.ico">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<meta name="theme-color" content="#0e1116">
+<script>
+/* theme + density bootstrap — runs before first paint to avoid flash */
+(function () {
+  var t = localStorage.getItem('pcd-theme');
+  if (t !== 'dark' && t !== 'light')
+    t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  document.documentElement.dataset.theme = t;
+  var d = localStorage.getItem('pcd-density');
+  document.documentElement.dataset.density = (d === 'compact') ? 'compact' : 'comfortable';
+})();
+</script>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body data-page="{% block page %}{% endblock %}">
+
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="/">PC<span>/</span>DEALS</a>
+    <nav class="nav" id="nav">
+      <a href="/deals/gpu" data-nav="gpu">GPU<sup data-count="gpu"></sup></a>
+      <a href="/deals/cpu" data-nav="cpu">CPU<sup data-count="cpu"></sup></a>
+      <a href="/deals/hdd" data-nav="hdd">HDD<sup data-count="hdd"></sup></a>
+      <a href="/deals/ssd" data-nav="ssd">SSD<sup data-count="ssd"></sup></a>
+      <a href="/deals/ram" data-nav="ram">RAM<sup data-count="ram"></sup></a>
+      <a href="/outcomes" data-nav="outcomes">Outcomes</a>
+      <a href="/prices" data-nav="prices">Prices</a>
+      <a href="/settings" data-nav="settings">Settings</a>
+    </nav>
+    <div class="status">
+      <span class="dot" id="live-dot"></span>
+      <span id="status-line">—</span>
+      <button class="icon-btn" id="theme-btn" title="Toggle light/dark theme" aria-label="Toggle theme">◐</button>
+    </div>
+  </div>
+</header>
+
+<main>
+{% block content %}{% endblock %}
+</main>
+
+<footer>
+  <span>PC/DEALS — data via eBay UK, refreshed hourly</span>
+  <span style="flex:1"></span>
+  <a href="/health">system health</a>
+</footer>
+
+<script src="/static/js/common.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}{{ category | upper }} deals — PC/DEALS{% endblock %}
+{% block page %}{{ category }}{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>{{ category | upper }} deals</h1>
+  <span class="sub" id="deal-count"></span>
+  <span class="spacer"></span>
+  <button class="btn-ghost" id="refresh-btn">Refresh</button>
+</div>
+
+<div class="toolbar">
+  <label>Ending in
+    <select id="f-window">
+      <option value="2">2 hours</option>
+      <option value="6">6 hours</option>
+      <option value="24">24 hours</option>
+    </select>
+  </label>
+  <label>Brand
+    <select id="f-brand"><option value="">all</option></select>
+  </label>
+  <label>Min discount
+    <input type="number" id="f-disc" min="0" max="95" step="5" value="20" style="width:64px"> %
+  </label>
+  <label>Min saving
+    £ <input type="number" id="f-save" min="0" step="5" value="0" style="width:64px">
+  </label>
+  <label>Sort
+    <select id="f-sort">
+      <option value="DealScore">score</option>
+      <option value="PredictedDiscountPct">predicted discount</option>
+      <option value="PotentialGain">saving</option>
+      <option value="ItemPrice">price</option>
+      <option value="EndTime">ending soonest</option>
+    </select>
+  </label>
+</div>
+
+<div class="rows" id="rows">
+  <div class="state"><span class="loader"></span>loading deals…</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>window.PAGE_CATEGORY = {{ category | tojson }};</script>
+<script src="/static/js/deals.js"></script>
+{% endblock %}

@@ -278,8 +278,15 @@ def run_full_scrape():
         log.error("Stale-listing prune failed: %s", e)
 
     _last_full_scrape = _utcnow()
+    coverage = EbayScraper.get_field_coverage()
+    alerts = EbayScraper.coverage_alerts(coverage)
     try:
-        EbayScraper.RecordScrapeCompleted()
+        EbayScraper.RecordScrapeCompleted(stats={
+            'rows': total_rows,
+            'categories_ok': categories_ok,
+            'coverage': coverage,
+            'alerts': alerts,
+        })
     except Exception as e:
         log.error("Failed to record scrape timestamp: %s", e)
 
@@ -290,8 +297,6 @@ def run_full_scrape():
     # Field-coverage collapse ALSO withholds the heartbeat: partial markup
     # drift (a single field's parser going blind, like the old silent-£0
     # shipping bug) is invisible to the row count.
-    coverage = EbayScraper.get_field_coverage()
-    alerts = EbayScraper.coverage_alerts(coverage)
     for a in alerts:
         log.error("Field-coverage alert: %s — eBay markup has likely drifted "
                   "for this field. Kuma heartbeat withheld.", a)

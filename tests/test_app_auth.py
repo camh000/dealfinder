@@ -36,7 +36,7 @@ def _basic(user, password):
 
 def test_open_when_unconfigured(monkeypatch):
     app = _load_app(monkeypatch)
-    resp = app.test_client().get("/")
+    resp = app.test_client().get("/outcomes")
     assert resp.status_code == 200
 
 
@@ -56,7 +56,7 @@ def test_401_with_wrong_credentials(monkeypatch):
 
 def test_200_with_correct_credentials(monkeypatch):
     app = _load_app(monkeypatch, "cam", "hunter2")
-    resp = app.test_client().get("/", headers=_basic("cam", "hunter2"))
+    resp = app.test_client().get("/outcomes", headers=_basic("cam", "hunter2"))
     assert resp.status_code == 200
 
 
@@ -70,4 +70,4 @@ def test_api_routes_also_gated(monkeypatch):
 def test_half_configured_stays_open(monkeypatch):
     """Only one of the two vars set → auth off (misconfig shouldn't lock out)."""
     app = _load_app(monkeypatch, "cam", None)
-    assert app.test_client().get("/").status_code == 200
+    assert app.test_client().get("/outcomes").status_code == 200

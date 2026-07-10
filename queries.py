@@ -203,11 +203,13 @@ SELECT
     e.Bids,
     e.SellerFeedbackPct,
     e.SellerFeedbackCount,
+    dout.SurfacedAt,
     e.EndTime,
     e.URL
 FROM Scraper.EBAY e
 JOIN Scraper.{cfg['table']} {a} ON {a}.ID = e.ID
 JOIN ModelStats ms ON {_join_cond(cfg, 'ms', a)}
+LEFT JOIN Scraper.DealOutcomes dout ON dout.EbayID = e.ID
 WHERE
     e.SoldDate IS NULL
     AND {EFF_UNIT} < ms.AvgPrice * {threshold}
@@ -339,6 +341,26 @@ def annotate_predictions(rows: list, product_type: str, premiums: dict, now=None
             max(row['PredictedDiscountPct'] or 0, 0) / hours / (1 + bids), 2)
     rows.sort(key=lambda r: r.get('DealScore') or 0, reverse=True)
     return rows
+
+
+def model_where(product_type: str, params: dict) -> tuple[str, list]:
+    """WHERE fragment + bind values selecting one market group.
+
+    `params` carries the group-column values as strings (from a query
+    string); None/absent/'' matches NULL via the null-safe operator.
+    Returns (sql_condition_on_alias, values) — alias is cfg['alias'].
+    """
+    cfg = CATEGORIES[product_type]
+    a = cfg['alias']
+    conds, values = [], []
+    for col, _null_safe in cfg['group_cols']:
+        raw = params.get(col)
+        if raw in (None, ''):
+            conds.append(f"{a}.{col} IS NULL")
+        else:
+            conds.append(f"{a}.{col} <=> %s")
+            values.append(raw)
+    return ' AND '.join(conds), values
 
 
 def filter_predicted_deals(rows: list) -> list:

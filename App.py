@@ -1,12 +1,14 @@
-from flask import Flask, jsonify, render_template, request, make_response
+from flask import Flask, abort, jsonify, redirect, render_template, request, make_response
 from flask.json.provider import DefaultJSONProvider
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import hmac
+import json
 import mariadb
 import os
 import logging
+import statistics
 from dotenv import load_dotenv
 
 import queries
@@ -406,10 +408,13 @@ def _compute_sw_version() -> str:
         return explicit[:12]
     try:
         here = os.path.dirname(os.path.abspath(__file__))
-        mtimes = (
-            os.path.getmtime(os.path.join(here, 'static', 'sw.js')),
-            os.path.getmtime(os.path.join(here, 'templates', 'Index.html')),
-        )
+        mtimes = []
+        for sub in ('templates', 'static', os.path.join('static', 'css'), os.path.join('static', 'js')):
+            d = os.path.join(here, sub)
+            if os.path.isdir(d):
+                mtimes += [os.path.getmtime(os.path.join(d, f))
+                           for f in sorted(os.listdir(d))
+                           if os.path.isfile(os.path.join(d, f))]
         return hashlib.sha256(str(mtimes).encode()).hexdigest()[:8]
     except OSError:
         return 'dev'
@@ -440,9 +445,46 @@ def service_worker():
     return resp
 
 
+PAGE_CATEGORIES = ('gpu', 'cpu', 'hdd', 'ssd', 'ram')
+
+
 @app.route("/")
 def index():
-    return render_template("Index.html")
+    return redirect("/deals/gpu")
+
+
+@app.route("/deals/<cat>")
+def deals_page(cat):
+    if cat not in PAGE_CATEGORIES:
+        abort(404)
+    return render_template("deals.html", category=cat)
+
+
+@app.route("/outcomes")
+def outcomes_page():
+    return render_template("outcomes.html")
+
+
+@app.route("/prices")
+def prices_page():
+    return render_template("prices.html")
+
+
+@app.route("/model/<cat>")
+def model_page(cat):
+    if cat not in PAGE_CATEGORIES:
+        abort(404)
+    return render_template("model.html", category=cat)
+
+
+@app.route("/settings")
+def settings_page():
+    return render_template("settings.html")
+
+
+@app.route("/health")
+def health_page():
+    return render_template("health.html")
 
 
 @app.route("/api/deals")
@@ -489,8 +531,9 @@ def deals():
         rows = queries.filter_predicted_deals(rows)
 
         for row in rows:
-            if row.get("EndTime"):
-                row["EndTime"] = _iso_utc(row["EndTime"])
+            for col in ("EndTime", "SurfacedAt"):
+                if row.get(col):
+                    row[col] = _iso_utc(row[col])
 
         return jsonify({"status": "ok", "deals": rows})
     except Exception as e:
@@ -633,6 +676,27 @@ def outcomes():
         ended_unsold = sum(1 for r in resolved if r['EndedUnsold'])
         win_rate = round(beat_market / total_resolved * 100, 1) if total_resolved > 0 else 0
 
+        # How good is the snipe-premium model? Median |error| of the final
+        # price it predicted at surfacing vs what the auction actually did.
+        errs = [abs(float(r['FinalPrice']) - float(r['PredictedFinal']))
+                / float(r['PredictedFinal']) * 100
+                for r in priced if r.get('PredictedFinal')]
+        prediction = {"median_abs_err_pct": round(statistics.median(errs), 1) if errs else None,
+                      "n": len(errs)}
+
+        # Lifetime report card (excludes the near-miss control cohort).
+        cur.execute("""
+            SELECT ROUND(SUM(AvgMarketPrice) / 100)
+            FROM Scraper.DealOutcomes WHERE NearMiss = 0
+        """)
+        (market_value_tracked,) = cur.fetchone().values()
+        discounts = [float(r['ActualDiscountPct']) for r in priced
+                     if r.get('ActualDiscountPct') is not None]
+        lifetime = {
+            "market_value_tracked": float(market_value_tracked or 0),
+            "median_actual_discount": round(statistics.median(discounts), 1) if discounts else None,
+        }
+
         return jsonify({
             "status": "ok",
             "summary": {
@@ -643,6 +707,8 @@ def outcomes():
                 "ended_unsold": ended_unsold,
                 "gave_up": gave_up,
                 "near_miss": near_miss,
+                "prediction": prediction,
+                "lifetime": lifetime,
             },
             "resolved": resolved,
             "pending": pending,
@@ -792,19 +858,240 @@ def notify_settings_delete(rid):
             conn.close()
 
 
+def _guide_extras(cur, cat):
+    """Per-group live-listing counts and 30-day trend for one category.
+
+    Trend = median of sold effective prices in the last 30 days vs the prior
+    31–90 days (singles only), reported when both windows have >=3 samples.
+    Returns ({group_tuple: live_count}, {group_tuple: (trend_pct, n_recent)}).
+    """
+    cfg = queries.CATEGORIES[cat]
+    a = cfg['alias']
+    group_cols = [c for c, _ in cfg['group_cols']]
+    cols = ', '.join(f"{a}.{c}" for c in group_cols)
+
+    cur.execute(f"""
+        SELECT {cols}, COUNT(*)
+        FROM Scraper.{cfg['table']} {a}
+        JOIN Scraper.EBAY e ON e.ID = {a}.ID
+        WHERE e.SoldDate IS NULL AND e.EndTime > NOW()
+          AND e.LastSeenAt > NOW() - INTERVAL {queries.STALE_DEAL_MINUTES} MINUTE
+        GROUP BY {cols}
+    """)
+    live = {tuple(r[:-1]): int(r[-1]) for r in cur.fetchall()}
+
+    cur.execute(f"""
+        SELECT {cols}, (e.Price + COALESCE(e.Shipping, 0)) / 100, e.SoldDate
+        FROM Scraper.{cfg['table']} {a}
+        JOIN Scraper.EBAY e ON e.ID = {a}.ID
+        WHERE e.SoldDate > NOW() - INTERVAL 90 DAY
+          AND e.Price IS NOT NULL AND COALESCE(e.Quantity, 1) = 1
+    """)
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    recent, prior = {}, {}
+    for row in cur.fetchall():
+        key, price, sold = tuple(row[:-2]), float(row[-2]), row[-1]
+        (recent if sold >= cutoff else prior).setdefault(key, []).append(price)
+    trends = {}
+    for key in recent:
+        if len(recent[key]) >= 3 and len(prior.get(key, [])) >= 3:
+            med_r, med_p = statistics.median(recent[key]), statistics.median(prior[key])
+            if med_p > 0:
+                trends[key] = (round((med_r / med_p - 1) * 100, 1), len(recent[key]))
+    return live, trends
+
+
 @app.route("/api/price-guide")
 def price_guide():
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
+        pcur = conn.cursor()
         result = {}
         for cat in ('gpu', 'cpu', 'hdd', 'ssd', 'ram'):
             cur.execute(queries.build_price_guide_query(cat))
-            result[cat] = cur.fetchall()
+            rows = cur.fetchall()
+            live, trends = _guide_extras(pcur, cat)
+            group_cols = [c for c, _ in queries.CATEGORIES[cat]['group_cols']]
+            for r in rows:
+                key = tuple(r.get(c) for c in group_cols)
+                r['LiveCount'] = live.get(key, 0)
+                t = trends.get(key)
+                r['Trend30dPct'] = t[0] if t else None
+                r['TrendSamples'] = t[1] if t else None
+            result[cat] = rows
         return jsonify({"status": "ok", "components": result})
     except Exception as e:
         log.error("price_guide error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route("/api/snapshots")
+def snapshots():
+    """Price/bid trajectories for live tracked deals — feeds row sparklines."""
+    ids = [int(x) for x in request.args.get('ids', '').split(',') if x.strip().isdigit()][:100]
+    if not ids:
+        return jsonify({"status": "ok", "series": {}})
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        placeholders = ', '.join(['%s'] * len(ids))
+        cur.execute(f"""
+            SELECT EbayID, MinutesLeft, ROUND(EffPrice / 100, 2), Bids
+            FROM Scraper.DealSnapshots
+            WHERE EbayID IN ({placeholders})
+            ORDER BY EbayID, SnapAt
+        """, tuple(ids))
+        series = {}
+        for ebay_id, mins, price, bids in cur.fetchall():
+            series.setdefault(str(ebay_id), []).append(
+                [mins, float(price), int(bids or 0)])
+        return jsonify({"status": "ok", "series": series})
+    except Exception as e:
+        log.error("snapshots error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route("/api/model-detail")
+def model_detail():
+    """Everything we know about one market group: recent individual sales,
+    live listings, headline stats and a monthly trend series."""
+    cat = request.args.get('type', '').lower()
+    if cat not in queries.CATEGORIES:
+        return jsonify({"status": "error", "message": "unknown type"}), 400
+    cfg = queries.CATEGORIES[cat]
+    a, table = cfg['alias'], cfg['table']
+    params = {col: request.args.get(col) for col, _ in cfg['group_cols']}
+    cond, values = queries.model_where(cat, params)
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+
+        cur.execute(f"""
+            SELECT e.Title, ROUND((e.Price + COALESCE(e.Shipping, 0)) / 100, 2) AS Price,
+                   e.SoldDate, e.URL, COALESCE(e.Quantity, 1) AS Quantity
+            FROM Scraper.{table} {a}
+            JOIN Scraper.EBAY e ON e.ID = {a}.ID
+            WHERE e.SoldDate IS NOT NULL AND e.Price IS NOT NULL
+              AND e.SoldDate > NOW() - INTERVAL 180 DAY AND {cond}
+            ORDER BY e.SoldDate DESC
+            LIMIT 200
+        """, tuple(values))
+        sold = cur.fetchall()
+
+        cur.execute(f"""
+            SELECT e.ID, e.Title, ROUND(e.Price / 100, 2) AS ItemPrice,
+                   ROUND(COALESCE(e.Shipping, 0) / 100, 2) AS Shipping,
+                   e.Bids, e.EndTime, e.URL, COALESCE(e.Quantity, 1) AS Quantity
+            FROM Scraper.{table} {a}
+            JOIN Scraper.EBAY e ON e.ID = {a}.ID
+            WHERE e.SoldDate IS NULL AND e.EndTime > NOW()
+              AND e.LastSeenAt > NOW() - INTERVAL {queries.STALE_DEAL_MINUTES} MINUTE
+              AND {cond}
+            ORDER BY e.EndTime
+            LIMIT 50
+        """, tuple(values))
+        live = cur.fetchall()
+
+        # Stats + monthly trend from single-unit sales only (lot totals would
+        # skew everything upward).
+        singles = [r for r in sold if int(r['Quantity']) == 1]
+        cutoff_120 = datetime.utcnow() - timedelta(days=queries.MARKET_STATS_DAYS)
+        window = [float(r['Price']) for r in singles if r['SoldDate'] >= cutoff_120]
+        stats = {
+            "median": round(statistics.median(window), 2) if window else None,
+            "min": min(window) if window else None,
+            "max": max(window) if window else None,
+            "n": len(window),
+        }
+        monthly = {}
+        for r in singles:
+            monthly.setdefault(r['SoldDate'].strftime('%Y-%m'), []).append(float(r['Price']))
+        trend = [{"month": m, "median": round(statistics.median(v), 2), "n": len(v)}
+                 for m, v in sorted(monthly.items())]
+
+        for r in sold:
+            if r.get('SoldDate'):
+                r['SoldDate'] = _iso_utc(r['SoldDate'])
+        for r in live:
+            if r.get('EndTime'):
+                r['EndTime'] = _iso_utc(r['EndTime'])
+
+        return jsonify({"status": "ok", "group": params, "stats": stats,
+                        "trend": trend, "sold": sold[:40], "live": live})
+    except Exception as e:
+        log.error("model_detail error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route("/api/health")
+def health_api():
+    """Scrape + data observability without docker logs."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+
+        cur.execute("SELECT LastScrapeAt, LastRunStats FROM Scraper.ScrapeMeta WHERE id = 1")
+        meta = cur.fetchone() or {}
+        run_stats = None
+        if meta.get('LastRunStats'):
+            try:
+                run_stats = json.loads(meta['LastRunStats'])
+            except ValueError:
+                run_stats = None
+
+        categories = {}
+        pcur = conn.cursor()
+        for cat in PAGE_CATEGORIES:
+            table = queries.CATEGORIES[cat]['table']
+            pcur.execute(f"""
+                SELECT
+                    SUM(e.SoldDate IS NULL AND e.EndTime > NOW()
+                        AND e.LastSeenAt > NOW() - INTERVAL {queries.STALE_DEAL_MINUTES} MINUTE),
+                    SUM(e.SoldDate IS NOT NULL
+                        AND e.SoldDate > NOW() - INTERVAL {queries.MARKET_STATS_DAYS} DAY),
+                    SUM(e.SoldDate IS NOT NULL)
+                FROM Scraper.{table} s JOIN Scraper.EBAY e ON e.ID = s.ID
+            """)
+            fresh, sold_recent, sold_all = pcur.fetchone()
+            categories[cat] = {"live": int(fresh or 0),
+                               "sold_window": int(sold_recent or 0),
+                               "sold_total": int(sold_all or 0)}
+
+        pcur.execute("""
+            SELECT SUM(e.SoldDate IS NULL AND d.GaveUp = 0 AND d.NearMiss = 0),
+                   SUM(e.SoldDate IS NOT NULL AND d.NearMiss = 0),
+                   SUM(d.GaveUp = 1), SUM(d.NearMiss = 1)
+            FROM Scraper.DealOutcomes d JOIN Scraper.EBAY e ON e.ID = d.EbayID
+        """)
+        pending, resolved, gave_up, near_miss = pcur.fetchone()
+        pcur.execute("SELECT COUNT(*), COUNT(DISTINCT EbayID) FROM Scraper.DealSnapshots")
+        snaps, snap_items = pcur.fetchone()
+
+        return jsonify({
+            "status": "ok",
+            "last_scrape_at": _iso_utc(meta.get('LastScrapeAt')),
+            "last_run": run_stats,
+            "categories": categories,
+            "outcomes": {"pending": int(pending or 0), "resolved": int(resolved or 0),
+                         "gave_up": int(gave_up or 0), "near_miss": int(near_miss or 0)},
+            "snapshots": {"rows": int(snaps or 0), "deals": int(snap_items or 0)},
+        })
+    except Exception as e:
+        log.error("health error: %s", e)
         return jsonify({"status": "error", "message": "internal error"}), 500
     finally:
         if conn:

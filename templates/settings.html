@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Settings — PC/DEALS{% endblock %}
+{% block page %}settings{% endblock %}
+
+{% block content %}
+<div class="page-head"><h1>Settings</h1></div>
+
+<div class="card">
+  <h2>Appearance</h2>
+  <div class="radio-row" style="margin-bottom:10px">
+    <span class="sub" style="min-width:70px">Theme</span>
+    <label><input type="radio" name="theme" value="dark"> Dark</label>
+    <label><input type="radio" name="theme" value="light"> Light</label>
+    <label><input type="radio" name="theme" value="system"> Follow system</label>
+  </div>
+  <div class="radio-row">
+    <span class="sub" style="min-width:70px">Density</span>
+    <label><input type="radio" name="density" value="comfortable"> Comfortable</label>
+    <label><input type="radio" name="density" value="compact"> Compact</label>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Deal notifications</h2>
+  <p class="help">
+    Push notifications go to each enabled recipient's Home Assistant, filtered to the
+    categories they've ticked. Sent once per deal, when it's first spotted — and only
+    when the outcome-calibrated prediction says the discount will survive the bidding.
+  </p>
+  <div id="recipients"><div class="state"><span class="loader"></span>loading…</div></div>
+  <button class="btn" id="add-recipient" style="margin-top:4px">Add recipient</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/settings.js"></script>
+{% endblock %}

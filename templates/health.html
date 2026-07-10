@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}System health — PC/DEALS{% endblock %}
+{% block page %}health{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>System health</h1>
+  <span class="sub">scrape + data observability, no docker logs required</span>
+</div>
+
+<div class="stats" id="stats"><div class="state"><span class="loader"></span>loading…</div></div>
+
+<div class="card">
+  <h2>Data by category</h2>
+  <div class="tbl-wrap" style="box-shadow:none;border:none">
+    <table class="tbl" id="cat-tbl"><thead>
+      <tr><th>Category</th><th class="num">Live listings</th>
+          <th class="num">Sold (stats window)</th><th class="num">Sold (all time)</th></tr>
+    </thead><tbody></tbody></table>
+  </div>
+</div>
+
+<div class="card" id="run-card" style="display:none">
+  <h2>Last scrape run</h2>
+  <div id="run-body"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/health.js"></script>
+{% endblock %}

@@ -1,0 +1,49 @@
+/* Health page: last scrape, per-category data volumes, last-run coverage. */
+
+(async () => {
+  try {
+    const res = await fetch('/api/health');
+    const data = await res.json();
+    if (data.status !== 'ok') throw new Error(data.message || 'error');
+
+    const ageMin = data.last_scrape_at
+      ? Math.floor((Date.now() - new Date(data.last_scrape_at).getTime()) / 60000) : null;
+    const o = data.outcomes;
+    $('#stats').innerHTML = `
+      <div class="stat"><b class="num ${ageMin != null && ageMin < 90 ? 'good' : 'warn'}">${
+        ageMin != null ? timeAgo(data.last_scrape_at) : '—'}</b><span>last full scrape</span></div>
+      <div class="stat"><b class="num">${o.pending}</b><span>deals pending</span></div>
+      <div class="stat"><b class="num">${o.resolved}</b><span>resolved</span></div>
+      <div class="stat"><b class="num">${o.near_miss}</b><span>near-miss cohort</span></div>
+      <div class="stat"><b class="num">${o.gave_up}</b><span>gave up</span></div>
+      <div class="stat"><b class="num">${data.snapshots.rows.toLocaleString('en-GB')}</b><span>price snapshots (${data.snapshots.deals} deals)</span></div>`;
+
+    $('#cat-tbl tbody').innerHTML = Object.entries(data.categories).map(([c, v]) => `
+      <tr><td><span class="chip">${c.toUpperCase()}</span></td>
+        <td class="num">${v.live.toLocaleString('en-GB')}</td>
+        <td class="num">${v.sold_window.toLocaleString('en-GB')}</td>
+        <td class="num dimcell">${v.sold_total.toLocaleString('en-GB')}</td></tr>`).join('');
+
+    if (data.last_run) {
+      const r = data.last_run;
+      $('#run-card').style.display = '';
+      const cov = r.coverage || {};
+      const pct = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
+      $('#run-body').innerHTML = `
+        <p class="help">${r.rows?.toLocaleString('en-GB') ?? '?'} rows touched ·
+          ${r.categories_ok ?? '?'}/5 categories succeeded</p>
+        ${r.alerts?.length
+          ? `<p class="help" style="color:var(--loss)">⚠ ${r.alerts.map(esc).join('<br>⚠ ')}</p>`
+          : '<p class="help" style="color:var(--gain)">All field-coverage checks passed.</p>'}
+        <div class="stats" style="margin:0">
+          <div class="stat"><b class="num">${pct(cov.sold_date, cov.sold_items)}</b><span>sold dates</span></div>
+          <div class="stat"><b class="num">${pct(cov.end_time, cov.active_items)}</b><span>end times</span></div>
+          <div class="stat"><b class="num">${pct(cov.feedback, cov.items)}</b><span>seller feedback</span></div>
+          <div class="stat"><b class="num">${pct(cov.shipping, cov.items)}</b><span>paid shipping</span></div>
+          <div class="stat"><b class="num">${pct(cov.bids, cov.active_items)}</b><span>items with bids</span></div>
+        </div>`;
+    }
+  } catch (e) {
+    $('#stats').innerHTML = `<div class="state">Couldn’t load health: ${esc(e.message)}</div>`;
+  }
+})();

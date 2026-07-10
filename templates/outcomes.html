@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Outcomes — PC/DEALS{% endblock %}
+{% block page %}outcomes{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Outcomes</h1>
+  <span class="sub">every surfaced deal, tracked to its real result</span>
+</div>
+
+<div class="stats" id="stats"></div>
+
+<div class="pills" id="cat-pills" style="margin-bottom:var(--gap)">
+  <button class="pill active" data-cat="all">All</button>
+  <button class="pill" data-cat="gpu">GPU</button>
+  <button class="pill" data-cat="cpu">CPU</button>
+  <button class="pill" data-cat="hdd">HDD</button>
+  <button class="pill" data-cat="ssd">SSD</button>
+  <button class="pill" data-cat="ram">RAM</button>
+</div>
+
+<h2 class="sub" style="margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)">Resolved</h2>
+<div class="tbl-wrap" style="margin-bottom:var(--gap)">
+  <table class="tbl" id="resolved-tbl">
+    <thead></thead>
+    <tbody><tr><td class="state" colspan="10"><span class="loader"></span>loading…</td></tr></tbody>
+  </table>
+</div>
+
+<div id="pending-section" style="display:none">
+  <h2 class="sub" style="margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)">Pending / awaiting result</h2>
+  <div class="tbl-wrap">
+    <table class="tbl" id="pending-tbl"><thead></thead><tbody></tbody></table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/outcomes.js"></script>
+{% endblock %}

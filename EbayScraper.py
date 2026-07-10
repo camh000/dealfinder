@@ -1621,16 +1621,26 @@ def _ensure_scrape_meta_table(cur) -> None:
     _scrape_meta_ensured = True
 
 
-def RecordScrapeCompleted():
-    """Persist the current UTC timestamp as the last full-scrape completion time."""
+def RecordScrapeCompleted(stats: dict | None = None):
+    """Persist the completion time and (optionally) a JSON summary of the run
+    — rows touched, category successes, field coverage, alerts. The health
+    page reads this so scrape observability doesn't require docker logs."""
+    import json
+    DUP_COLUMN_ERRNO = 1060
     conn = _get_connection()
     try:
         cur = conn.cursor()
         _ensure_scrape_meta_table(cur)
+        try:
+            cur.execute("ALTER TABLE Scraper.ScrapeMeta ADD COLUMN LastRunStats TEXT NULL")
+            conn.commit()
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                raise
         cur.execute("""
-            INSERT INTO Scraper.ScrapeMeta (id, LastScrapeAt) VALUES (1, NOW())
-            ON DUPLICATE KEY UPDATE LastScrapeAt = NOW()
-        """)
+            INSERT INTO Scraper.ScrapeMeta (id, LastScrapeAt, LastRunStats) VALUES (1, NOW(), %s)
+            ON DUPLICATE KEY UPDATE LastScrapeAt = NOW(), LastRunStats = VALUES(LastRunStats)
+        """, (json.dumps(stats) if stats else None,))
         conn.commit()
     finally:
         conn.close()
