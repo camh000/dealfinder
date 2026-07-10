@@ -278,6 +278,8 @@ def median_ratios(rows, min_samples: int = 5) -> dict:
 
 
 # Resolved outcomes that feed the premium model (sold, not ended-unsold).
+# The near-miss control cohort is excluded: premiums must stay trained on
+# the same population they predict for, or the experiment contaminates it.
 SNIPE_PREMIUM_QUERY = """
 SELECT d.Category, d.BidCount, d.SurfacedPrice,
        COALESCE(d.FinalPrice, e.Price)
@@ -285,6 +287,7 @@ FROM Scraper.DealOutcomes d
 JOIN Scraper.EBAY e ON e.ID = d.EbayID
 WHERE e.SoldDate IS NOT NULL
   AND d.EndedUnsold = 0
+  AND d.NearMiss = 0
   AND d.SurfacedPrice > 0
   AND COALESCE(d.FinalPrice, e.Price) IS NOT NULL;
 """

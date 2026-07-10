@@ -1315,6 +1315,14 @@
             ? `<div class="stat-card" title="Surfaced deals the verifier could no longer look up on eBay (completed listings roll off search after ~90 days). Never resolved.">
                    <div class="stat-label">Gave Up</div><div class="stat-value amber">${gaveUp}</div></div>`
             : '';
+        // Near-miss control cohort (12–20% band, recorded but never surfaced
+        // or notified) — server-side total only, so All view only. If this
+        // rivals the main win rate, the 20% threshold is too strict.
+        const nm = activeOutcomeCat === 'all' ? outcomesSummary?.near_miss : null;
+        const nearMissCard = nm && nm.resolved > 0
+            ? `<div class="stat-card" title="Control cohort: listings 12–20% below market, recorded but never surfaced or notified (n=${nm.resolved} resolved). If this win rate rivals the main one, the 20% surfacing threshold is leaving deals on the table.">
+                   <div class="stat-label">Near-miss WR</div><div class="stat-value">${nm.win_rate}%</div></div>`
+            : '';
         document.getElementById('outcome-stats').innerHTML = `
             <div class="stat-card"><div class="stat-label">Tracked</div><div class="stat-value">${total}</div></div>
             <div class="stat-card"><div class="stat-label">Resolved</div><div class="stat-value">${priced.length}</div></div>
@@ -1322,6 +1330,7 @@
             <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-value ${winRate >= 50 ? 'green' : 'amber'}">${winRate}%</div></div>
             <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value">${pending.length}</div></div>
             ${gaveUpCard}
+            ${nearMissCard}
         `;
     }
 

@@ -110,7 +110,7 @@ SELECT
     e.URL
 FROM Scraper.DealOutcomes d
 JOIN Scraper.EBAY e ON e.ID = d.EbayID
-WHERE e.SoldDate IS NOT NULL
+WHERE e.SoldDate IS NOT NULL AND d.NearMiss = 0
 ORDER BY d.SurfacedAt DESC
 LIMIT 200;
 """
@@ -136,7 +136,7 @@ SELECT
     e.URL
 FROM Scraper.DealOutcomes d
 JOIN Scraper.EBAY e ON e.ID = d.EbayID
-WHERE e.SoldDate IS NULL AND d.GaveUp = 0
+WHERE e.SoldDate IS NULL AND d.GaveUp = 0 AND d.NearMiss = 0
 ORDER BY d.EndTime ASC;
 """
 
@@ -144,7 +144,21 @@ GAVE_UP_COUNT_QUERY = """
 SELECT COUNT(*) AS n
 FROM Scraper.DealOutcomes d
 JOIN Scraper.EBAY e ON e.ID = d.EbayID
-WHERE e.SoldDate IS NULL AND d.GaveUp = 1;
+WHERE e.SoldDate IS NULL AND d.GaveUp = 1 AND d.NearMiss = 0;
+"""
+
+# Near-miss control cohort (12–20% band, recorded but never surfaced):
+# resolved win rate, kept out of the headline scoreboard. If this rivals
+# the main win rate, the surfacing threshold is leaving money on the table.
+NEAR_MISS_SUMMARY_QUERY = """
+SELECT COUNT(*) AS n,
+       COALESCE(SUM(COALESCE(d.FinalPrice, e.Price) < d.AvgMarketPrice), 0) AS beat
+FROM Scraper.DealOutcomes d
+JOIN Scraper.EBAY e ON e.ID = d.EbayID
+WHERE d.NearMiss = 1
+  AND e.SoldDate IS NOT NULL
+  AND d.EndedUnsold = 0
+  AND COALESCE(d.FinalPrice, e.Price) IS NOT NULL;
 """
 
 
@@ -181,6 +195,7 @@ def ensure_outcomes_table():
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN FinalPrice INT NULL",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN PredictedFinal INT NULL",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN VerifyMisses INT NOT NULL DEFAULT 0",
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN NearMiss TINYINT(1) NOT NULL DEFAULT 0",
         ]:
             col_name = col_sql.split("ADD COLUMN ")[1].split()[0]
             try:
@@ -560,6 +575,16 @@ def outcomes():
         cur.execute(GAVE_UP_COUNT_QUERY)
         gave_up = cur.fetchone()['n']
 
+        cur.execute(NEAR_MISS_SUMMARY_QUERY)
+        nm = cur.fetchone()
+        nm_resolved = int(nm['n'] or 0)
+        nm_beat = int(nm['beat'] or 0)
+        near_miss = {
+            "resolved": nm_resolved,
+            "beat_market": nm_beat,
+            "win_rate": round(nm_beat / nm_resolved * 100, 1) if nm_resolved else 0,
+        }
+
         for row in resolved:
             for col in ('EndTime', 'SoldDate', 'SurfacedAt'):
                 if row.get(col):
@@ -589,6 +614,7 @@ def outcomes():
                 "total_pending": len(pending),
                 "ended_unsold": ended_unsold,
                 "gave_up": gave_up,
+                "near_miss": near_miss,
             },
             "resolved": resolved,
             "pending": pending,

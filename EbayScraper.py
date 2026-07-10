@@ -1758,7 +1758,8 @@ def EnsureOutcomeColumns() -> None:
     try:
         cur = conn.cursor()
         for col_sql in ("PredictedFinal INT NULL",
-                        "VerifyMisses INT NOT NULL DEFAULT 0"):
+                        "VerifyMisses INT NOT NULL DEFAULT 0",
+                        "NearMiss TINYINT(1) NOT NULL DEFAULT 0"):
             try:
                 cur.execute(f"ALTER TABLE Scraper.DealOutcomes ADD COLUMN {col_sql}")
                 conn.commit()
@@ -1915,17 +1916,28 @@ def EnsureCategoryAttributes() -> None:
         conn.close()
 
 
-def SurfaceDeals(window_hours: int = 2, min_discount: float = 20) -> list[dict]:
+def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
+                 nearmiss_discount: float | None = None) -> list[dict]:
     """Detect current deals server-side and record first sightings.
 
     Runs the shared deal query for every category, INSERT IGNOREs each hit
-    into DealOutcomes, and returns ONLY the rows recorded for the first time
-    (rowcount==1) so the caller can notify exactly once per deal.
+    into DealOutcomes, and returns ONLY the real deals recorded for the
+    first time (rowcount==1) so the caller can notify exactly once per deal.
+
+    Near-miss control cohort: when nearmiss_discount is set below
+    min_discount, the query runs at the lower threshold and rows in the
+    [nearmiss, min) band are recorded flagged NearMiss=1 — never notified,
+    excluded from the outcomes scoreboard and from premium training. Their
+    resolved outcomes are the control group that shows whether min_discount
+    is set right.
 
     This replaces the old browser-driven surfacing in /api/deals — deals are
     now captured even when nobody has the dashboard open.
     """
     new_deals = []
+    near_misses = 0
+    query_discount = (min_discount if nearmiss_discount is None
+                      else min(nearmiss_discount, min_discount))
     premiums = GetSnipePremiums()
     conn = _get_connection()
     try:
@@ -1933,18 +1945,19 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20) -> list[dict]:
         ins = conn.cursor()
         for product_type in queries.CATEGORIES:
             try:
-                cur.execute(queries.build_deals_query(product_type, window_hours, min_discount))
+                cur.execute(queries.build_deals_query(product_type, window_hours, query_discount))
                 rows = cur.fetchall()
             except mariadb.Error as e:
                 log.error("SurfaceDeals: %s query failed: %s", product_type, e)
                 continue
             queries.annotate_predictions(rows, product_type, premiums)
             for row in rows:
-                # Trajectory observation for EVERY live in-window deal, every
+                # Trajectory observation for EVERY live in-window row, every
                 # pass — not just first sightings (see EnsureDealSnapshots).
                 _record_snapshot(ins, row['ID'], round(row['CurrentPrice'] * 100),
                                  row.get('Bids'), row.get('EndTime'))
                 label = queries.model_label_for_row(product_type, row)
+                near_miss = 1 if float(row['DiscountPct']) < min_discount else 0
                 # SurfacedPrice is the whole-lot price, so the stored market
                 # value must be whole-lot too (median × quantity) — outcome
                 # win/loss math compares FinalPrice against AvgMarketPrice.
@@ -1955,8 +1968,8 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20) -> list[dict]:
                              if row.get('PremiumSamples') else None)
                 ins.execute("""
                     INSERT IGNORE INTO Scraper.DealOutcomes
-                        (EbayID, Category, Model, SurfacedPrice, AvgMarketPrice, DiscountPct, BidCount, EndTime, PredictedFinal)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (EbayID, Category, Model, SurfacedPrice, AvgMarketPrice, DiscountPct, BidCount, EndTime, PredictedFinal, NearMiss)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     row['ID'],
                     product_type.upper(),
@@ -1967,14 +1980,19 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20) -> list[dict]:
                     int(row.get('Bids') or 0),
                     row['EndTime'],
                     predicted,
+                    near_miss,
                 ))
                 if ins.rowcount == 1:
-                    row['_label'] = label
-                    row['_category'] = product_type.upper()
-                    new_deals.append(row)
+                    if near_miss:
+                        near_misses += 1
+                    else:
+                        row['_label'] = label
+                        row['_category'] = product_type.upper()
+                        new_deals.append(row)
         conn.commit()
-        if new_deals:
-            log.info("SurfaceDeals: %d new deal(s) recorded", len(new_deals))
+        if new_deals or near_misses:
+            log.info("SurfaceDeals: %d new deal(s), %d near-miss(es) recorded",
+                     len(new_deals), near_misses)
         return new_deals
     except Exception as e:
         log.error("SurfaceDeals error: %s", e)

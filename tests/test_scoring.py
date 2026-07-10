@@ -467,6 +467,58 @@ class TestAnnotatePredictions:
         assert contested['DealScore'] == 0.0             # negative discount floors to 0
 
 
+class TestNearMissCohort:
+    def test_premium_training_excludes_cohort(self):
+        """Premiums must stay trained on the population they predict for —
+        the 12–20% control band would contaminate the ratios."""
+        assert "d.NearMiss = 0" in queries.SNIPE_PREMIUM_QUERY
+
+    def test_surface_deals_classifies_and_gates(self):
+        """Rows below min_discount are recorded flagged NearMiss=1 and are
+        NOT returned for notification; real deals are."""
+        from datetime import datetime
+        from unittest.mock import MagicMock, patch
+        deal = {'ID': 1, 'CurrentPrice': 80.0, 'AvgMarketPrice': 100.0,
+                'DiscountPct': 25.0, 'Bids': 0, 'Quantity': 1, 'Model': 'RTX 3070',
+                'EndTime': datetime(2026, 7, 10, 12, 0)}
+        near = {**deal, 'ID': 2, 'CurrentPrice': 85.0, 'DiscountPct': 15.0}
+        cur = MagicMock()
+        cur.fetchall.return_value = [deal, near]
+        cur.rowcount = 1
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        gpu_only = {'gpu': queries.CATEGORIES['gpu']}
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'GetSnipePremiums', return_value={}), \
+             patch.object(queries, 'CATEGORIES', gpu_only):
+            new_deals = EbayScraper.SurfaceDeals(2, 20, nearmiss_discount=12)
+
+        # only the real deal comes back for notification
+        assert [r['ID'] for r in new_deals] == [1]
+        # both rows were recorded, with the right NearMiss flags
+        inserts = [c[0][1] for c in cur.execute.call_args_list
+                   if 'INSERT IGNORE INTO Scraper.DealOutcomes' in str(c[0][0])]
+        assert len(inserts) == 2
+        by_id = {p[0]: p for p in inserts}
+        assert by_id[1][-1] == 0   # NearMiss flag is the last param
+        assert by_id[2][-1] == 1
+
+    def test_cohort_disabled_when_thresholds_equal(self):
+        """nearmiss == min_discount → query runs at min_discount, no band."""
+        from unittest.mock import MagicMock, patch
+        cur = MagicMock()
+        cur.fetchall.return_value = []
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'GetSnipePremiums', return_value={}), \
+             patch.object(queries, 'CATEGORIES', {'gpu': queries.CATEGORIES['gpu']}):
+            EbayScraper.SurfaceDeals(2, 20, nearmiss_discount=20)
+        sql = cur.execute.call_args_list[0][0][0]
+        # threshold factor for 20% is 0.8 — the query ran at min_discount
+        assert "* 0.8" in sql
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. Snipe-premium helpers
 # ═══════════════════════════════════════════════════════════════════════════════

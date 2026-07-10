@@ -70,6 +70,12 @@ SURFACE_MIN_DISCOUNT = float(os.environ.get('SURFACE_MIN_DISCOUNT', '20'))
 # must include the ones the gate suppressed, or we can't tell if it works.
 SURFACE_MIN_PREDICTED_DISCOUNT = float(os.environ.get('SURFACE_MIN_PREDICTED_DISCOUNT', '10'))
 
+# Near-miss control cohort: also record listings in the
+# [SURFACE_NEARMISS_DISCOUNT, SURFACE_MIN_DISCOUNT) band, flagged NearMiss=1
+# and never notified. Their resolved outcomes validate the 20%% threshold.
+# Set equal to SURFACE_MIN_DISCOUNT to disable the cohort.
+SURFACE_NEARMISS_DISCOUNT = float(os.environ.get('SURFACE_NEARMISS_DISCOUNT', '12'))
+
 # Targeted-scrape tiers: (threshold_minutes, interval_minutes)
 # When a tracked deal has <= threshold_minutes remaining, scrape it every interval_minutes.
 # Evaluated in ascending threshold order — first matching tier wins.
@@ -250,7 +256,8 @@ def run_full_scrape():
     # Server-side deal surfacing + push notifications — deals are captured
     # and alerted even when nobody has the dashboard open.
     try:
-        new_deals = EbayScraper.SurfaceDeals(SURFACE_WINDOW_HOURS, SURFACE_MIN_DISCOUNT)
+        new_deals = EbayScraper.SurfaceDeals(SURFACE_WINDOW_HOURS, SURFACE_MIN_DISCOUNT,
+                                             nearmiss_discount=SURFACE_NEARMISS_DISCOUNT)
         notify_new_deals(new_deals)
     except Exception as e:
         log.error("Deal surfacing failed: %s", e)
