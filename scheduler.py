@@ -121,6 +121,12 @@ CPU_QUERY_LIST = [
 HDD_QUERY_LIST = [
     "SAS hard drive TB",
     "SATA hard drive TB",
+    # Widen the auction pool: the HDD funnel is inventory-starved (~113 live
+    # vs ~280+ for other categories) because used drives skew Buy-It-Now.
+    "NAS hard drive TB",
+    "enterprise hard drive",
+    "hard drive 8TB",
+    "hard drive 12TB",
     # Job lots — parsed with a per-unit quantity and valued against the
     # single-item medians (lots themselves never enter the market stats).
     "hard drive job lot TB",
