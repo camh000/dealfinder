@@ -37,6 +37,11 @@
 
 - [x] **Price distribution** — show min / max / spread alongside average so you can judge reliability; σ-filtered (±2 SD) to exclude outlier sales; applied to both PRICES tab and deal tables
 - [x] **Deal score** — composite ranking: `discount% × (1 / hours_remaining) × (1 / bid_count)`
+- [x] **Market stats recency window** — medians only trust sales within `MARKET_STATS_DAYS` (default 120); year-old prices no longer blend into today's market value
+- [x] **DealSnapshots price trajectories** — every observation of a live in-window deal is appended (hourly surfacing pass + 1–15 min targeted refreshes); the training dataset for time-aware premiums below
+- [ ] **Time-to-end-aware snipe premiums** — the current final/surfaced ratios are all trained at ≤2h-to-end (the surfacing window) but applied to 6h/24h UI views, where more bidding remains → predictions there are optimistic. Once DealSnapshots has a few weeks of data, condition the premium on hours-remaining buckets (ratio = final vs price-at-N-hours-out). Until then, consider hiding/downweighting predictions outside the ~2h window they were trained on (`queries.annotate_predictions`)
+- [ ] **Near-miss control cohort** — record listings in the 12–20% discount band into DealOutcomes flagged `NearMiss=1` (never notified, hidden from feed) so resolved outcomes can validate whether 20% is the right surfacing threshold (`EbayScraper.SurfaceDeals`)
+- [ ] **Surface after targeted scrapes** — `SurfaceDeals` only runs on the hourly tick, so a listing that first drops below the threshold in its final ~40 min can end unrecorded; run a cheap surfacing pass after each targeted-scrape batch to close the gap (`scheduler.run_targeted_scrapes`)
 - [ ] **Market trend indicator** — flag if avg sold prices for a model are rising or falling over 30 days
 
 ## Notifications & Tracking

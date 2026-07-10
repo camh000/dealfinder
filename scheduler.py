@@ -412,6 +412,12 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("Outcome column migration failed: %s", e)
 
+    # Deal price-trajectory table (feeds future time-aware premiums).
+    try:
+        EbayScraper.EnsureDealSnapshots()
+    except Exception as e:
+        log.error("DealSnapshots setup failed: %s", e)
+
     # Notification recipients table (+ bootstrap the default recipient from env).
     try:
         EbayScraper.EnsureNotifyRecipients()

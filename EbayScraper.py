@@ -1609,6 +1609,11 @@ def ScrapeTargeted(items: list) -> int:
                         feedback_count=item.get('feedback-count'),
                     )
                     _upload(cur, product, category)
+                    _record_snapshot(
+                        cur, ebay_id,
+                        round((item['price'] + (item.get('shipping') or 0)) * 100),
+                        item['bid-count'], item.get('time-end'),
+                    )
                     log.info(
                         "Targeted scrape updated: ID=%s '%.50s' price=£%.2f bids=%d",
                         ebay_id, title, item['price'], item['bid-count'],
@@ -1696,6 +1701,52 @@ def EnsureQuantityColumn() -> None:
         conn.rollback()
     finally:
         conn.close()
+
+
+def EnsureDealSnapshots() -> None:
+    """Create the DealSnapshots price-trajectory table.
+
+    One row per OBSERVATION of a live in-window deal: the hourly surfacing
+    pass snapshots every deal it sees, and the targeted scraper snapshots
+    every refresh (1–15 min cadence in the final hour). This is the dataset
+    for time-to-end-aware snipe premiums — the current single ratio is
+    trained at ≤2h-to-end and misjudges listings viewed further out.
+    """
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.DealSnapshots (
+                ID          BIGINT   AUTO_INCREMENT PRIMARY KEY,
+                EbayID      BIGINT   NOT NULL,
+                SnapAt      DATETIME NOT NULL,
+                EffPrice    INT      NOT NULL,
+                Bids        INT      NOT NULL DEFAULT 0,
+                MinutesLeft INT      NULL,
+                KEY idx_item_time (EbayID, SnapAt)
+            )
+        """)
+        conn.commit()
+    except mariadb.Error as e:
+        log.error("EnsureDealSnapshots failed: %s", e)
+    finally:
+        conn.close()
+
+
+def _record_snapshot(cur, ebay_id, eff_price_pence, bids, end_time) -> None:
+    """Append one trajectory observation. Best-effort: a snapshot failure
+    must never break the scrape or surfacing pass that carries it."""
+    try:
+        minutes_left = None
+        if end_time is not None:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            minutes_left = int((end_time - now).total_seconds() // 60)
+        cur.execute("""
+            INSERT INTO Scraper.DealSnapshots (EbayID, SnapAt, EffPrice, Bids, MinutesLeft)
+            VALUES (%s, NOW(), %s, %s, %s)
+        """, (ebay_id, int(eff_price_pence), int(bids or 0), minutes_left))
+    except mariadb.Error as e:
+        log.warning("Snapshot insert failed for %s: %s", ebay_id, e)
 
 
 def EnsureOutcomeColumns() -> None:
@@ -1889,6 +1940,10 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20) -> list[dict]:
                 continue
             queries.annotate_predictions(rows, product_type, premiums)
             for row in rows:
+                # Trajectory observation for EVERY live in-window deal, every
+                # pass — not just first sightings (see EnsureDealSnapshots).
+                _record_snapshot(ins, row['ID'], round(row['CurrentPrice'] * 100),
+                                 row.get('Bids'), row.get('EndTime'))
                 label = queries.model_label_for_row(product_type, row)
                 # SurfacedPrice is the whole-lot price, so the stored market
                 # value must be whole-lot too (median × quantity) — outcome

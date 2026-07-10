@@ -399,6 +399,43 @@ class TestScrapeItemById:
 
 from datetime import datetime
 
+class TestScrapeTargetedSnapshots:
+    """Each successful targeted refresh must append a DealSnapshots row —
+    the trajectory dataset for time-aware premiums."""
+
+    def test_snapshot_recorded_on_refresh(self):
+        from datetime import datetime, timedelta, timezone
+        end = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=30)
+        item = {
+            'id': '123456789', 'title': 'MSI RTX 3070 8GB', 'price': 150.0,
+            'shipping': 4.5, 'time-left': '30m', 'time-end': end,
+            'sold-date': None, 'bid-count': 3, 'reviews-count': 0,
+            'url': 'https://www.ebay.co.uk/itm/123456789',
+            'brand': 'Msi', 'model': 'RTX 3070', 'vram': 8,
+            'socket': None, 'cores': None, 'capacity-gb': None,
+            'interface': None, 'form-factor': None, 'rpm': None,
+            'drive-type': None, 'ram-type': None, 'speed': None,
+            'ram-format': None, 'quantity': 1,
+            'feedback-pct': 100.0, 'feedback-count': 50,
+        }
+        cur = MagicMock()
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, '_scrape_item_by_id', return_value=item):
+            updated = EbayScraper.ScrapeTargeted([(123456789, 'GPU', 'MSI RTX 3070 8GB')])
+
+        assert updated == 1
+        snap_calls = [c for c in cur.execute.call_args_list
+                      if 'DealSnapshots' in str(c[0][0])]
+        assert len(snap_calls) == 1
+        ebay_id, eff_pence, bids, minutes_left = snap_calls[0][0][1]
+        assert ebay_id == 123456789
+        assert eff_pence == 15450          # (150.00 + 4.50) * 100
+        assert bids == 3
+        assert 28 <= minutes_left <= 30
+
+
 class TestVerifyPendingOutcomes:
     """Unit tests for VerifyPendingOutcomes — all DB and network calls mocked."""
 
