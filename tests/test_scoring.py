@@ -114,6 +114,15 @@ class TestQueryBuilders:
             assert queries.QTY in sql
 
     @pytest.mark.parametrize("ptype", ALL_TYPES)
+    def test_market_stats_use_recency_window(self, ptype):
+        """Medians must only trust recent sales — component prices drift,
+        so every stats consumer (deals, counts, guide) shares the window."""
+        for sql in (queries.build_deals_query(ptype),
+                    queries.build_count_query(ptype),
+                    queries.build_price_guide_query(ptype)):
+            assert f"e.SoldDate > NOW() - INTERVAL {queries.MARKET_STATS_DAYS} DAY" in sql
+
+    @pytest.mark.parametrize("ptype", ALL_TYPES)
     def test_deal_feed_gates_on_seller_feedback(self, ptype):
         """Low-feedback sellers are hidden from deals + counts, but only once
         they have real history (count >= 3); stats are unaffected."""

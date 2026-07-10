@@ -109,6 +109,12 @@ def _join_cond(cfg, left: str, right: str) -> str:
 # UI range isn't stretched by outliers either.
 BAND_LO, BAND_HI = 0.4, 2.5
 
+# Market stats only trust recent sales. Component prices drift — GPUs
+# especially — so a median blending year-old sales with last week's
+# misprices today's market in both directions. Trade-off: a shorter window
+# is more current but drops thin models below the sold-count floor sooner.
+MARKET_STATS_DAYS = int(os.environ.get('MARKET_STATS_DAYS', '120'))
+
 
 def _median_ctes(cfg) -> str:
     """SoldRows (per-sale effective prices) + RawStats (median + count per group)."""
@@ -121,6 +127,7 @@ def _median_ctes(cfg) -> str:
     FROM Scraper.{cfg['table']} {a}
     JOIN Scraper.EBAY e ON e.ID = {a}.ID
     WHERE e.SoldDate IS NOT NULL AND e.Price IS NOT NULL AND {not_null}
+      AND e.SoldDate > NOW() - INTERVAL {MARKET_STATS_DAYS} DAY
       AND COALESCE(e.Quantity, 1) = 1
 ),
 RawStats AS (
