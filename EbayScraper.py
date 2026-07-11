@@ -1678,7 +1678,13 @@ def ScrapeBinAndUpload(query_list: list[str], product_type: str, country='us', c
     try:
         inserted = updated = 0
         for query in query_list:
-            soup = __GetHTML(query, country, condition, 'bin', alreadySold='new_first')
+            # One blocked fetch must not kill the category's remaining
+            # queries — the lane reruns in minutes anyway.
+            try:
+                soup = __GetHTML(query, country, condition, 'bin', alreadySold='new_first')
+            except Exception as e:
+                log.warning("BIN scan: fetch failed for %r (%s) — skipping query", query, e)
+                continue
             items = __ParseItems(soup, query, product_type)
             for p in map(_product_from_dict, items):
                 try:
