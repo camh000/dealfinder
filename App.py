@@ -1055,6 +1055,19 @@ def model_detail():
         """, tuple(values))
         live = cur.fetchall()
 
+        # Outcome-calibrated predicted finals for the live listings (drawn on
+        # the trend chart as hollow markers, shown in the live table).
+        pcur = conn.cursor()
+        pcur.execute(queries.SNIPE_PREMIUM_QUERY)
+        premiums = queries.median_ratios(pcur.fetchall())
+        for r in live:
+            eff = float(r['ItemPrice'] or 0) + float(r['Shipping'] or 0)
+            entry = (premiums.get((cat.upper(), queries.bid_bucket(int(r['Bids'] or 0))))
+                     or premiums.get((cat.upper(), 'all')))
+            if entry and eff > 0:
+                r['PredictedFinalPrice'] = round(eff * entry[0], 2)
+                r['PremiumSamples'] = entry[1]
+
         # Stats + monthly trend from single-unit sales only (lot totals would
         # skew everything upward).
         singles = [r for r in sold if int(r['Quantity']) == 1]

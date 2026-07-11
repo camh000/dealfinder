@@ -293,6 +293,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-row); }
 .chart .pt { fill: var(--accent); }
 .chart .axis { stroke: var(--border); stroke-width: 1; }
 .chart text { fill: var(--dim); font-size: 10px; font-family: var(--font); }
+.chart .medline { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 4 4; }
+.chart .medlabel { fill: var(--text); font-weight: 600; }
+.chart .predpt { fill: var(--surface); stroke: var(--accent); stroke-width: 2; }
 
 /* ── states ───────────────────────────────────────────────────────────── */
 .state { padding: 40px 20px; text-align: center; color: var(--dim); font-size: 14px; }
