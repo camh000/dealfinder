@@ -34,8 +34,10 @@ services:
       - credentials.env
     environment:
       # Notification deep links open the app's deal page (market context,
-      # max-bid advisor) instead of raw eBay. Override via a compose .env.
-      APP_BASE_URL: ${APP_BASE_URL:-http://192.168.1.104:5010}
+      # max-bid advisor) instead of raw eBay. The public tunnel hostname
+      # works from anywhere - phone on cellular included. Override via a
+      # compose .env.
+      APP_BASE_URL: ${APP_BASE_URL:-https://pcdeals.chmediaonline.xyz}
     restart: always
     init: true
     extra_hosts:
