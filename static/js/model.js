@@ -85,7 +85,7 @@ function chart(trend, median, predictions) {
       $('#live-card').style.display = '';
       $('#live-tbl tbody').innerHTML = data.live.map(l => `
         <tr>
-          <td>${esc(l.Title)}${Number(l.Quantity) > 1 ? ` <span class="chip hot">×${l.Quantity}</span>` : ''}</td>
+          <td><a href="/deal/${l.ID}" style="color:inherit">${esc(l.Title)}</a>${Number(l.Quantity) > 1 ? ` <span class="chip hot">×${l.Quantity}</span>` : ''}</td>
           <td class="num">${fmtGBP(l.ItemPrice)}${Number(l.Shipping) > 0 ? `<div class="dimcell">+${fmtGBP(l.Shipping)} del.</div>` : ''}${l.PredictedFinalPrice != null ? `<div class="dimcell">pred ~${fmtGBP(l.PredictedFinalPrice)}</div>` : ''}</td>
           <td class="num dimcell">${l.Bids || 0}</td>
           <td><span class="countdown" ${endsAttr(l.EndTime)}></span></td>
@@ -96,7 +96,7 @@ function chart(trend, median, predictions) {
     $('#sold-tbl tbody').innerHTML = data.sold.length ? data.sold.map(r => `
       <tr>
         <td class="dimcell">${fmtDate(r.SoldDate)}</td>
-        <td>${esc(r.Title)}${Number(r.Quantity) > 1 ? ` <span class="chip hot">×${r.Quantity}</span>` : ''}</td>
+        <td><a href="/deal/${r.ID}" style="color:inherit">${esc(r.Title)}</a>${Number(r.Quantity) > 1 ? ` <span class="chip hot">×${r.Quantity}</span>` : ''}</td>
         <td class="num"><b>${fmtGBP(r.Price)}</b></td>
         <td><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer">view</a></td>
       </tr>`).join('')

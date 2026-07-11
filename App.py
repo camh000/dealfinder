@@ -1046,7 +1046,7 @@ def model_detail():
         cur = conn.cursor(dictionary=True)
 
         cur.execute(f"""
-            SELECT e.Title, ROUND((e.Price + COALESCE(e.Shipping, 0)) / 100, 2) AS Price,
+            SELECT e.ID, e.Title, ROUND((e.Price + COALESCE(e.Shipping, 0)) / 100, 2) AS Price,
                    e.SoldDate, e.URL, COALESCE(e.Quantity, 1) AS Quantity
             FROM Scraper.{table} {a}
             JOIN Scraper.EBAY e ON e.ID = {a}.ID
