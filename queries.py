@@ -291,14 +291,25 @@ WHERE e.SoldDate IS NOT NULL AND e.Price IS NOT NULL
     return sql, values
 
 
-def group_live_below_query(product_type: str, params: dict, max_price: float) -> tuple[str, list]:
-    """(sql, binds) for live listings in one market group under a price cap.
+# listing_below alerts only consider an auction's price MEANINGFUL in its
+# final stretch: a 99p-start auction with days left is always "below target"
+# and would ping on every fresh listing while telling you nothing. Two hours
+# matches the window the snipe premiums are trained on, so the predicted
+# final used to confirm the hit is calibrated.
+ALERT_AUCTION_WINDOW_HOURS = int(os.environ.get('ALERT_AUCTION_WINDOW_HOURS', '2'))
 
-    Feeds listing_below price alerts: any fresh, live listing whose
-    delivery-inclusive PER-UNIT price is below the user's target. Same
-    trust gates as the deal feed (freshness, seller feedback, reserve) so an
-    alert never fires on a phantom or scam listing. Cheapest first, capped —
-    the alert names the best hit, it doesn't enumerate the market.
+
+def group_live_below_query(product_type: str, params: dict, max_price: float) -> tuple[str, list]:
+    """(sql, binds) for listings GENUINELY available under a price cap.
+
+    Feeds listing_below price alerts: a fresh live listing whose
+    delivery-inclusive PER-UNIT price is below the user's target AND whose
+    price means something — Buy-It-Now at any time, or an auction inside its
+    final ALERT_AUCTION_WINDOW_HOURS (the caller then confirms the PREDICTED
+    final also clears the target). Same trust gates as the deal feed
+    (freshness, seller feedback, reserve) so an alert never fires on a
+    phantom or scam listing. Cheapest first, capped — the alert names the
+    best hit, it doesn't enumerate the market.
     """
     cfg = CATEGORIES[product_type]
     a = cfg['alias']
@@ -313,6 +324,9 @@ WHERE e.SoldDate IS NULL
   AND {FRESH_OK}
   AND {FEEDBACK_OK}
   AND COALESCE(e.ReserveNotMet, 0) = 0
+  AND (COALESCE(e.ListingType, 'auction') = 'bin'
+       OR (e.EndTime > NOW()
+           AND e.EndTime < NOW() + INTERVAL {ALERT_AUCTION_WINDOW_HOURS} HOUR))
   AND {cond}
   AND {EFF_UNIT} < %s
 ORDER BY PerUnitPrice ASC

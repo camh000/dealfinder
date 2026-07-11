@@ -16,13 +16,16 @@
   <div class="form-grid">
     <div class="fg"><label>Fire when</label>
       <select id="al-kind">
-        <option value="listing_below">any live listing drops below</option>
+        <option value="listing_below">a listing is genuinely available below</option>
         <option value="median_below">the 120-day median drops below</option>
       </select></div>
     <div class="fg"><label>Target price (£, per unit, incl. delivery)</label>
       <input type="number" id="al-target" min="1" step="0.01"></div>
     <div class="fg"><label>Send to</label><select id="al-recipient"></select></div>
   </div>
+  <p class="help" style="margin:10px 0 0">"Genuinely available" means a Buy-It-Now at that
+    price, or an auction in its final 2 hours whose <em>predicted</em> final also clears the
+    target — a 99p-start auction with days left never counts.</p>
   <div class="check-row">
     <button class="btn" id="al-save">Create alert</button>
     <span class="sub" id="al-status"></span>

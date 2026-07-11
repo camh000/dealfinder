@@ -38,11 +38,15 @@ async function loadMe() {
     const data = await fetch('/api/me').then(r => r.json());
     me = data.user; bootstrap = data.bootstrap;
   } catch { me = null; bootstrap = false; }
+  const guest = !me && !bootstrap;
+  $('#guest-card').style.display = guest ? '' : 'none';
   $('#bootstrap-card').style.display = bootstrap ? '' : 'none';
   $('#account-card').style.display = me ? '' : 'none';
   $('#alerts-card').style.display = (me || bootstrap) ? '' : 'none';
   $('#users-card').style.display = (me && me.admin) ? '' : 'none';
   $('#bin-card').style.display = (bootstrap || (me && me.admin)) ? '' : 'none';
+  // recipients API is login-gated — a guest would just see an error
+  $('#notify-card').style.display = guest ? 'none' : '';
   if (me) $('#acct-who').textContent = `— signed in as ${me.name}${me.admin ? ' (admin)' : ''}`;
   if (me && me.admin) loadUsers();
   if (me || bootstrap) loadAlerts();
@@ -154,7 +158,7 @@ async function loadAlerts() {
     <tbody>${data.alerts.map(a => `
       <tr>
         <td><a href="/model/${a.Category}?${new URLSearchParams(a.GroupParams)}">${esc(a.Label || a.Category.toUpperCase())}</a></td>
-        <td class="dimcell">${a.Kind === 'median_below' ? 'median drops below' : 'any listing below'}</td>
+        <td class="dimcell">${a.Kind === 'median_below' ? 'median drops below' : 'genuinely available below'}</td>
         <td class="num">${fmtGBP(a.TargetPrice)}</td>
         <td class="dimcell">${esc(a.RecipientName || '—')}</td>
         <td class="dimcell">${a.LastFiredAt ? timeAgo(a.LastFiredAt) : 'never'}</td>

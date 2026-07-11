@@ -82,7 +82,8 @@ async function refreshChrome() {
 refreshChrome();
 setInterval(refreshChrome, 5 * 60 * 1000);
 
-/* ── account chip: shows who's signed in, links to settings ── */
+/* ── account chip: who's signed in (links to settings), or a sign-in
+      link for guests browsing read-only ── */
 (async () => {
   const chip = $('#acct-chip');
   if (!chip || document.body.dataset.page === 'login') return;
@@ -92,8 +93,13 @@ setInterval(refreshChrome, 5 * 60 * 1000);
       chip.textContent = data.user.name;
       chip.title = data.user.admin ? 'signed in (admin) — account settings' : 'signed in — account settings';
       chip.style.display = '';
+    } else if (!data.bootstrap) {
+      chip.textContent = 'Sign in';
+      chip.href = '/login';
+      chip.title = 'browsing as guest (read-only) — sign in to manage alerts and settings';
+      chip.style.display = '';
     }
-  } catch { /* signed out or offline — chip stays hidden */ }
+  } catch { /* offline — chip stays hidden */ }
 })();
 
 /* ── countdown engine: any element with data-ends-ms ticks 1/s ── */

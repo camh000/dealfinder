@@ -181,6 +181,16 @@ class TestQueryBuilders:
         # alerts respect the same trust gates as the deal feed
         assert queries.FRESH_OK in sql and queries.FEEDBACK_OK in sql
 
+    @pytest.mark.parametrize("ptype", ALL_TYPES)
+    def test_alert_listing_query_requires_meaningful_price(self, ptype):
+        """A 99p-start auction with days left is always 'below target' but
+        means nothing — only BIN or ending-soon auctions can be hits."""
+        group = {c: 'x' for c, _ in queries.CATEGORIES[ptype]['group_cols']}
+        sql, _ = queries.group_live_below_query(ptype, group, 50.0)
+        assert "= 'bin'" in sql
+        assert f"INTERVAL {queries.ALERT_AUCTION_WINDOW_HOURS} HOUR" in sql
+        assert "e.EndTime > NOW()" in sql
+
     def test_alert_query_null_group_values(self):
         """Absent/empty group params must select the NULL group, not bind ''."""
         sql, binds = queries.group_median_query("ram", {"Type": "DDR4", "CapacityGB": "16"})
@@ -282,6 +292,38 @@ class TestLotQuantity:
     def test_empty_and_none_are_singles(self):
         assert EbayScraper.extract_lot_quantity("") == 1
         assert EbayScraper.extract_lot_quantity(None) == 1
+
+
+class TestAlertListingRelevance:
+    """listing_below second gate: BIN prices are final; auction hits (already
+    inside the final window) must have a PREDICTED final under the target."""
+
+    PREMIUMS = {('GPU', '1-3'): (1.30, 12), ('GPU', 'all'): (1.25, 30)}
+
+    def test_bin_always_relevant(self):
+        hit = {'PerUnitPrice': 40.0, 'ListingType': 'bin', 'Bids': 0}
+        ok, predicted = EbayScraper.alert_listing_relevant(hit, 50.0, self.PREMIUMS, 'gpu')
+        assert ok and predicted == 40.0
+
+    def test_auction_predicted_over_target_is_noise(self):
+        # £45 now × 1.30 premium = £58.50 predicted — target £50 not really met
+        hit = {'PerUnitPrice': 45.0, 'ListingType': 'auction', 'Bids': 2}
+        ok, predicted = EbayScraper.alert_listing_relevant(hit, 50.0, self.PREMIUMS, 'gpu')
+        assert not ok and predicted == 58.5
+
+    def test_auction_predicted_under_target_fires(self):
+        hit = {'PerUnitPrice': 30.0, 'ListingType': 'auction', 'Bids': 2}
+        ok, predicted = EbayScraper.alert_listing_relevant(hit, 50.0, self.PREMIUMS, 'gpu')
+        assert ok and predicted == 39.0
+
+    def test_bucket_fallback_and_no_history(self):
+        # 5 bids → '4+' bucket missing → category 'all' ratio 1.25
+        hit = {'PerUnitPrice': 44.0, 'ListingType': 'auction', 'Bids': 5}
+        ok, predicted = EbayScraper.alert_listing_relevant(hit, 50.0, self.PREMIUMS, 'gpu')
+        assert not ok and predicted == 55.0
+        # no history at all → ratio 1.0, current price stands
+        ok, predicted = EbayScraper.alert_listing_relevant(hit, 50.0, {}, 'gpu')
+        assert ok and predicted == 44.0
 
 
 class TestBinFindFilters:
@@ -765,6 +807,10 @@ class TestJunkListingGate:
         "*DAMAGED* PALIT RTX 4090 GAMEROCK 24GB GDDR6X Graphics Card",
         "MSI RTX 3080 10GB - FAULTY for parts",
         "EVGA RTX 3070 8GB untested no display",
+        # Cam-spotted: a 5070 "box only" listing had surfaced (pre-filter row)
+        "NVIDIA RTX 5070 Founders Edition BOX ONLY",
+        "Gigabyte RTX 5070 OC 12GB (Box Only)",
+        "RTX 5070 EMPTY BOX",
     ])
     def test_junk_gpu_listings_skipped(self, title):
         assert _parse_one(title, "GPU") is None
@@ -773,10 +819,22 @@ class TestJunkListingGate:
         "MSI RTX 3070 Gaming X Trio 8GB GDDR6",
         "ASUS RTX 3080 10GB with backplate and original box",
         "Sapphire RX 6800 XT 16GB boxed",
+        # DB-audit false positives: real items the old regex wrongly caught
+        "Asus Cerberus nVidia GTX 1070ti Graphics Card, with box, manual and cables",
+        "Palit OC 2080Ti with waterblock ( Dog not included )",
     ])
     def test_real_cards_not_caught(self, title):
         item = _parse_one(title, "GPU")
         assert item is not None, f"real card wrongly skipped: {title}"
+
+    def test_cpu_with_bundled_cooler_not_caught(self):
+        """'CPU plus Heatsink and Fan' is a CPU WITH its cooler, not a
+        cooler-only accessory listing (DB-audit false positive)."""
+        assert not EbayScraper.is_accessory_listing("Intel I7 9700 CPU plus Heatsink and Fan")
+        assert not EbayScraper.is_accessory_listing("Ryzen 7 2700X Processor used CPU + Heatsink and fan")
+        # ...but a heatsink bundle without the component is still junk
+        assert EbayScraper.is_accessory_listing("RTX 3090 Heatsink and fans")
+        assert EbayScraper.is_accessory_listing("MSI RTX 5070 Gaming X - BOX + MANUAL ONLY")
 
     def test_damaged_skipped_in_every_category(self):
         assert _parse_one("Seagate 4TB SATA hard drive - faulty, clicking", "HDD") is None

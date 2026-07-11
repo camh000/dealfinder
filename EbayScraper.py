@@ -442,12 +442,17 @@ _LOT_RISK_RE = re.compile(
 # Accessory listings masquerading as the component: "RTX 4090 Founders
 # Edition Heatsink, with fans and box (no GPU)" parses as a 4090 and shows
 # as 98% off. Only explicit tells — a real card saying "with backplate"
-# must not be skipped.
+# must not be skipped. Tuned against real false positives from the DB audit:
+# "CPU plus Heatsink and Fan" is a CPU with its cooler, "Card, with box,
+# manual and..." is a boxed card, "(Dog not included)" is a joke — so
+# "not included" must name the component, the heatsink-bundle tell must not
+# follow plus/with/incl/+, and box-and-manual only counts with an "only".
 _ACCESSORY_RE = re.compile(
-    r'no\s+gpu\b|not\s+included\b|\bno\s+(?:graphics\s+)?card\b|\bempty\s+box\b|'
+    r'no\s+gpu\b|\b(?:gpu|card|cpu|processor|drive)\s+not\s+included\b|'
+    r'\bno\s+(?:graphics\s+)?card\b|\bempty\s+box\b|'
     r'\b(?:box|heatsink|cooler|fans?|shroud|backplate|bracket|stand)\s*only\b|'
-    r'\bheatsink\s*(?:&|and|\+|,)\s*(?:box|fans?|shroud)\b|'
-    r'\bbox\s*(?:&|and|\+|,)\s*(?:manual|heatsink)\b', re.IGNORECASE)
+    r'(?<!plus )(?<!with )(?<!incl )(?<!\+ )\bheatsink\s*(?:&|and|\+|,)\s*(?:box|fans?|shroud)\b|'
+    r'\bbox\s*(?:&|and|\+|,)\s*(?:manual|heatsink)[\w\s]{0,12}?\bonly\b', re.IGNORECASE)
 
 
 def extract_lot_quantity(title: str) -> int:
@@ -2776,6 +2781,29 @@ def deal_page_url(ebay_id, fallback: str | None = None) -> str | None:
 _ALERT_COOLDOWN_HOURS = {'listing_below': 6, 'median_below': 24}
 
 
+def alert_listing_relevant(hit: dict, target_pounds: float, premiums: dict,
+                           category: str) -> tuple[bool, float]:
+    """Second gate for listing_below hits (after the SQL's BIN-or-ending-soon
+    filter): is this a price you could actually pay?
+
+    BIN — the listed price IS the final price: relevant as-is.
+    Auction (already inside its final window) — confirm the outcome-calibrated
+    PREDICTED per-unit final still clears the target: a £10-now auction
+    predicted to close at £18 against a £15 target is noise, not news.
+    Returns (relevant, predicted_per_unit).
+    """
+    per_unit = float(hit['PerUnitPrice'])
+    if hit.get('ListingType') == 'bin':
+        return True, per_unit
+    cat = (category or '').upper()
+    bids = int(hit.get('Bids') or 0)
+    entry = ((premiums or {}).get((cat, queries.bid_bucket(bids)))
+             or (premiums or {}).get((cat, 'all')))
+    ratio = entry[0] if entry else 1.0
+    predicted = round(per_unit * ratio, 2)
+    return predicted < target_pounds, predicted
+
+
 def _ha_push(recipient: dict, title: str, message: str, url: str | None = None,
              tag: str | None = None) -> bool:
     """One Home Assistant notification to one NotifyRecipients row."""
@@ -2800,10 +2828,12 @@ def _ha_push(recipient: dict, title: str, message: str, url: str | None = None,
 def EvaluateAlerts() -> int:
     """Check user price alerts (created on model pages) against current data.
 
-    listing_below — any live, fresh listing in the alert's market group whose
-    delivery-inclusive per-unit price is under the target (deal-feed trust
-    gates apply). median_below — the group's 120-day sold median itself has
-    dropped under the target.
+    listing_below — a listing in the alert's market group GENUINELY available
+    under the target (deal-feed trust gates apply): Buy-It-Now at that price,
+    or an auction in its final window whose predicted final also clears the
+    target — a low-start auction with days left is never a hit.
+    median_below — the group's 120-day sold median itself has dropped under
+    the target.
 
     Each alert pushes to its chosen recipient, or to every enabled recipient
     when none was picked, then stamps LastFiredAt for the cooldown. Returns
@@ -2831,6 +2861,10 @@ def EvaluateAlerts() -> int:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         fired = 0
         upd = conn.cursor()
+        # Premiums confirm auction hits (predicted final vs target); one
+        # fetch covers every alert this run.
+        premiums = (GetSnipePremiums()
+                    if any(x['Kind'] != 'median_below' for x in alerts) else {})
         for a in alerts:
             cooldown = _ALERT_COOLDOWN_HOURS.get(a['Kind'], 6)
             if a['LastFiredAt'] and (now - a['LastFiredAt']) < timedelta(hours=cooldown):
@@ -2857,15 +2891,23 @@ def EvaluateAlerts() -> int:
                 else:  # listing_below
                     sql, binds = queries.group_live_below_query(cat, group, target_pounds)
                     cur.execute(sql, binds)
-                    hits = cur.fetchall()
+                    hits = []
+                    for h in cur.fetchall():
+                        ok, predicted = alert_listing_relevant(h, target_pounds, premiums, cat)
+                        if ok:
+                            h['_predicted'] = predicted
+                            hits.append(h)
                     if hits:
                         h = hits[0]
                         qty = int(h['Quantity'] or 1)
                         per_unit = f"£{float(h['PerUnitPrice']):.2f}"
                         if qty > 1:
                             per_unit += f"/unit (×{qty})"
-                        kind_txt = ('Buy It Now' if h['ListingType'] == 'bin'
-                                    else f"auction, {h['Bids'] or 0} bid(s)")
+                        if h['ListingType'] == 'bin':
+                            kind_txt = 'Buy It Now'
+                        else:
+                            kind_txt = (f"auction ending soon, {h['Bids'] or 0} bid(s), "
+                                        f"predicted ~£{h['_predicted']:.2f}")
                         title = f"Price alert: {label} under £{target_pounds:.2f}"
                         message = f"{h['Title'][:90]} — {per_unit}, {kind_txt}"
                         if len(hits) > 1:

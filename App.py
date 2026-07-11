@@ -578,6 +578,14 @@ def _users_exist() -> bool:
 
 _AUTH_EXEMPT = ('/login', '/sw.js', '/api/login')
 
+# Guest mode: signed-out visitors can VIEW everything — every page and every
+# market-data read — but cannot change anything. Mutating requests and the
+# settings APIs (recipients expose HA URLs; users/alerts/passwords/bin config
+# are private) require a session. This is the shape that makes exposing the
+# app publicly tolerable: the anonymous surface is read-only market data.
+_GUEST_BLOCKED_PREFIXES = ('/api/notify-settings', '/api/bin-settings',
+                           '/api/users', '/api/alerts', '/api/password')
+
 
 @app.before_request
 def _session_gate():
@@ -587,6 +595,9 @@ def _session_gate():
         return None
     if session.get('uid'):
         return None
+    if (request.method in ('GET', 'HEAD', 'OPTIONS')
+            and not any(request.path.startswith(p) for p in _GUEST_BLOCKED_PREFIXES)):
+        return None                 # guest: the read-only surface stays open
     if request.path.startswith('/api/'):
         return jsonify({"status": "error", "message": "login required"}), 401
     return redirect('/login?next=' + request.path)

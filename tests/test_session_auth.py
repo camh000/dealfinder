@@ -67,17 +67,28 @@ def test_bootstrap_mode_is_open(app_module):
     assert me["user"] is None
 
 
-def test_gate_closes_once_users_exist(app_module, monkeypatch):
+def test_guest_mode_reads_open_writes_gated(app_module, monkeypatch):
+    """Once users exist, signed-out visitors browse read-only: pages and
+    market-data APIs work, settings APIs and every mutation demand login."""
     monkeypatch.setattr(app_module, "_users_exist", lambda: True)
     client = app_module.app.test_client()
-    resp = client.get("/outcomes")
-    assert resp.status_code == 302
-    assert "/login" in resp.headers["Location"]
-    assert "next=/outcomes" in resp.headers["Location"]
-    assert client.get("/api/stats").status_code == 401
-    # exempt paths must stay reachable or nobody can ever sign in
+    # guest can view
+    assert client.get("/outcomes").status_code == 200
+    assert client.get("/settings").status_code == 200
+    me = client.get("/api/me").get_json()
+    assert me["user"] is None and me["bootstrap"] is False
+    # exempt paths reachable
     assert client.get("/login").status_code == 200
     assert client.get("/sw.js").status_code == 200
+    # settings APIs blocked even as reads
+    for path in ("/api/notify-settings", "/api/bin-settings",
+                 "/api/users", "/api/alerts"):
+        assert client.get(path).status_code == 401, path
+    # mutations blocked (page POSTs redirect to login, API POSTs 401)
+    assert client.post("/api/notify-settings", json={}).status_code == 401
+    assert client.post("/api/bin-settings", json={}).status_code == 401
+    assert client.post("/api/alerts", json={}).status_code == 401
+    assert client.delete("/api/users/1").status_code == 401
 
 
 def test_login_flow(app_module, monkeypatch):
@@ -93,7 +104,8 @@ def test_login_flow(app_module, monkeypatch):
     assert me["user"]["name"] == "cam"
     assert me["user"]["admin"] is True
     client.post("/api/logout")
-    assert client.get("/api/stats").status_code == 401
+    # back to guest: reads open, private APIs gated again
+    assert client.get("/api/alerts").status_code == 401
 
 
 def test_admin_apis_reject_plain_users(app_module, monkeypatch):
