@@ -61,7 +61,7 @@ function renderResolved() {
     ${th('Market', 'AvgMarketPrice', rSort, 'sortR', true, 'm-hide')}
     ${th('Predicted', 'PredictedFinal', rSort, 'sortR', true, 'm-hide')}
     ${th('Final', 'FinalPrice', rSort, 'sortR', true)}
-    ${th('Saving', 'SavingGbp', rSort, 'sortR', true)}
+    ${th('Saving', 'SavingGbp', rSort, 'sortR', true, 'm-hide')}
     <th></th><th class="m-hide"></th></tr>`;
   const body = $('#resolved-tbl tbody');
   if (!rows.length) {
@@ -85,7 +85,7 @@ function renderResolved() {
       <td class="num m-hide">${predCell}</td>
       <td class="num"><b>${fmtGBP(r.FinalPrice)}</b><div class="dimcell">${
         r.ActualDiscountPct > 0 ? r.ActualDiscountPct + '% off mkt' : Math.abs(r.ActualDiscountPct).toFixed(1) + '% over'}</div></td>
-      <td class="num" style="color:${s > 0 ? 'var(--gain)' : 'var(--loss)'}">${s >= 0 ? '+' : '−'}${fmtGBP(Math.abs(s))}</td>
+      <td class="num m-hide" style="color:${s > 0 ? 'var(--gain)' : 'var(--loss)'}">${s >= 0 ? '+' : '−'}${fmtGBP(Math.abs(s))}</td>
       <td><span class="verdict ${win ? 'win' : 'miss'}">${win ? 'DEAL' : 'MISS'}</span></td>
       <td class="m-hide"><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer">view</a></td>
     </tr>`;
