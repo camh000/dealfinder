@@ -1312,15 +1312,19 @@ def _get_connection():
     cur.close()
     return conn
 
-def _upload(cur, p: Product, product_type: str, listing_kind: str = 'auction') -> int:
+def _upload(cur, p: Product, product_type: str, listing_kind: str = 'auction',
+            kind_authoritative: bool = False) -> int:
     """Returns the EBAY rowcount: 1 = inserted, 2 = updated, 0 = no change."""
     # LastSeenAt = the last time a scrape actually saw this listing on eBay.
     # Seller-cancelled listings vanish from search but keep a future EndTime —
     # the deal queries use this stamp to drop them instead of showing phantom
     # deals until the original end time.
-    # ListingType is sticky towards 'bin': the BIN sweep is the only path
-    # that knows a row is fixed-price, and a later targeted/sold re-scrape
-    # (listing_type='all') must never demote it back to 'auction'.
+    # ListingType only changes when the caller actually KNOWS the type
+    # (kind_authoritative): the auction-only search and the BIN sweep know;
+    # targeted/sold re-scrapes (listing_type='all') must preserve whatever is
+    # stored. Authoritative in BOTH directions — auctions that offer a BIN
+    # option appear in LH_BIN results and were getting stuck as 'bin',
+    # invisible to the auction pipeline.
     cur.execute("""
         INSERT INTO EBAY (ID, Title, Price, Shipping, Quantity, Bids, EndTime, SoldDate, URL,
                           SellerFeedbackPct, SellerFeedbackCount, ListingType, LastSeenAt)
@@ -1336,11 +1340,12 @@ def _upload(cur, p: Product, product_type: str, listing_kind: str = 'auction') -
             URL = VALUES(URL),
             SellerFeedbackPct = VALUES(SellerFeedbackPct),
             SellerFeedbackCount = VALUES(SellerFeedbackCount),
-            ListingType = IF(VALUES(ListingType) = 'bin', 'bin', ListingType),
+            ListingType = IF(%s = 1, VALUES(ListingType), ListingType),
             LastSeenAt = NOW();
         """, (p.id, p.title, p.price * 100, int(round((p.shipping or 0) * 100)),
               p.quantity or 1, p.bid_count, p.time_end, p.sold_date, p.url,
-              p.feedback_pct, p.feedback_count, listing_kind)
+              p.feedback_pct, p.feedback_count, listing_kind,
+              1 if kind_authoritative else 0)
     )
     ebay_rc = cur.rowcount
     if product_type == 'GPU':
@@ -1703,9 +1708,14 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
         for query in query_list:
             items = Scrape(query, product_type, country, condition, listing_type, cache=cache)
 
+            # An auction-only search KNOWS every result is an auction (and can
+            # heal rows the BIN sweep once mis-tagged); an 'all' search knows
+            # nothing about type and must preserve what's stored.
+            authoritative = (listing_type == 'auction')
             for p in map(_product_from_dict, items):
                 try:
-                    rc = _upload(cur, p, product_type)
+                    rc = _upload(cur, p, product_type,
+                                 kind_authoritative=authoritative)
                     if rc == 1:
                         inserted += 1
                     elif rc >= 2:
@@ -1761,9 +1771,16 @@ def ScrapeBinAndUpload(query_list: list[str], product_type: str, country='us', c
                 if product_type in ('HDD', 'SSD') and len(title_capacity_values(d['title'])) > 1:
                     log.debug("BIN scan: skipping multi-capacity title: %s", d['title'][:60])
                     continue
+                # LH_BIN also returns AUCTIONS that offer a BIN option — their
+                # card shows the current BID as the price (a £4.21 "RX 7900
+                # XTX BIN" was a reserve auction). A countdown or a bid count
+                # is the tell; upsert those as the auctions they are.
+                is_auction = bool(d.get('time-end')) or (d.get('bid-count') or 0) > 0
                 p = _product_from_dict(d)
                 try:
-                    rc = _upload(cur, p, product_type, listing_kind='bin')
+                    rc = _upload(cur, p, product_type,
+                                 listing_kind='auction' if is_auction else 'bin',
+                                 kind_authoritative=True)
                     if rc == 1:
                         inserted += 1
                     elif rc >= 2:

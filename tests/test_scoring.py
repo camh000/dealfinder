@@ -157,6 +157,10 @@ class TestQueryBuilders:
         assert "EndTime" not in sql
         assert "DealScore" not in sql
         assert "ORDER BY DiscountPct DESC" in sql
+        # auctions with a BIN option leak into LH_BIN results showing their
+        # current BID as the price — bids and unmet reserves are auction tells
+        assert "COALESCE(e.Bids, 0) = 0" in sql
+        assert "COALESCE(e.ReserveNotMet, 0) = 0" in sql
 
     @pytest.mark.parametrize("ptype", ALL_TYPES)
     def test_auction_feed_excludes_bin_rows(self, ptype):

@@ -261,6 +261,8 @@ JOIN ModelStats ms ON {_join_cond(cfg, 'ms', a)}
 WHERE
     e.SoldDate IS NULL
     AND e.ListingType = 'bin'
+    AND COALESCE(e.Bids, 0) = 0
+    AND COALESCE(e.ReserveNotMet, 0) = 0
     AND {EFF_UNIT} < ms.AvgPrice * {threshold}
     AND {FEEDBACK_OK}
     AND {FRESH_OK}
