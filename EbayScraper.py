@@ -715,20 +715,29 @@ def __ParseItems(soup, query, productType):
 
             # Whole systems (gaming laptops, prebuilts) mention their card and
             # were parsing AS the card — an Alienware selling for £463 is not
-            # a GTX 1080 sale. Bare "laptop" is safe to match here: desktop
+            # a GTX 1080 sale. Bare "laptop"/"notebook" is safe to match: real
             # card listings never say it, and MXM laptop GPU modules are a
-            # different market that must not blend in either. The RAM+storage
-            # pair is the generic spec-sheet tell.
+            # different market that must not blend in either. The PC phrases
+            # only count as a system alongside spec-sheet evidence (a CPU
+            # model, RAM or storage) — "GTX 1650 Graphics Card for Desktop
+            # PC" is a real card describing what it fits.
             _tl = title.lower()
+            # System evidence must not confuse VRAM specs ("GT 710 2GB DDR3")
+            # with system RAM — hence the explicit 'ram' word, storage, or a
+            # CPU mention, never a bare "NGB DDRn".
+            _spec_evidence = bool(
+                re.search(r'\d+\s*gb\s+ram\b', _tl)
+                or re.search(r'\d+\s*(?:tb|gb)\s*(?:ssd|nvme|hdd|m\.2)', _tl)
+                or re.search(r'\b(?:intel\s+)?core\s*i[3579]\b|\bi[3579][\s\-]\d{3,5}\b|'
+                             r'\bryzen\b|\bxeon\b|\bcore\s+ultra\b|\bceleron\b|\bpentium\b', _tl))
             _is_system_gpu = (
-                any(k in _tl for k in ['laptop', 'notebook', 'gaming pc', 'desktop pc',
-                                        'mini pc', 'mini-pc', 'all-in-one', 'complete pc',
-                                        'pc bundle', 'custom pc', 'full pc', 'gaming computer',
-                                        'gaming rig', 'gaming setup', 'pre-built', 'prebuilt',
-                                        'desktop computer', 'compact pc'])
-                or (bool(re.search(r'\d+\s*gb\s*(?:ddr\d?|ram)\b', _tl))
-                    and bool(re.search(r'\d+\s*(?:tb|gb)\s*(?:ssd|nvme|hdd|m\.2)', _tl)))
-            )
+                'laptop' in _tl or 'notebook' in _tl
+                or (_spec_evidence
+                    and any(k in _tl for k in ['gaming pc', 'desktop pc', 'mini pc', 'mini-pc',
+                                                'all-in-one', 'complete pc', 'pc bundle',
+                                                'custom pc', 'full pc', 'gaming computer',
+                                                'gaming rig', 'gaming setup', 'pre-built',
+                                                'prebuilt', 'desktop computer', 'compact pc'])))
             if _is_system_gpu:
                 log.debug("[%s] Skipping system listing in GPU: %s", query, title[:60])
                 continue
@@ -867,14 +876,15 @@ def __ParseItems(soup, query, productType):
                 log.debug("[%s] Skipping solid-state listing in HDD: %s", query, title[:60])
                 continue
             # Whole systems mention their drive too ("Gaming Laptop ... 1TB
-            # HDD"). NB bare 'laptop' is NOT a tell here — 2.5" drives are
-            # legitimately sold as "laptop hard drives" — but no bare-drive
-            # title ever states RAM, and the PC phrases are unambiguous.
+            # HDD"). NB neither bare 'laptop' NOR the PC phrases are tells
+            # here — "laptop hard drive" and "Desktop PC NAS Hard Drive" are
+            # real drives describing what they fit. The reliable evidence is
+            # a RAM spec or a CPU model: no bare-drive title ever states those.
             _is_system_hdd = (
-                bool(re.search(r'\d+\s*gb\s*(?:ddr\d?|ram)\b', _tl))
-                or any(k in _tl for k in ['gaming pc', 'gaming laptop', 'desktop pc',
-                                           'mini pc', 'all-in-one', 'complete pc',
-                                           'pc bundle', 'gaming computer', 'prebuilt'])
+                bool(re.search(r'\d+\s*gb\s*(?:ddr\d|ram)\b', _tl))
+                or bool(re.search(r'\b(?:intel\s+)?core\s*i[3579]\b|\bi[3579][\s\-]\d{3,5}\b|'
+                                  r'\bryzen\b|\bxeon\b|\bcore\s+ultra\b', _tl))
+                or 'gaming laptop' in _tl
             )
             if _is_system_hdd:
                 log.debug("[%s] Skipping system listing in HDD: %s", query, title[:60])

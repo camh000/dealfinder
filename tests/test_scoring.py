@@ -911,6 +911,18 @@ class TestJunkListingGate:
         assert _parse_one("Seagate 1TB 2.5\" SATA Laptop Hard Drive Tested", "HDD") is not None
         assert _parse_one("2x 2.5\" SATA Laptop Hard Drives 500GB", "HDD") is not None
 
+    @pytest.mark.parametrize("title,cat", [
+        # "for a desktop PC" describes fit, not a system (first cleanup pass
+        # wrongly delisted these — the tell must be spec-sheet evidence)
+        ("Seagate IronWolf ST4000VN008 4TB 3.5\" Desktop PC NAS Hard Drive SATA", "HDD"),
+        ("Toshiba DT01ACA100 1TB 3.5\" Desktop PC Hard Drive SATA HDD", "HDD"),
+        ("Seagate ST500DM002 500GB 7.2K SATA Internal Desktop PC CCTV Hard Drive", "HDD"),
+        ("ASUS GT 710 2GB DDR3 Graphics Card for Desktop PC Low Profile", "GPU"),
+        ("MSI RTX 3050 8GB Gaming X Graphics Card Desktop PC", "GPU"),
+    ])
+    def test_component_for_pc_titles_still_parse(self, title, cat):
+        assert _parse_one(title, cat) is not None, f"real component wrongly skipped: {title}"
+
     def test_accessory_detector_direct(self):
         assert EbayScraper.is_accessory_listing("RTX 4090 heatsink and fans (no gpu)") is True
         assert EbayScraper.is_accessory_listing("RTX 4090 24GB Gaming OC") is False
