@@ -555,6 +555,20 @@ class TestRamKitConfig:
         assert queries.model_label_for_row("ram", {"CapacityGB": 16, "Type": "DDR4", "FormFactor": "DIMM"}) == "16GB DDR4"
 
 
+class TestExactEndTime:
+    def test_end_date_extracted(self):
+        from datetime import datetime, timedelta, timezone
+        soon = (datetime.now(timezone.utc) + timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        html = '{"listing":{"endDate":"' + soon + '","x":1}}'
+        dt = EbayScraper._parse_end_date(html)
+        assert dt is not None and dt.second == int(soon[17:19])
+
+    def test_missing_or_implausible_rejected(self):
+        assert EbayScraper._parse_end_date('{"noEnd":1}') is None
+        assert EbayScraper._parse_end_date('{"endDate":"2030-01-01T00:00:00Z"}') is None
+        assert EbayScraper._parse_end_date('') is None
+
+
 class TestJunkListingGate:
     """Damaged items and accessory listings must never enter any category —
     phantom deals when live, median-poison when sold."""
