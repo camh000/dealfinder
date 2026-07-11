@@ -1,5 +1,11 @@
 /* Buy-It-Now feed: fixed-price listings under market, sorted by discount.
-   No countdowns, no bids, no predictions — the price on screen is the price. */
+   No countdowns, no bids, no predictions — the price on screen is the price.
+
+   Unlike auctions (where bidding corrects a silly start price), a BIN price
+   is whatever the seller typed — and 90%-off fixed prices are eBay's classic
+   scam shape (hijacked accounts, fake stock, "read description"). Anything
+   at SCAM_DISCOUNT+ gets flagged and sunk to its own section, not hidden. */
+const SCAM_DISCOUNT = 60;
 
 let allDeals = [], cat = 'all';
 
@@ -24,6 +30,8 @@ function card(d) {
   const disc = Number(d.DiscountPct);
   const chips = [`<span class="chip">${d._cat.toUpperCase()}</span>`,
                  '<span class="chip new">BIN</span>'];
+  if (disc >= SCAM_DISCOUNT)
+    chips.push('<span class="chip" style="color:var(--loss);background:var(--loss-soft)" title="Fixed prices this far under market are usually fakes, empty boxes or hijacked accounts — read the listing very carefully.">⚠ TOO GOOD?</span>');
   if (qty > 1) chips.push(`<span class="chip hot">×${qty} LOT</span>`);
   return `<article class="row-card">
     <div class="id-col">
@@ -50,8 +58,15 @@ function card(d) {
 function render() {
   const rows = allDeals.filter(d => cat === 'all' || d._cat === cat);
   $('#bin-count').textContent = `${rows.length} listing${rows.length === 1 ? '' : 's'}`;
-  $('#rows').innerHTML = rows.length ? rows.map(card).join('')
-    : '<div class="state">Nothing under the bar right now — lower the min discount or check back after the next sweep.</div>';
+  if (!rows.length) {
+    $('#rows').innerHTML = '<div class="state">Nothing under the bar right now — lower the min discount or check back after the next sweep.</div>';
+    return;
+  }
+  const real = rows.filter(d => Number(d.DiscountPct) < SCAM_DISCOUNT);
+  const sus = rows.filter(d => Number(d.DiscountPct) >= SCAM_DISCOUNT);
+  $('#rows').innerHTML = real.map(card).join('') +
+    (sus.length ? `<div class="sub faint" style="margin:14px 0 6px">Probably too good to be true — ${sus.length} listing${sus.length === 1 ? '' : 's'} more than ${SCAM_DISCOUNT}% under market:</div>` +
+      sus.map(card).join('') : '');
 }
 
 async function load() {

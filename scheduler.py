@@ -245,10 +245,19 @@ def notify_new_deals(deals: list) -> None:
                             r.get('Name'), row.get('ID'), e)
 
 
+# A fixed price this far under market is almost never real — hijacked-account
+# fakes, empty boxes, "read description" — and unlike auctions nothing corrects
+# it. Shown flagged on the /bin page, but never worth waking a phone for.
+BIN_SCAM_DISCOUNT = float(os.environ.get('BIN_SCAM_DISCOUNT', '60'))
+
+
 def notify_bin_finds(finds: list) -> None:
     """Push notifications for new Buy-It-Now bargains — immediately and
     ungated: no bidding means no prediction, the listed price is final and
     the first person to click buy wins."""
+    if not finds:
+        return
+    finds = [f for f in finds if float(f.get('DiscountPct') or 0) < BIN_SCAM_DISCOUNT]
     if not finds:
         return
     recipients = EbayScraper.GetNotifyRecipients()
