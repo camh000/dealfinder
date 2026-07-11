@@ -235,7 +235,8 @@ def notify_new_deals(deals: list) -> None:
                     json={
                         "title": f"Deal: {label} £{price:.2f} ({disc:.0f}% off)",
                         "message": message,
-                        "data": {"url": row.get('URL'), "tag": f"dealfinder-{row.get('ID')}"},
+                        "data": {"url": EbayScraper.deal_page_url(row.get('ID'), row.get('URL')),
+                                 "tag": f"dealfinder-{row.get('ID')}"},
                     },
                     timeout=10,
                 )
@@ -253,8 +254,15 @@ def notify_bin_finds(finds: list) -> None:
     recipients = EbayScraper.GetNotifyRecipients()
     if not recipients:
         return
+    filters = EbayScraper.GetBinConfig().get('filters') or {}
     for row in finds:
         category = (row.get('_category') or '').upper()
+        # Model filter from the BIN watcher settings — e.g. HDD "6TB, 8TB,
+        # 10TB" silences every other capacity. Finds are still recorded in
+        # BinNotified either way (a filter change must not replay old finds).
+        if not EbayScraper.bin_find_passes_filters(row.get('_label'), category, filters):
+            log.info("BIN find %s (%s) silenced by model filter", row.get('ID'), row.get('_label'))
+            continue
         for r in recipients:
             cats = [c.strip().upper() for c in (r.get('Categories') or '').split(',') if c.strip()]
             if category not in cats:
@@ -273,7 +281,8 @@ def notify_bin_finds(finds: list) -> None:
                     json={
                         "title": f"BIN: {label} £{price:.2f} ({disc:.0f}% off)",
                         "message": message,
-                        "data": {"url": row.get('URL'), "tag": f"dealfinder-bin-{row.get('ID')}"},
+                        "data": {"url": EbayScraper.deal_page_url(row.get('ID'), row.get('URL')),
+                                 "tag": f"dealfinder-bin-{row.get('ID')}"},
                     },
                     timeout=10,
                 )

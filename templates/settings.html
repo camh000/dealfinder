@@ -78,6 +78,15 @@
     <div class="fg"><label>Min discount to notify (%, 5–90)</label>
       <input type="number" id="bin-disc" min="5" max="90" step="1"></div>
   </div>
+  <p class="help" style="margin-top:12px">Model filters — only push a find when its model
+    contains one of these comma-separated terms. Blank = everything in that category.</p>
+  <div class="form-grid" id="bin-filters">
+    <div class="fg"><label>GPU</label><input type="text" data-bin-filter="gpu" placeholder="e.g. RTX 30, RTX 40, Arc"></div>
+    <div class="fg"><label>CPU</label><input type="text" data-bin-filter="cpu" placeholder="e.g. i7, Ryzen 7, Xeon"></div>
+    <div class="fg"><label>HDD</label><input type="text" data-bin-filter="hdd" placeholder="e.g. 6TB, 8TB, 10TB"></div>
+    <div class="fg"><label>SSD</label><input type="text" data-bin-filter="ssd" placeholder="e.g. 1TB NVMe, 2TB"></div>
+    <div class="fg"><label>RAM</label><input type="text" data-bin-filter="ram" placeholder="e.g. DDR4, 32GB DDR5"></div>
+  </div>
   <div class="check-row">
     <label><input type="checkbox" id="bin-enabled"> Enabled</label>
     <button class="btn" id="bin-save">Save</button>

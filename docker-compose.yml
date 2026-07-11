@@ -25,6 +25,10 @@ services:
     container_name: dealfinder-scraper
     env_file:
       - credentials.env
+    environment:
+      # Notification deep links open the app's deal page (market context,
+      # max-bid advisor) instead of raw eBay. Override via a compose .env.
+      APP_BASE_URL: ${APP_BASE_URL:-http://192.168.1.104:5010}
     restart: always
     init: true
     extra_hosts:

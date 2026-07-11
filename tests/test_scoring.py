@@ -283,6 +283,69 @@ class TestLotQuantity:
         assert EbayScraper.extract_lot_quantity("") == 1
         assert EbayScraper.extract_lot_quantity(None) == 1
 
+
+class TestBinFindFilters:
+    """BIN watcher model filters: comma-separated terms per category,
+    matched case-insensitively against the find's model label."""
+
+    def test_matching_term_passes(self):
+        f = {"hdd": "6TB, 8TB, 10TB"}
+        assert EbayScraper.bin_find_passes_filters("8TB SATA", "HDD", f)
+        assert EbayScraper.bin_find_passes_filters("10TB SAS ×5", "hdd", f)
+
+    def test_non_matching_term_is_silenced(self):
+        f = {"hdd": "6TB, 8TB, 10TB"}
+        assert not EbayScraper.bin_find_passes_filters("4TB SATA", "HDD", f)
+        assert not EbayScraper.bin_find_passes_filters("500GB SATA", "HDD", f)
+
+    def test_blank_or_absent_filter_passes_everything(self):
+        assert EbayScraper.bin_find_passes_filters("4TB SATA", "HDD", {})
+        assert EbayScraper.bin_find_passes_filters("4TB SATA", "HDD", {"hdd": "  "})
+        assert EbayScraper.bin_find_passes_filters("RTX 3060", "GPU", {"hdd": "8TB"})
+        assert EbayScraper.bin_find_passes_filters("RTX 3060", "GPU", None)
+
+    def test_gpu_model_terms(self):
+        f = {"gpu": "RTX 30, RTX 40, Arc"}
+        assert EbayScraper.bin_find_passes_filters("RTX 3070 8GB", "GPU", f)
+        assert EbayScraper.bin_find_passes_filters("ARC A770 16GB", "GPU", f)
+        assert not EbayScraper.bin_find_passes_filters("GTX 1080", "GPU", f)
+
+
+class TestStorageCrossClassification:
+    """eBay's fuzzy search leaks SAS-HDD lots into SSD queries and
+    'Solid State Hard Drive' SSDs into HDD queries (live bug: item
+    278165274236, a 20x SAS HDD lot, surfaced on the SSD deals page)."""
+
+    @pytest.mark.parametrize("title", [
+        "20x Assorted 2TB 3.5\" SAS HDD JOB LOT",
+        "19x DELL AL13SEB900 900GB 10K 6Gbps 64MB Cache 2.5\" SAS HDD P/N: RC34W job lot",
+        "40x Seagate 900GB 10K 12Gbps 128MB 2.5\" SAS HDD ST900MM0018 Job Lot",
+        "Seagate BarraCuda 4TB Internal Hard Drive 5400RPM",
+    ])
+    def test_spinners_rejected_from_ssd(self, title):
+        assert EbayScraper.title_is_spinning_disk(title)
+        assert not EbayScraper.title_is_solid_state(title)
+
+    @pytest.mark.parametrize("title", [
+        "Fanxiang 2.5\" SATA SSD 1TB SSD Solid State Hard Drive",
+        "Samsung 870 QVO 4 TB SATA 2.5 Inch Internal Solid State Drive (SSD)",
+        "Job Lot Sale of 13 x Samsung 512GB M.2 2280 NVMe Laptop / PC Hard Drives",
+        "Verbatim Vi560 2TB SATA III M.2 2280 Laptop / PC Solid State Hard Drive (SSD)",
+        "800GB SAS SSD Enterprise 2.5\"",
+        "Seagate FireCuda 2TB SSHD Hybrid",
+    ])
+    def test_solid_state_rejected_from_hdd(self, title):
+        """Solid-state markers must win even when 'hard drive' appears."""
+        assert EbayScraper.title_is_solid_state(title)
+
+    @pytest.mark.parametrize("title", [
+        "WD Red 4TB NAS Hard Drive",
+        "10x IBM Sas 1 Tb Harddrives 2.5 Inch",
+        "Seagate EXOS 7E8 6TB SAS HDD 3.5 Hard Disk Drive",
+    ])
+    def test_plain_hdds_stay_in_hdd(self, title):
+        assert not EbayScraper.title_is_solid_state(title)
+
     def test_flash_media_lots_skipped_from_hdd(self):
         """USB-stick job lots must not enter the HDD category at all."""
         from bs4 import BeautifulSoup

@@ -139,3 +139,14 @@ def test_bin_settings_post_validates_ranges(app_module):
                  {"scan_minutes": 30, "min_discount": 95, "enabled": True},
                  {"scan_minutes": "nope", "min_discount": 30, "enabled": True}):
         assert client.post("/api/bin-settings", json=body).status_code == 400, body
+
+
+def test_bin_settings_post_validates_filters(app_module):
+    client = app_module.app.test_client()
+    base = {"scan_minutes": 30, "min_discount": 25, "enabled": True}
+    for filters in ({"mobo": "B550"},              # unknown category
+                    {"hdd": 123},                  # not a string
+                    {"hdd": "x" * 400},            # absurd length
+                    "6TB"):                        # not an object
+        resp = client.post("/api/bin-settings", json={**base, "filters": filters})
+        assert resp.status_code == 400, filters

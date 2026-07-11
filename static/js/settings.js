@@ -57,6 +57,9 @@ async function loadBinSettings() {
     $('#bin-scan').value = cfg.scan_minutes;
     $('#bin-disc').value = cfg.min_discount;
     $('#bin-enabled').checked = cfg.enabled;
+    $$('#bin-filters [data-bin-filter]').forEach(inp => {
+      inp.value = (cfg.filters || {})[inp.dataset.binFilter] || '';
+    });
   } catch { /* card just keeps its placeholders */ }
 }
 
@@ -69,6 +72,8 @@ $('#bin-save')?.addEventListener('click', async () => {
         scan_minutes: Number($('#bin-scan').value),
         min_discount: Number($('#bin-disc').value),
         enabled: $('#bin-enabled').checked,
+        filters: Object.fromEntries($$('#bin-filters [data-bin-filter]')
+          .map(inp => [inp.dataset.binFilter, inp.value])),
       }),
     });
     const data = await res.json();

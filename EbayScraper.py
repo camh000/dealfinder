@@ -308,6 +308,27 @@ def classify_drive_type(title: str) -> str:
 _FLASH_MEDIA_KEYWORDS = ['flash drive', 'memory stick', 'pen drive', 'pendrive',
                          'thumb drive', 'usb stick', 'sd card', 'micro sd', 'microsd']
 
+# eBay's search is fuzzy across storage: "SSD job lot" returns SAS-HDD
+# clearouts, and HDD searches return SSDs titled "Solid State Hard Drive".
+# Cross-classified rows land in the wrong market's medians AND deal feed, so
+# each branch must reject the other kind. Solid-state markers win when a
+# title has both ("Solid State Hard Drive" is an SSD; "SAS SSD" is an SSD).
+_SOLID_STATE_RE = re.compile(
+    r'\bssd\b|solid[\s-]?state|\bnvme\b|\bm[.\s]?2\b|\bsshd\b', re.IGNORECASE)
+_SPINNING_DISK_RE = re.compile(
+    r'\bhdd\b|hard\s*dis[kc]|hard\s*drive|\brpm\b|\bsas\b', re.IGNORECASE)
+
+
+def title_is_solid_state(title: str) -> bool:
+    """True when a title carries any SSD/NVMe marker (incl. SSHD hybrids —
+    those are skipped from BOTH storage categories)."""
+    return bool(_SOLID_STATE_RE.search(title or ''))
+
+
+def title_is_spinning_disk(title: str) -> bool:
+    """True when a title carries spinning-drive markers (HDD/SAS/RPM/...)."""
+    return bool(_SPINNING_DISK_RE.search(title or ''))
+
 
 _RAM_SODIMM_RE = re.compile(
     r'so.?dimm|small\s*outline|\blaptop\b|\bnotebook\b', re.IGNORECASE)
@@ -789,6 +810,11 @@ def __ParseItems(soup, query, productType):
             if any(k in _tl for k in _FLASH_MEDIA_KEYWORDS):
                 log.debug("[%s] Skipping flash media: %s", query, title[:60])
                 continue
+            # Neither is an SSD ("Solid State Hard Drive", NVMe "hard drives")
+            # or an SSHD hybrid — those price like a different market entirely.
+            if title_is_solid_state(title):
+                log.debug("[%s] Skipping solid-state listing in HDD: %s", query, title[:60])
+                continue
 
             HDD_BRANDS = ['SEAGATE','TOSHIBA','SAMSUNG','HITACHI','HGST','FUJITSU','MAXTOR']
 
@@ -850,6 +876,12 @@ def __ParseItems(soup, query, productType):
             # whole machines ("laptop, 1TB SSD") mention SSDs constantly.
             if any(k in _tl for k in _FLASH_MEDIA_KEYWORDS) or 'sshd' in _tl:
                 log.debug("[%s] Skipping non-SSD storage: %s", query, title[:60])
+                continue
+            # Spinning drives leak in via the fuzzy "SSD job lot" search
+            # ("20x Assorted 2TB SAS HDD JOB LOT"). Solid-state markers win
+            # when both appear — "Solid State Hard Drive" IS an SSD.
+            if title_is_spinning_disk(title) and not title_is_solid_state(title):
+                log.debug("[%s] Skipping spinning drive in SSD: %s", query, title[:60])
                 continue
             _is_system_ssd = (
                 any(k in _tl for k in ['gaming pc', 'desktop pc', 'mini pc',
@@ -2686,13 +2718,15 @@ def GetBinConfig() -> dict:
         'enabled': os.environ.get('BIN_ENABLED', '1').lower() not in ('0', 'false', ''),
         'scan_minutes': int(os.environ.get('BIN_SCAN_MINUTES', '30')),
         'min_discount': float(os.environ.get('BIN_MIN_DISCOUNT', '25')),
+        'filters': {},
     }
     try:
+        import json
         conn = _get_connection()
         try:
             cur = conn.cursor()
             cur.execute("SELECT K, V FROM Scraper.AppConfig WHERE K IN "
-                        "('bin_enabled', 'bin_scan_minutes', 'bin_min_discount')")
+                        "('bin_enabled', 'bin_scan_minutes', 'bin_min_discount', 'bin_filters')")
             stored = dict(cur.fetchall())
         finally:
             conn.close()
@@ -2702,10 +2736,39 @@ def GetBinConfig() -> dict:
             cfg['scan_minutes'] = max(5, int(stored['bin_scan_minutes']))
         if 'bin_min_discount' in stored:
             cfg['min_discount'] = float(stored['bin_min_discount'])
+        if 'bin_filters' in stored:
+            cfg['filters'] = json.loads(stored['bin_filters'] or '{}')
     except Exception:
         pass
     _bin_cfg_cache.update(at=now, val=cfg)
     return cfg
+
+
+def bin_find_passes_filters(label: str, category: str, filters: dict) -> bool:
+    """Per-category model filter from the BIN watcher settings.
+
+    filters maps category key → comma-separated terms ("6TB, 8TB, 10TB");
+    a find notifies only when its model label contains one of the terms,
+    case-insensitively. No entry (or blank) = everything passes.
+    """
+    raw = (filters or {}).get((category or '').lower()) or ''
+    terms = [t.strip().lower() for t in raw.split(',') if t.strip()]
+    if not terms:
+        return True
+    lab = (label or '').lower()
+    return any(t in lab for t in terms)
+
+
+# Public base URL of the web UI (e.g. http://192.168.1.104:5010). When set,
+# notification deep links open OUR deal page (market context, max-bid advisor,
+# one tap further to eBay) instead of eBay directly.
+APP_BASE_URL = os.environ.get('APP_BASE_URL', '').rstrip('/')
+
+
+def deal_page_url(ebay_id, fallback: str | None = None) -> str | None:
+    """Deep link for notifications: the deal page when APP_BASE_URL is set,
+    else the given fallback (usually the raw eBay URL)."""
+    return f"{APP_BASE_URL}/deal/{ebay_id}" if APP_BASE_URL else fallback
 
 
 # Alert cooldowns: a listing sitting under the target must not ping every
@@ -2807,7 +2870,7 @@ def EvaluateAlerts() -> int:
                         message = f"{h['Title'][:90]} — {per_unit}, {kind_txt}"
                         if len(hits) > 1:
                             message += f" (+{len(hits) - 1} more)"
-                        url = h['URL']
+                        url = deal_page_url(h['ID'], h['URL'])
             except mariadb.Error as e:
                 log.error("EvaluateAlerts: alert %s query failed: %s", a['ID'], e)
                 continue

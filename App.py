@@ -868,12 +868,13 @@ def _bin_defaults() -> dict:
 @app.route('/api/bin-settings', methods=['GET'])
 def bin_settings_get():
     cfg = _bin_defaults()
+    cfg['filters'] = {}
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("SELECT K, V FROM Scraper.AppConfig WHERE K IN "
-                    "('bin_enabled', 'bin_scan_minutes', 'bin_min_discount')")
+                    "('bin_enabled', 'bin_scan_minutes', 'bin_min_discount', 'bin_filters')")
         stored = dict(cur.fetchall())
         if 'bin_enabled' in stored:
             cfg['enabled'] = stored['bin_enabled'] == '1'
@@ -881,6 +882,8 @@ def bin_settings_get():
             cfg['scan_minutes'] = int(stored['bin_scan_minutes'])
         if 'bin_min_discount' in stored:
             cfg['min_discount'] = float(stored['bin_min_discount'])
+        if 'bin_filters' in stored:
+            cfg['filters'] = json.loads(stored['bin_filters'] or '{}')
     except Exception as e:
         log.error("bin_settings_get error: %s", e)
     finally:
@@ -907,13 +910,28 @@ def bin_settings_post():
     lo, hi = _BIN_LIMITS['min_discount']
     if not lo <= disc <= hi:
         return jsonify({"status": "error", "message": f"min discount must be {lo}-{hi}%"}), 400
+    # Per-category model filters: {"hdd": "6TB, 8TB, 10TB", ...}. A find only
+    # notifies when its model label contains one of the comma-separated terms
+    # (blank / absent category = everything).
+    filters = body.get('filters') or {}
+    if not isinstance(filters, dict):
+        return jsonify({"status": "error", "message": "filters must be an object"}), 400
+    clean_filters = {}
+    for k, v in filters.items():
+        if k not in queries.CATEGORIES:
+            return jsonify({"status": "error", "message": f"unknown filter category '{k}'"}), 400
+        if not isinstance(v, str) or len(v) > 300:
+            return jsonify({"status": "error", "message": "filter must be a short text list"}), 400
+        if v.strip():
+            clean_filters[k] = v.strip()
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
         for k, v in (('bin_enabled', '1' if enabled else '0'),
                      ('bin_scan_minutes', str(scan)),
-                     ('bin_min_discount', str(disc))):
+                     ('bin_min_discount', str(disc)),
+                     ('bin_filters', json.dumps(clean_filters))):
             cur.execute("INSERT INTO Scraper.AppConfig (K, V) VALUES (%s, %s) "
                         "ON DUPLICATE KEY UPDATE V = VALUES(V)", (k, v))
         conn.commit()
