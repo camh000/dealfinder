@@ -947,6 +947,12 @@ class TestJunkListingGate:
         ("Kingston 64GB (2x32GB) DDR4 3200MHz Laptop RAM SODIMM PC4-3200", "HDD"),
         ("Samsung 128GB DDR4 2666 RDIMM Server Memory", "SSD"),
         ("Micron 8GB 1RX16 PC4-3200AA SODIMM RAM Module", "GPU"),
+        # kits with NO memory noun at all — the DDR token alone must bar storage
+        ("Corsair Vengeance 64GB (2 x 32GB) DDR5 6000MHz", "HDD"),
+        ("Corsair Vengeance 64GB (2 x 32GB) DDR5 6000MHz", "SSD"),
+        ("Kingston Fury Beast 64 GB: 2 x 32 GB, DDR5, 6400 MT/s, UDIMM", "SSD"),
+        # a tower with an SSD in its spec sheet is not an SSD
+        ("HP Pavilion P6-2480ea Intel Core i5 3330 128Gb SATA SSD 6Gb DDR3 Win 10", "SSD"),
     ])
     def test_memory_modules_rejected_from_storage_and_gpu(self, title, cat):
         assert _parse_one(title, cat) is None, f"RAM stick leaked into {cat}: {title}"

@@ -332,16 +332,28 @@ def title_is_spinning_disk(title: str) -> bool:
 
 # Memory modules masquerade as storage/GPUs by capacity alone ("64GB DDR3
 # Server RAM Kit" once landed as a 64GB drive; a SODIMM part number yielded a
-# GPU "model"). \bddr\d\b never matches GDDR (no word boundary inside GDDR6),
-# so real graphics-card VRAM specs stay unaffected.
+# GPU "model"). Two strictness levels:
+#  - storage: ANY memory token disqualifies — no drive title ever says DDR5,
+#    PC4-3200, DIMM or MT/s ("Corsair Vengeance 64GB (2x32GB) DDR5 6000MHz"
+#    has no 'ram' noun at all and still isn't a drive).
+#  - GPU: needs the token NEAR a memory noun, because old cards legitimately
+#    write VRAM as "2GB DDR3". \bddr\d\b never matches GDDR6 (no word
+#    boundary inside GDDR), so modern VRAM specs are safe either way.
+_MEMORY_TOKEN = r'\bddr\d\b|\bpc[2-5]l?-?\d{3,5}\b|\b(?:so|r|u|lr)dimm\b|\bdimm\b|\bmt/s\b'
+_MEMORY_TOKEN_RE = re.compile(_MEMORY_TOKEN, re.IGNORECASE)
 _MEMORY_MODULE_RE = re.compile(
-    r'(?:\bddr\d\b|\bpc[34]-?\d{3,5})[^,;]{0,40}?\b(?:ram|dimm|sodimm|rdimm|udimm|memory)\b|'
-    r'\b(?:ram|dimm|sodimm|rdimm|udimm|memory)\b[^,;]{0,40}?(?:\bddr\d\b|\bpc[34]-?\d{3,5})',
+    rf'(?:{_MEMORY_TOKEN})[^,;]{{0,40}}?\b(?:ram|dimm|sodimm|rdimm|udimm|memory)\b|'
+    rf'\b(?:ram|dimm|sodimm|rdimm|udimm|memory)\b[^,;]{{0,40}}?(?:{_MEMORY_TOKEN})',
     re.IGNORECASE)
 
 
+def title_has_memory_token(title: str) -> bool:
+    """True when a title carries any RAM-spec token (storage-branch guard)."""
+    return bool(_MEMORY_TOKEN_RE.search(title or ''))
+
+
 def title_is_memory_module(title: str) -> bool:
-    """True for RAM-stick/kit titles (DDRn near a memory noun)."""
+    """True for RAM-stick/kit titles (memory token near a memory noun)."""
     return bool(_MEMORY_MODULE_RE.search(title or ''))
 
 
@@ -902,7 +914,7 @@ def __ParseItems(soup, query, productType):
             if title_is_solid_state(title):
                 log.debug("[%s] Skipping solid-state listing in HDD: %s", query, title[:60])
                 continue
-            if title_is_memory_module(title):
+            if title_has_memory_token(title):
                 log.debug("[%s] Skipping memory module in HDD: %s", query, title[:60])
                 continue
             # Whole systems mention their drive too ("Gaming Laptop ... 1TB
@@ -995,8 +1007,15 @@ def __ParseItems(soup, query, productType):
             if title_is_spinning_disk(title) and not title_is_solid_state(title):
                 log.debug("[%s] Skipping spinning drive in SSD: %s", query, title[:60])
                 continue
-            if title_is_memory_module(title):
+            if title_has_memory_token(title):
                 log.debug("[%s] Skipping memory module in SSD: %s", query, title[:60])
+                continue
+            # Same system tells as HDD: no bare-drive title names a CPU model
+            # (an "HP Pavilion i5 3330 128GB SSD DDR3" tower sat in SSD).
+            if re.search(r'\b(?:intel\s+)?core\s*i[3579]\b|\bi[3579][\s\-]\d{3,5}[a-z]{0,2}\b|'
+                         r'\bryzen\b|\bxeon\b|\bcore\s+ultra\b', _tl) \
+                    or 'graphics card' in _tl:
+                log.debug("[%s] Skipping system listing in SSD: %s", query, title[:60])
                 continue
             _is_system_ssd = (
                 any(k in _tl for k in ['gaming pc', 'desktop pc', 'mini pc',
