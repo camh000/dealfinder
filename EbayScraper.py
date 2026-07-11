@@ -2133,6 +2133,8 @@ def _extract_enrichment(html: str) -> dict:
         nav = soup.find(attrs={'data-testid': 'x-breadcrumb'})
         if nav:
             crumbs = [a.get_text(strip=True) for a in nav.find_all('a')]
+            # eBay renders the crumb trail twice (mobile+desktop variants).
+            crumbs = list(dict.fromkeys(c for c in crumbs if c))
             if crumbs:
                 path = ' > '.join(crumbs)[:200]
     except Exception:
