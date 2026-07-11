@@ -940,6 +940,22 @@ class TestJunkListingGate:
         assert _parse_one("Corsair Vengeance LPX 16GB (2x8GB) DDR4 3200MHz", "RAM") is not None
         assert _parse_one("Crucial 32GB DDR5 4800 SODIMM Laptop Memory", "RAM") is not None
 
+    @pytest.mark.parametrize("title,cat", [
+        # RAM kits must never enter storage/GPU by capacity alone
+        # (the sync pass briefly put a 64GB DDR3 kit in HDD)
+        ("SK Hynix 64GB (4x16GB) 2Rx4 DDR3 Server RAM Kit RDIMM ECC", "HDD"),
+        ("Kingston 64GB (2x32GB) DDR4 3200MHz Laptop RAM SODIMM PC4-3200", "HDD"),
+        ("Samsung 128GB DDR4 2666 RDIMM Server Memory", "SSD"),
+        ("Micron 8GB 1RX16 PC4-3200AA SODIMM RAM Module", "GPU"),
+    ])
+    def test_memory_modules_rejected_from_storage_and_gpu(self, title, cat):
+        assert _parse_one(title, cat) is None, f"RAM stick leaked into {cat}: {title}"
+
+    def test_gddr_vram_is_not_a_memory_module(self):
+        """GDDR6 must not trip the DDRn guard — real cards keep parsing."""
+        assert not EbayScraper.title_is_memory_module("MSI RTX 3070 8GB GDDR6 Graphics Card")
+        assert _parse_one("MSI RTX 3070 Gaming X Trio 8GB GDDR6", "GPU") is not None
+
     def test_accessory_detector_direct(self):
         assert EbayScraper.is_accessory_listing("RTX 4090 heatsink and fans (no gpu)") is True
         assert EbayScraper.is_accessory_listing("RTX 4090 24GB Gaming OC") is False

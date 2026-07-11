@@ -330,6 +330,21 @@ def title_is_spinning_disk(title: str) -> bool:
     return bool(_SPINNING_DISK_RE.search(title or ''))
 
 
+# Memory modules masquerade as storage/GPUs by capacity alone ("64GB DDR3
+# Server RAM Kit" once landed as a 64GB drive; a SODIMM part number yielded a
+# GPU "model"). \bddr\d\b never matches GDDR (no word boundary inside GDDR6),
+# so real graphics-card VRAM specs stay unaffected.
+_MEMORY_MODULE_RE = re.compile(
+    r'(?:\bddr\d\b|\bpc[34]-?\d{3,5})[^,;]{0,40}?\b(?:ram|dimm|sodimm|rdimm|udimm|memory)\b|'
+    r'\b(?:ram|dimm|sodimm|rdimm|udimm|memory)\b[^,;]{0,40}?(?:\bddr\d\b|\bpc[34]-?\d{3,5})',
+    re.IGNORECASE)
+
+
+def title_is_memory_module(title: str) -> bool:
+    """True for RAM-stick/kit titles (DDRn near a memory noun)."""
+    return bool(_MEMORY_MODULE_RE.search(title or ''))
+
+
 _RAM_SODIMM_RE = re.compile(
     r'so.?dimm|small\s*outline|\blaptop\b|\bnotebook\b', re.IGNORECASE)
 
@@ -748,6 +763,9 @@ def __ParseItems(soup, query, productType):
             if _is_system_gpu:
                 log.debug("[%s] Skipping system listing in GPU: %s", query, title[:60])
                 continue
+            if title_is_memory_module(title):
+                log.debug("[%s] Skipping memory module in GPU: %s", query, title[:60])
+                continue
 
             vram  = extract_vram(title)
             model = qualify_gpu_model(extract_model(title), vram)
@@ -884,6 +902,9 @@ def __ParseItems(soup, query, productType):
             if title_is_solid_state(title):
                 log.debug("[%s] Skipping solid-state listing in HDD: %s", query, title[:60])
                 continue
+            if title_is_memory_module(title):
+                log.debug("[%s] Skipping memory module in HDD: %s", query, title[:60])
+                continue
             # Whole systems mention their drive too ("Gaming Laptop ... 1TB
             # HDD"). NB neither bare 'laptop' NOR the PC phrases are tells
             # here — "laptop hard drive" and "Desktop PC NAS Hard Drive" are
@@ -973,6 +994,9 @@ def __ParseItems(soup, query, productType):
             # when both appear — "Solid State Hard Drive" IS an SSD.
             if title_is_spinning_disk(title) and not title_is_solid_state(title):
                 log.debug("[%s] Skipping spinning drive in SSD: %s", query, title[:60])
+                continue
+            if title_is_memory_module(title):
+                log.debug("[%s] Skipping memory module in SSD: %s", query, title[:60])
                 continue
             _is_system_ssd = (
                 any(k in _tl for k in ['gaming pc', 'desktop pc', 'mini pc',
