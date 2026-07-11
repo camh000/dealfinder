@@ -68,7 +68,7 @@ function posbar(d) {
       ${pred != null ? `<span class="dot hollow" style="left:${pct(pred)}%" title="predicted final ${fmtGBP(pred)}"></span>` : ''}
       <span class="dot" style="left:${pct(now)}%" title="current ${fmtGBP(now)}"></span>
     </div>
-    <div class="posbar-legend"><span>${fmtGBP0(lo)}</span><span>med ${fmtGBP0(med)}</span><span>${fmtGBP0(hi)}</span></div>`;
+    <div class="posbar-legend"><span>${fmtGBP0(lo)}</span><span><a href="${modelHref(CAT, d)}" title="this model's market page" style="color:inherit">med ${fmtGBP0(med)}</a></span><span>${fmtGBP0(hi)}</span></div>`;
 }
 
 function priceCol(d) {

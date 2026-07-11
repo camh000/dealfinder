@@ -160,7 +160,11 @@ function outcome(d) {
     const data = await res.json();
     if (data.status !== 'ok') throw new Error(data.message || 'error');
     $('#deal-title').textContent = data.listing.Title;
-    $('#deal-sub').textContent = data.group_label || (data.category || '').toUpperCase();
+    if (data.group_label && data.category)
+      $('#deal-sub').innerHTML =
+        `<a href="${modelHref(data.category, data.group || {})}">${esc(data.group_label)}</a>`;
+    else
+      $('#deal-sub').textContent = (data.category || '').toUpperCase();
     $('#ebay-link').href = safeUrl(data.listing.URL);
     statStrip(data); bigPosbar(data); trajectory(data);
     facts(data); market(data); outcome(data);

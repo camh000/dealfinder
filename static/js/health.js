@@ -19,7 +19,7 @@
       <div class="stat"><b class="num">${data.snapshots.rows.toLocaleString('en-GB')}</b><span>price snapshots (${data.snapshots.deals} deals)</span></div>`;
 
     $('#cat-tbl tbody').innerHTML = Object.entries(data.categories).map(([c, v]) => `
-      <tr><td><span class="chip">${c.toUpperCase()}</span></td>
+      <tr><td><a href="/deals/${c}"><span class="chip" style="cursor:pointer">${c.toUpperCase()}</span></a></td>
         <td class="num">${v.live.toLocaleString('en-GB')}</td>
         <td class="num">${v.sold_window.toLocaleString('en-GB')}</td>
         <td class="num dimcell">${v.sold_total.toLocaleString('en-GB')}</td></tr>`).join('');
