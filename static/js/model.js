@@ -7,7 +7,12 @@ const params = new URLSearchParams(location.search);
 function chart(trend, median, predictions) {
   if (!trend || trend.length < 2)
     return '<div class="state">Not enough monthly history yet.</div>';
-  const W = 720, H = 180, P = 34, PR = 76;   // extra right pad for the median label
+  // On phones a 720-unit viewBox renders unreadably small — emit a narrow
+  // chart with thinned labels instead.
+  const narrow = isNarrowScreen();
+  const W = narrow ? 380 : 720, H = narrow ? 200 : 180,
+        P = narrow ? 30 : 34, PR = narrow ? 56 : 76;
+  const step = narrow && trend.length > 4 ? 2 : 1;   // label every other month
   const preds = (predictions || []).filter(v => v != null);
   const domain = trend.map(t => t.median).concat(median != null ? [median] : [], preds);
   const lo = Math.min(...domain) * 0.92, hi = Math.max(...domain) * 1.05;
@@ -20,6 +25,7 @@ function chart(trend, median, predictions) {
   const collides = (px, py) =>
     placed.some(q => Math.abs(q.y - py) < 11 && Math.abs(q.x - px) < 58);
   const monthLabels = trend.map((t, i) => {
+    if (i % step !== 0) return '';
     const tx = x(i), ty = y(t.median) - 8;
     placed.push({ x: tx, y: ty });
     return `<text x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" text-anchor="middle">${fmtGBP0(t.median)}</text>`;
@@ -55,7 +61,7 @@ function chart(trend, median, predictions) {
     ${trend.map((t, i) => `
       <circle class="pt" cx="${x(i).toFixed(1)}" cy="${y(t.median).toFixed(1)}" r="3">
         <title>${t.month}: ${fmtGBP(t.median)} (n=${t.n})</title></circle>
-      <text x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle">${t.month.slice(2)}</text>
+      ${i % step === 0 ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle">${t.month.slice(2)}</text>` : ''}
     `).join('')}
     ${monthLabels}
     ${predMarks}
@@ -128,9 +134,9 @@ $('#al-save').addEventListener('click', async () => {
         <tr>
           <td><a href="/deal/${l.ID}" style="color:inherit">${esc(l.Title)}</a>${Number(l.Quantity) > 1 ? ` <span class="chip hot">×${l.Quantity}</span>` : ''}</td>
           <td class="num">${fmtGBP(l.ItemPrice)}${Number(l.Shipping) > 0 ? `<div class="dimcell">+${fmtGBP(l.Shipping)} del.</div>` : ''}${l.PredictedFinalPrice != null ? `<div class="dimcell">pred ~${fmtGBP(l.PredictedFinalPrice)}</div>` : ''}</td>
-          <td class="num dimcell">${l.Bids || 0}</td>
+          <td class="num dimcell m-hide">${l.Bids || 0}</td>
           <td><span class="countdown" ${endsAttr(l.EndTime)}></span></td>
-          <td><a href="${safeUrl(l.URL)}" target="_blank" rel="noopener noreferrer">view</a></td>
+          <td class="m-hide"><a href="${safeUrl(l.URL)}" target="_blank" rel="noopener noreferrer">view</a></td>
         </tr>`).join('');
     }
 
@@ -139,7 +145,7 @@ $('#al-save').addEventListener('click', async () => {
         <td class="dimcell">${fmtDate(r.SoldDate)}</td>
         <td><a href="/deal/${r.ID}" style="color:inherit">${esc(r.Title)}</a>${Number(r.Quantity) > 1 ? ` <span class="chip hot">×${r.Quantity}</span>` : ''}</td>
         <td class="num"><b>${fmtGBP(r.Price)}</b></td>
-        <td><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer">view</a></td>
+        <td class="m-hide"><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer">view</a></td>
       </tr>`).join('')
       : '<tr><td class="state" colspan="4">No recorded sales for this group yet.</td></tr>';
   } catch (e) {

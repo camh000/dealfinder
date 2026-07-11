@@ -857,6 +857,10 @@ class TestJunkListingGate:
         "NVIDIA RTX 5070 Founders Edition BOX ONLY",
         "Gigabyte RTX 5070 OC 12GB (Box Only)",
         "RTX 5070 EMPTY BOX",
+        # connectivity accessories under the card's name (live: SLI bridge at 72% off)
+        "Dell 09TTF8/9TTF8 NVIDIA SLI Bridge T77002 for GTX 1080",
+        "NVLink Bridge for RTX 3090 4-slot",
+        "PCIe Riser Cable for RTX 4090 vertical mount",
     ])
     def test_junk_gpu_listings_skipped(self, title):
         assert _parse_one(title, "GPU") is None

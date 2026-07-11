@@ -50,10 +50,20 @@ $('#theme-btn')?.addEventListener('click', () => {
   localStorage.setItem('pcd-theme', next);
 });
 
-/* ── nav highlight ── */
+/* ── nav highlight (top pills + mobile tab bar) ── */
 (() => {
   const page = document.body.dataset.page;
   $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.nav === page));
+  const CATS = ['gpu', 'cpu', 'hdd', 'ssd', 'ram'];
+  const tab = CATS.includes(page) ? 'deals' : page;
+  $$('#tabbar a').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
+  // Deals tab returns to the category you last browsed, not always GPU
+  if (CATS.includes(page)) localStorage.setItem('pcd-last-cat', page);
+  const last = localStorage.getItem('pcd-last-cat');
+  if (last && CATS.includes(last)) {
+    const dt = $('#tabbar a[data-tab="deals"]');
+    if (dt) dt.href = `/deals/${last}`;
+  }
 })();
 
 /* ── nav badges + status line ── */
@@ -146,6 +156,10 @@ function groupLabel(cat, g) {
   const kind = cat === 'ssd' ? ' SSD' : '';
   return `${fmtCap(Number(g.CapacityGB))} ${g.Interface || ''}${kind}${g.DriveType === 'External' ? ' External' : ''}`.trim();
 }
+
+/* ── narrow-screen test for chart builders: a 720-unit viewBox squeezed
+      into a phone renders 5px text; charts emit a smaller viewBox instead ── */
+const isNarrowScreen = () => window.innerWidth < 520;
 
 /* ── sort helper ── */
 function sortRows(arr, col, asc) {

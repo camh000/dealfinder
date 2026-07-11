@@ -12,7 +12,7 @@
 
 <div class="stats" id="stats"><div class="state"><span class="loader"></span>loading…</div></div>
 
-<div class="split" style="grid-template-columns: 3fr 2fr; align-items:stretch">
+<div class="split cols-32">
   <div class="card" style="margin-bottom:0">
     <h2>Predicted vs actual final price</h2>
     <div id="scatter"></div>
@@ -28,13 +28,13 @@
   </div>
 </div>
 
-<div class="split" style="grid-template-columns: 1fr 1fr; align-items:stretch; margin-top:var(--gap)">
+<div class="split cols-2" style="margin-top:var(--gap)">
   <div class="card" style="margin-bottom:0">
     <h2>By category</h2>
     <div class="tbl-wrap" style="box-shadow:none;border:none">
       <table class="tbl" id="cat-tbl"><thead>
-        <tr><th>Category</th><th class="num">n</th><th class="num">median err</th>
-        <th class="num">bias</th><th class="num">no-model err</th><th></th></tr>
+        <tr><th>Category</th><th class="num m-hide">n</th><th class="num">median err</th>
+        <th class="num">bias</th><th class="num m-hide">no-model err</th><th></th></tr>
       </thead><tbody></tbody></table>
     </div>
     <p class="help" style="margin:8px 0 0">"No-model err" = pretending the final price equals the
@@ -60,7 +60,7 @@
   <h2>Recent resolved predictions</h2>
   <div class="tbl-wrap" style="box-shadow:none;border:none">
     <table class="tbl" id="recent-tbl"><thead>
-      <tr><th>Ended</th><th>Cat</th><th>Model</th><th class="num">Surfaced</th>
+      <tr><th class="m-hide">Ended</th><th>Cat</th><th>Model</th><th class="num m-hide">Surfaced</th>
       <th class="num">Predicted</th><th class="num">Final</th><th class="num">Error</th></tr>
     </thead><tbody><tr><td class="state" colspan="7"><span class="loader"></span>loading…</td></tr></tbody></table>
   </div>

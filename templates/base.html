@@ -33,10 +33,10 @@
       <a href="/deals/hdd" data-nav="hdd">HDD<sup data-count="hdd"></sup></a>
       <a href="/deals/ssd" data-nav="ssd">SSD<sup data-count="ssd"></sup></a>
       <a href="/deals/ram" data-nav="ram">RAM<sup data-count="ram"></sup></a>
-      <a href="/bin" data-nav="bin">BIN</a>
-      <a href="/outcomes" data-nav="outcomes">Outcomes</a>
-      <a href="/prices" data-nav="prices">Prices</a>
-      <a href="/settings" data-nav="settings">Settings</a>
+      <a class="sec" href="/bin" data-nav="bin">BIN</a>
+      <a class="sec" href="/outcomes" data-nav="outcomes">Outcomes</a>
+      <a class="sec" href="/prices" data-nav="prices">Prices</a>
+      <a class="sec" href="/settings" data-nav="settings">Settings</a>
     </nav>
     <div class="status">
       <span class="dot" id="live-dot"></span>
@@ -56,6 +56,14 @@
   <span style="flex:1"></span>
   <a href="/health">system health</a>
 </footer>
+
+<nav class="tabbar" id="tabbar">
+  <a href="/deals/gpu" data-tab="deals"><span class="g">◈</span>Deals</a>
+  <a href="/bin" data-tab="bin"><span class="g">⚡</span>BIN</a>
+  <a href="/outcomes" data-tab="outcomes"><span class="g">✓</span>Outcomes</a>
+  <a href="/prices" data-tab="prices"><span class="g">£</span>Prices</a>
+  <a href="/settings" data-tab="settings"><span class="g">⚙</span>Settings</a>
+</nav>
 
 <script src="/static/js/common.js"></script>
 {% block scripts %}{% endblock %}

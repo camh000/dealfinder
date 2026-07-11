@@ -486,7 +486,11 @@ _ACCESSORY_RE = re.compile(
     r'\bno\s+(?:graphics\s+)?card\b|\bempty\s+box\b|'
     r'\b(?:box|heatsink|cooler|fans?|shroud|backplate|bracket|stand)\s*only\b|'
     r'(?<!plus )(?<!with )(?<!incl )(?<!\+ )\bheatsink\s*(?:&|and|\+|,)\s*(?:box|fans?|shroud)\b|'
-    r'\bbox\s*(?:&|and|\+|,)\s*(?:manual|heatsink)[\w\s]{0,12}?\bonly\b', re.IGNORECASE)
+    r'\bbox\s*(?:&|and|\+|,)\s*(?:manual|heatsink)[\w\s]{0,12}?\bonly\b|'
+    # connectivity accessories sold under the card's name ("Dell SLI Bridge
+    # T77002 for GTX 1080" surfaced at 72% off a 1080)
+    r'\bsli\s*bridge\b|\bnvlink\s*bridge\b|\b(?:pcie?|gpu)\s*riser\b|\briser\s*cable\b',
+    re.IGNORECASE)
 
 
 def extract_lot_quantity(title: str) -> int:

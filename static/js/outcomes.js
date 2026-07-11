@@ -44,8 +44,8 @@ function statStrip() {
   ].join('');
 }
 
-const th = (label, col, sort, fn, num = false) =>
-  `<th class="sortable ${num ? 'num' : ''}" onclick="${fn}('${col}')">${label}${
+const th = (label, col, sort, fn, num = false, mob = '') =>
+  `<th class="sortable ${num ? 'num' : ''} ${mob}" onclick="${fn}('${col}')">${label}${
     sort.col === col ? `<span class="arrow">${sort.asc ? '▲' : '▼'}</span>` : ''}</th>`;
 
 function renderResolved() {
@@ -55,14 +55,14 @@ function renderResolved() {
       ? Number(r.AvgMarketPrice) - Number(r.FinalPrice) : null;
   });
   $('#resolved-tbl thead').innerHTML = `<tr>
-    ${th('Ended', 'EndTime', rSort, 'sortR')}
+    ${th('Ended', 'EndTime', rSort, 'sortR', false, 'm-hide')}
     <th>Cat</th><th>Model</th>
-    ${th('Surfaced @', 'SurfacedPrice', rSort, 'sortR', true)}
-    ${th('Market', 'AvgMarketPrice', rSort, 'sortR', true)}
-    ${th('Predicted', 'PredictedFinal', rSort, 'sortR', true)}
+    ${th('Surfaced @', 'SurfacedPrice', rSort, 'sortR', true, 'm-hide')}
+    ${th('Market', 'AvgMarketPrice', rSort, 'sortR', true, 'm-hide')}
+    ${th('Predicted', 'PredictedFinal', rSort, 'sortR', true, 'm-hide')}
     ${th('Final', 'FinalPrice', rSort, 'sortR', true)}
     ${th('Saving', 'SavingGbp', rSort, 'sortR', true)}
-    <th></th><th></th></tr>`;
+    <th></th><th class="m-hide"></th></tr>`;
   const body = $('#resolved-tbl tbody');
   if (!rows.length) {
     body.innerHTML = `<tr><td class="state" colspan="10">No resolved ${cat === 'all' ? '' : cat.toUpperCase() + ' '}deals yet.</td></tr>`;
@@ -77,17 +77,17 @@ function renderResolved() {
           r.FinalPrice > r.PredictedFinal ? 'under-called' : 'over-called'}</div>`
       : '<span class="dimcell">—</span>';
     return `<tr>
-      <td class="dimcell">${fmtDateTime(r.EndTime)}</td>
+      <td class="dimcell m-hide">${fmtDateTime(r.EndTime)}</td>
       <td><span class="chip">${esc(r.Category)}</span></td>
       <td><a href="/deal/${r.EbayID}" style="color:inherit">${esc(r.Model || '—')}</a></td>
-      <td class="num">${fmtGBP(r.SurfacedPrice)}<div class="dimcell">${r.SurfacedDiscountPct}% off</div></td>
-      <td class="num dimcell">${fmtGBP(r.AvgMarketPrice)}</td>
-      <td class="num">${predCell}</td>
+      <td class="num m-hide">${fmtGBP(r.SurfacedPrice)}<div class="dimcell">${r.SurfacedDiscountPct}% off</div></td>
+      <td class="num dimcell m-hide">${fmtGBP(r.AvgMarketPrice)}</td>
+      <td class="num m-hide">${predCell}</td>
       <td class="num"><b>${fmtGBP(r.FinalPrice)}</b><div class="dimcell">${
         r.ActualDiscountPct > 0 ? r.ActualDiscountPct + '% off mkt' : Math.abs(r.ActualDiscountPct).toFixed(1) + '% over'}</div></td>
       <td class="num" style="color:${s > 0 ? 'var(--gain)' : 'var(--loss)'}">${s >= 0 ? '+' : '−'}${fmtGBP(Math.abs(s))}</td>
       <td><span class="verdict ${win ? 'win' : 'miss'}">${win ? 'DEAL' : 'MISS'}</span></td>
-      <td><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer">view</a></td>
+      <td class="m-hide"><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer">view</a></td>
     </tr>`;
   }).join('');
 }
@@ -97,24 +97,24 @@ function renderPending() {
   $('#pending-section').style.display = rows.length ? '' : 'none';
   if (!rows.length) return;
   $('#pending-tbl thead').innerHTML = `<tr>
-    ${th('Spotted', 'SurfacedAt', pSort, 'sortP')}
+    ${th('Spotted', 'SurfacedAt', pSort, 'sortP', false, 'm-hide')}
     <th>Cat</th><th>Model</th>
-    ${th('Surfaced @', 'SurfacedPrice', pSort, 'sortP', true)}
-    ${th('Market', 'AvgMarketPrice', pSort, 'sortP', true)}
+    ${th('Surfaced @', 'SurfacedPrice', pSort, 'sortP', true, 'm-hide')}
+    ${th('Market', 'AvgMarketPrice', pSort, 'sortP', true, 'm-hide')}
     ${th('Current', 'CurrentPrice', pSort, 'sortP', true)}
     ${th('Ends', 'EndTime', pSort, 'sortP')}
-    <th></th></tr>`;
+    <th class="m-hide"></th></tr>`;
   $('#pending-tbl tbody').innerHTML = sortRows(rows, pSort.col, pSort.asc).map(r => {
     const ended = !r.EndTime || new Date(r.EndTime) <= Date.now();
     return `<tr>
-      <td class="dimcell">${fmtDateTime(r.SurfacedAt)}</td>
+      <td class="dimcell m-hide">${fmtDateTime(r.SurfacedAt)}</td>
       <td><span class="chip">${esc(r.Category)}</span></td>
       <td><a href="/deal/${r.EbayID}" style="color:inherit">${esc(r.Model || '—')}</a></td>
-      <td class="num">${fmtGBP(r.SurfacedPrice)}<div class="dimcell">${r.SurfacedDiscountPct}% off</div></td>
-      <td class="num dimcell">${fmtGBP(r.AvgMarketPrice)}</td>
+      <td class="num m-hide">${fmtGBP(r.SurfacedPrice)}<div class="dimcell">${r.SurfacedDiscountPct}% off</div></td>
+      <td class="num dimcell m-hide">${fmtGBP(r.AvgMarketPrice)}</td>
       <td class="num">${fmtGBP(r.CurrentPrice)}<div class="dimcell">${r.CurrentBids || 0} bids</div></td>
       <td>${ended ? '<span class="dimcell">awaiting result</span>' : `<span class="countdown" ${endsAttr(r.EndTime)}></span>`}</td>
-      <td><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer">view</a></td>
+      <td class="m-hide"><a href="${safeUrl(r.URL)}" target="_blank" rel="noopener noreferrer">view</a></td>
     </tr>`;
   }).join('');
 }

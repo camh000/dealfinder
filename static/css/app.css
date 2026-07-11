@@ -239,7 +239,21 @@ input[type="search"] { width: 280px; max-width: 100%; }
 .stat .warn { color: var(--warn); }
 
 /* ── tables ───────────────────────────────────────────────────────────── */
-.tbl-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius); box-shadow: var(--shadow); }
+.tbl-wrap {
+  overflow-x: auto; background: var(--surface); border: 1px solid var(--border-soft);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  /* scroll shadows: fading edges appear only while there IS more to scroll
+     (background-attachment: local trick) — the swipe affordance tables lacked */
+  background-image:
+    linear-gradient(to right, var(--surface), var(--surface)),
+    linear-gradient(to right, var(--surface), var(--surface)),
+    linear-gradient(to right, rgba(0,0,0,0.28), transparent),
+    linear-gradient(to left,  rgba(0,0,0,0.28), transparent);
+  background-position: left center, right center, left center, right center;
+  background-repeat: no-repeat;
+  background-size: 24px 100%, 24px 100%, 14px 100%, 14px 100%;
+  background-attachment: local, local, scroll, scroll;
+}
 table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-row); }
 .tbl th {
   text-align: left; font-size: 11px; font-weight: 650; color: var(--dim);
@@ -265,6 +279,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-row); }
 
 /* ── prices layout / basket ───────────────────────────────────────────── */
 .split { display: grid; grid-template-columns: 1fr 270px; gap: var(--gap); align-items: start; }
+/* variants used by deal/insight pages — CLASSES, not inline styles, so the
+   mobile collapse below actually wins */
+.split.cols-2 { grid-template-columns: 1fr 1fr; align-items: stretch; }
+.split.cols-32 { grid-template-columns: 3fr 2fr; align-items: stretch; }
 .basket { position: sticky; top: 70px; background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius); box-shadow: var(--shadow); }
 .basket h2 { font-size: 13px; margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--border-soft); display: flex; justify-content: space-between; align-items: center; }
 .basket-items { padding: 6px 14px; min-height: 40px; }
@@ -320,14 +338,34 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-row); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── responsive ───────────────────────────────────────────────────────── */
+/* ── bottom tab bar (mobile section nav) ──────────────────────────────── */
+.tabbar {
+  display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 40;
+  background: color-mix(in srgb, var(--bg) 90%, transparent);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid var(--border-soft);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.tabbar a {
+  flex: 1; text-align: center; padding: 9px 2px 8px; color: var(--dim);
+  font-size: 11px; font-weight: 600; text-decoration: none; line-height: 1.25;
+}
+.tabbar a .g { display: block; font-size: 17px; line-height: 1.2; }
+.tabbar a.active { color: var(--accent); }
+.tabbar a:hover { text-decoration: none; }
+
 @media (max-width: 900px) {
-  .split { grid-template-columns: 1fr; }
+  .split, .split.cols-2, .split.cols-32 { grid-template-columns: 1fr; }
   .basket { position: static; }
 }
 @media (max-width: 760px) {
   .top-inner { gap: 12px; padding: 0 12px; }
   .status #status-line { display: none; }
-  main { padding: 14px 12px 50px; }
+  /* top bar keeps ONLY the category links; sections live in the tab bar */
+  .nav a.sec { display: none; }
+  .tabbar { display: flex; }
+  main { padding: 14px 12px 76px; }   /* room for the tab bar */
+  footer { padding-bottom: 76px; }
   .row-card {
     grid-template-columns: 1fr auto; grid-template-areas: "id meta" "price price" "go go";
   }
@@ -335,6 +373,20 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-row); }
   .row-card .price-col { grid-area: price; }
   .row-card .meta-col { grid-area: meta; }
   .row-card .go { grid-area: go; text-align: center; }
-  .stats { gap: 20px; }
+  .stats { gap: 16px 22px; }
   .stat b { font-size: 18px; }
+  /* long titles (deal pages) must shrink, and header actions wrap below */
+  .page-head h1 { min-width: 0; overflow-wrap: anywhere; flex-basis: 100%; }
+  .page-head .spacer { display: none; }
+  /* column priority: cells tagged .m-hide carry info that doesn't earn its
+     width at phone size — the row's verdict/price always stays visible */
+  .m-hide { display: none; }
+  /* filter toolbars: two-up grid instead of a clipped one-liner */
+  .toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .toolbar label { justify-content: space-between; }
+  .toolbar .pills, .toolbar input[type="search"], .toolbar .sub,
+  .toolbar button, .toolbar span[style] { grid-column: 1 / -1; }
+  .toolbar select, .toolbar input[type="number"] { max-width: 130px; }
+  /* fatter touch targets on sortable headers */
+  .tbl th.sortable { padding-top: 12px; padding-bottom: 12px; }
 }

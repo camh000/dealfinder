@@ -86,8 +86,8 @@ function rowsFlat() {
   return sortRows(rows, sort.col, sort.asc);
 }
 
-const th = (label, col, num = false) =>
-  `<th class="sortable ${num ? 'num' : ''}" data-sort="${col}">${label}${
+const th = (label, col, num = false, mob = '') =>
+  `<th class="sortable ${num ? 'num' : ''} ${mob}" data-sort="${col}">${label}${
     sort.col === col ? `<span class="arrow">${sort.asc ? '▲' : '▼'}</span>` : ''}</th>`;
 
 function trendCell(r) {
@@ -101,8 +101,8 @@ function trendCell(r) {
 function render() {
   $('#guide-tbl thead').innerHTML = `<tr>
     <th>Cat</th>${th('Model / spec', '_label')}
-    ${th('Median', 'AvgPrice', true)}${th('Range', 'MinPrice', true)}
-    ${th('30d trend', 'Trend30dPct', true)}${th('Sales', 'SoldCount', true)}
+    ${th('Median', 'AvgPrice', true)}${th('Range', 'MinPrice', true, 'm-hide')}
+    ${th('30d trend', 'Trend30dPct', true)}${th('Sales', 'SoldCount', true, 'm-hide')}
     ${th('Live', 'LiveCount', true)}<th></th></tr>`;
   $$('#guide-tbl th.sortable').forEach(el => el.onclick = () => {
     const col = el.dataset.sort;
@@ -117,9 +117,9 @@ function render() {
       <td><span class="chip">${r._cat.toUpperCase()}</span></td>
       <td><a href="${modelHref(r._cat, r)}">${esc(r._label)}</a></td>
       <td class="num"><b>${fmtGBP(r.AvgPrice)}</b></td>
-      <td class="num dimcell">${fmtGBP0(r.MinPrice)}–${fmtGBP0(r.MaxPrice)}</td>
+      <td class="num dimcell m-hide">${fmtGBP0(r.MinPrice)}–${fmtGBP0(r.MaxPrice)}</td>
       <td class="num">${trendCell(r)}</td>
-      <td class="num dimcell">${r.SoldCount}</td>
+      <td class="num dimcell m-hide">${r.SoldCount}</td>
       <td class="num">${r.LiveCount > 0 ? `<a href="${modelHref(r._cat, r)}#live">${r.LiveCount}</a>` : '<span class="dimcell">0</span>'}</td>
       <td><button class="add-basket" data-i="${i}" title="add to build basket">+</button></td>
     </tr>`).join('');

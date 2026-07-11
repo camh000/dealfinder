@@ -153,14 +153,14 @@ async function loadAlerts() {
     return;
   }
   box.innerHTML = `<div class="tbl-wrap" style="box-shadow:none;border:none">
-    <table class="tbl"><thead><tr><th>Model</th><th>Trigger</th><th class="num">Target</th>
-      <th>Notifies</th><th>Last fired</th><th></th></tr></thead>
+    <table class="tbl"><thead><tr><th>Model</th><th class="m-hide">Trigger</th><th class="num">Target</th>
+      <th class="m-hide">Notifies</th><th>Last fired</th><th></th></tr></thead>
     <tbody>${data.alerts.map(a => `
       <tr>
         <td><a href="/model/${a.Category}?${new URLSearchParams(a.GroupParams)}">${esc(a.Label || a.Category.toUpperCase())}</a></td>
-        <td class="dimcell">${a.Kind === 'median_below' ? 'median drops below' : 'genuinely available below'}</td>
+        <td class="dimcell m-hide">${a.Kind === 'median_below' ? 'median drops below' : 'genuinely available below'}</td>
         <td class="num">${fmtGBP(a.TargetPrice)}</td>
-        <td class="dimcell">${esc(a.RecipientName || '—')}</td>
+        <td class="dimcell m-hide">${esc(a.RecipientName || '—')}</td>
         <td class="dimcell">${a.LastFiredAt ? timeAgo(a.LastFiredAt) : 'never'}</td>
         <td><button class="btn-ghost btn-danger" data-del-alert="${a.ID}" style="padding:2px 10px;font-size:12px">delete</button></td>
       </tr>`).join('')}</tbody></table></div>`;

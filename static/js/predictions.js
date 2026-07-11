@@ -4,14 +4,16 @@
 function scatter(rows) {
   const pts = rows.filter(r => r.PredictedFinal > 0 && r.FinalPrice > 0);
   if (pts.length < 3) return '<div class="state">Not enough resolved predictions yet.</div>';
-  const W = 560, H = 380, P = 46;
+  const narrow = isNarrowScreen();
+  const W = narrow ? 380 : 560, H = narrow ? 340 : 380, P = narrow ? 40 : 46;
   // log scale: deal prices span £10 heatsinks to £1500 GPUs
   const vals = pts.flatMap(r => [Number(r.PredictedFinal), Number(r.FinalPrice)]);
   const lo = Math.min(...vals) * 0.85, hi = Math.max(...vals) * 1.15;
   const lg = v => Math.log(v);
   const x = v => P + (lg(v) - lg(lo)) / (lg(hi) - lg(lo)) * (W - P - 14);
   const y = v => H - 30 - (lg(v) - lg(lo)) / (lg(hi) - lg(lo)) * (H - 44);
-  const ticks = [10, 25, 50, 100, 250, 500, 1000, 2000].filter(t => t > lo && t < hi);
+  let ticks = [10, 25, 50, 100, 250, 500, 1000, 2000].filter(t => t > lo && t < hi);
+  if (narrow) ticks = ticks.filter((_, i) => i % 2 === 0);
   const CAT_HUE = { GPU: 'var(--accent)', CPU: 'var(--gain)', HDD: 'var(--warn)', SSD: 'var(--loss)', RAM: 'var(--faint)' };
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="predicted vs actual">
     <line class="axis" x1="${P}" y1="${H - 30}" x2="${W - 14}" y2="${H - 30}"/>
@@ -27,9 +29,11 @@ function scatter(rows) {
         cy="${y(r.FinalPrice).toFixed(1)}" r="4" fill="${CAT_HUE[r.Category] || 'var(--accent)'}">
         <title>${esc(r.Model || r.Category)} — predicted ${fmtGBP(r.PredictedFinal)}, closed ${fmtGBP(r.FinalPrice)} (${r.ErrPct > 0 ? '+' : ''}${r.ErrPct}%)</title>
       </circle></a>`).join('')}
-    ${Object.entries(CAT_HUE).map(([c, hue], i) => `
-      <circle cx="${P + 12 + i * 74}" cy="24" r="4" fill="${hue}"/>
-      <text x="${P + 20 + i * 74}" y="27">${c}</text>`).join('')}
+    ${Object.entries(CAT_HUE).map(([c, hue], i) => {
+      const sp = narrow ? 62 : 74, x0 = narrow ? P : P + 12;
+      return `<circle cx="${x0 + i * sp}" cy="24" r="4" fill="${hue}"/>
+      <text x="${x0 + 8 + i * sp}" y="27">${c}</text>`;
+    }).join('')}
   </svg>`;
 }
 
@@ -78,10 +82,10 @@ const errCell = v => v == null ? '—'
 
     $('#cat-tbl tbody').innerHTML = d.by_category.map(c => `
       <tr><td><span class="chip">${esc(c.category)}</span></td>
-        <td class="num dimcell">${c.n}</td>
+        <td class="num dimcell m-hide">${c.n}</td>
         <td class="num">±${c.median_abs_err_pct}%</td>
         <td class="num">${errCell(c.bias_pct)}</td>
-        <td class="num dimcell">±${c.baseline_median_abs_err_pct}%</td>
+        <td class="num dimcell m-hide">±${c.baseline_median_abs_err_pct}%</td>
         <td>${c.median_abs_err_pct <= c.baseline_median_abs_err_pct
               ? '<span class="verdict win">BEATS IT</span>' : '<span class="verdict miss">BEHIND</span>'}</td>
       </tr>`).join('') || '<tr><td class="state" colspan="6">No data yet.</td></tr>';
@@ -102,10 +106,10 @@ const errCell = v => v == null ? '—'
 
     $('#recent-tbl tbody').innerHTML = d.rows.slice(0, 40).map(r => `
       <tr>
-        <td class="dimcell">${fmtDateTime(r.EndTime)}</td>
+        <td class="dimcell m-hide">${fmtDateTime(r.EndTime)}</td>
         <td><span class="chip">${esc(r.Category)}</span></td>
         <td><a href="/deal/${r.EbayID}" style="color:inherit">${esc(r.Model || '—')}</a></td>
-        <td class="num dimcell">${fmtGBP(r.SurfacedPrice)}</td>
+        <td class="num dimcell m-hide">${fmtGBP(r.SurfacedPrice)}</td>
         <td class="num">${fmtGBP(r.PredictedFinal)}</td>
         <td class="num"><b>${fmtGBP(r.FinalPrice)}</b></td>
         <td class="num">${errCell(r.ErrPct)}</td>

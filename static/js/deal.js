@@ -53,7 +53,8 @@ function bigPosbar(d) {
       ${pred != null ? `<span class="dot hollow" style="left:${pct(pred)}%;top:8px" title="predicted ${fmtGBP(pred)}"></span>` : ''}
       <span class="dot" style="left:${pct(eff)}%;top:8.5px" title="this listing ${fmtGBP(eff)}"></span>
     </div>
-    <div class="posbar-legend"><span>${fmtGBP0(s.min)}</span><span>median ${fmtGBP0(s.median)}</span><span>${fmtGBP0(s.max)}</span></div>`;
+    <div class="posbar-legend"><span>${fmtGBP0(s.min)}</span><span>median ${fmtGBP0(s.median)}${
+      pred != null ? ` · pred ~${fmtGBP0(pred)}` : ''}</span><span>${fmtGBP0(s.max)}</span></div>`;
 }
 
 /* Max-bid / offer advisor: what you can pay (before delivery) while the
@@ -109,7 +110,9 @@ function trajectory(d) {
   if (snaps.length < 2) return;
   $('#traj-card').style.display = '';
   $('#traj-sub').textContent = `(${snaps.length} observations)`;
-  const W = 720, H = 190, P = 40, PR = 56;
+  const narrow = isNarrowScreen();
+  const W = narrow ? 380 : 720, H = narrow ? 210 : 190,
+        P = narrow ? 34 : 40, PR = narrow ? 42 : 56;
   const t0 = new Date(snaps[0][0]).getTime();
   const tEnd = d.listing.EndTime ? new Date(d.listing.EndTime).getTime()
                                  : new Date(snaps[snaps.length - 1][0]).getTime();

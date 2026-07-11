@@ -4,7 +4,8 @@
 function bandChart(bands) {
   const drawn = bands.filter(b => b.resolved > 0);
   if (!drawn.length) return '<div class="state">No resolved outcomes in any band yet.</div>';
-  const W = 640, H = 300, P = 40;
+  const narrow = isNarrowScreen();
+  const W = narrow ? 380 : 640, H = narrow ? 280 : 300, P = narrow ? 32 : 40;
   const bw = (W - P - 16) / bands.length;
   const y = pct => H - 40 - (pct / 100) * (H - 84);
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="win rate by discount band">
@@ -93,11 +94,11 @@ function verdictText(nm, main, target) {
 
     $('#recent-tbl tbody').innerHTML = d.rows.slice(0, 40).map(r => `
       <tr>
-        <td class="dimcell">${fmtDateTime(r.EndTime)}</td>
+        <td class="dimcell m-hide">${fmtDateTime(r.EndTime)}</td>
         <td><span class="chip">${esc(r.Category)}</span></td>
         <td><a href="/deal/${r.EbayID}" style="color:inherit">${esc(r.Model || '—')}</a></td>
         <td class="num">${r.DiscountPct}%</td>
-        <td class="num dimcell">${fmtGBP(r.AvgMarketPrice)}</td>
+        <td class="num dimcell m-hide">${fmtGBP(r.AvgMarketPrice)}</td>
         <td class="num">${r.FinalPrice != null && r.result !== 'pending' ? `<b>${fmtGBP(r.FinalPrice)}</b>` : '—'}</td>
         <td>${r.result === 'win' ? '<span class="verdict win">WIN</span>'
              : r.result === 'miss' ? '<span class="verdict miss">MISS</span>'

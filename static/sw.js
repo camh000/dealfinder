@@ -17,6 +17,13 @@ const ASSETS = [
   '/static/js/health.js',
   '/static/manifest.json',
   '/static/icons/icon-192.png',
+  // page shells: instant first paint when opened from a notification;
+  // data still loads network-first
+  '/deals/gpu',
+  '/bin',
+  '/outcomes',
+  '/prices',
+  '/settings',
 ];
 
 self.addEventListener('install', e => {
