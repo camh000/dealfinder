@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Sign in — PC/DEALS{% endblock %}
+{% block page %}login{% endblock %}
+
+{% block content %}
+<div class="card" style="max-width:380px;margin:8vh auto 0">
+  <h2>Sign in</h2>
+  <form id="login-form">
+    <div class="form-grid" style="flex-direction:column">
+      <div class="fg"><label>Username</label>
+        <input type="text" id="l-user" autocomplete="username" autofocus></div>
+      <div class="fg"><label>Password</label>
+        <input type="password" id="l-pass" autocomplete="current-password"></div>
+    </div>
+    <div class="check-row">
+      <button class="btn" type="submit">Sign in</button>
+      <span class="sub" id="l-status"></span>
+    </div>
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+$('#login-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  $('#l-status').textContent = '…';
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: $('#l-user').value, password: $('#l-pass').value }),
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      const next = new URLSearchParams(location.search).get('next');
+      location.href = (next && next.startsWith('/')) ? next : '/';
+    } else {
+      $('#l-status').textContent = data.message || 'error';
+    }
+  } catch { $('#l-status').textContent = 'network error'; }
+});
+</script>
+{% endblock %}

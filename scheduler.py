@@ -76,6 +76,14 @@ SURFACE_MIN_PREDICTED_DISCOUNT = float(os.environ.get('SURFACE_MIN_PREDICTED_DIS
 # Set equal to SURFACE_MIN_DISCOUNT to disable the cohort.
 SURFACE_NEARMISS_DISCOUNT = float(os.environ.get('SURFACE_NEARMISS_DISCOUNT', '12'))
 
+# BIN watcher: a separate fast lane sweeping newly-listed Buy-It-Now items.
+# Fixed prices can't be bid past their value, so a good BIN find is real the
+# moment it's seen — and gone in minutes, hence a cadence faster than the full
+# scrape. The discount bar is stricter than the auction feed's: every find
+# pings a phone immediately, so it has to be worth the interruption.
+BIN_SCAN_MINUTES = int(os.environ.get('BIN_SCAN_MINUTES', '30'))
+BIN_MIN_DISCOUNT = float(os.environ.get('BIN_MIN_DISCOUNT', '25'))
+
 # Targeted-scrape tiers: (threshold_minutes, interval_minutes)
 # When a tracked deal has <= threshold_minutes remaining, scrape it every interval_minutes.
 # Evaluated in ascending threshold order — first matching tier wins.
@@ -156,6 +164,7 @@ RAM_QUERY_LIST = [
 # ── Scheduler state ────────────────────────────────────────────────────────────
 
 _last_full_scrape: datetime | None = None
+_last_bin_scan: datetime | None = None
 
 # Maps str(ebay_id) → datetime of last targeted scrape for that item.
 _last_targeted: dict = {}
@@ -234,6 +243,68 @@ def notify_new_deals(deals: list) -> None:
                             r.get('Name'), row.get('ID'), e)
 
 
+def notify_bin_finds(finds: list) -> None:
+    """Push notifications for new Buy-It-Now bargains — immediately and
+    ungated: no bidding means no prediction, the listed price is final and
+    the first person to click buy wins."""
+    if not finds:
+        return
+    recipients = EbayScraper.GetNotifyRecipients()
+    if not recipients:
+        return
+    for row in finds:
+        category = (row.get('_category') or '').upper()
+        for r in recipients:
+            cats = [c.strip().upper() for c in (r.get('Categories') or '').split(',') if c.strip()]
+            if category not in cats:
+                continue
+            try:
+                label = row.get('_label') or 'find'
+                price = float(row.get('CurrentPrice'))
+                avg = float(row.get('AvgMarketPrice'))
+                disc = float(row.get('DiscountPct'))
+                qty = int(row.get('Quantity') or 1)
+                message = f"Market avg £{avg:.2f}" + (f" × {qty} units" if qty > 1 else '')
+                message += " · fixed price — first to buy wins"
+                requests.post(
+                    f"{r['HaUrl'].rstrip('/')}/api/services/notify/{r['NotifyService']}",
+                    headers={"Authorization": f"Bearer {r['HaToken']}"},
+                    json={
+                        "title": f"BIN: {label} £{price:.2f} ({disc:.0f}% off)",
+                        "message": message,
+                        "data": {"url": row.get('URL'), "tag": f"dealfinder-bin-{row.get('ID')}"},
+                    },
+                    timeout=10,
+                )
+            except Exception as e:
+                log.warning("BIN notification to %s failed for %s: %s",
+                            r.get('Name'), row.get('ID'), e)
+
+
+def run_bin_scan():
+    """Sweep newly-listed BIN items for all categories, then push new finds."""
+    global _last_bin_scan
+    _last_bin_scan = _utcnow()      # set first: a crashing scan must not hot-loop
+    log.info("Starting BIN scan...")
+    for query_list, product_type in [
+        (GPU_QUERY_LIST, 'GPU'),
+        (CPU_QUERY_LIST, 'CPU'),
+        (HDD_QUERY_LIST, 'HDD'),
+        (SSD_QUERY_LIST, 'SSD'),
+        (RAM_QUERY_LIST, 'RAM'),
+    ]:
+        try:
+            EbayScraper.ScrapeBinAndUpload(query_list, product_type=product_type,
+                                           country=SCRAPE_COUNTRY, condition=SCRAPE_CONDITION)
+        except Exception as e:
+            log.error("BIN scan %s failed: %s", product_type, e)
+    try:
+        notify_bin_finds(EbayScraper.SurfaceBinDeals(BIN_MIN_DISCOUNT))
+    except Exception as e:
+        log.error("BIN surfacing failed: %s", e)
+    log.info("BIN scan complete.")
+
+
 def kuma_heartbeat(ok: bool, msg: str) -> None:
     """Ping the Uptime Kuma push monitor. Only called for healthy runs."""
     if not KUMA_PUSH_URL or not ok:
@@ -289,6 +360,13 @@ def run_full_scrape():
         notify_new_deals(new_deals)
     except Exception as e:
         log.error("Deal surfacing failed: %s", e)
+
+    # User price alerts (created on model pages) — checked once per full
+    # scrape, when the data they watch has just been refreshed.
+    try:
+        EbayScraper.EvaluateAlerts()
+    except Exception as e:
+        log.error("Alert evaluation failed: %s", e)
 
     # Housekeeping: drop zombie active listings (ended >14d, never resolved,
     # not deal-tracked). Sold rows are never pruned — they're the price history.
@@ -518,6 +596,13 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("NotifyRecipients setup failed: %s", e)
 
+    # BIN watcher: EBAY.ListingType + the once-only notification table.
+    try:
+        EbayScraper.EnsureListingType()
+        EbayScraper.EnsureBinNotified()
+    except Exception as e:
+        log.error("BIN watcher setup failed: %s", e)
+
     # Run full scrape immediately on startup so data is fresh before the first interval.
     run_full_scrape()
 
@@ -531,6 +616,11 @@ if __name__ == "__main__":
         if _last_full_scrape is None or \
                 (now - _last_full_scrape) >= timedelta(minutes=FULL_SCRAPE_INTERVAL_MINUTES):
             run_full_scrape()
+
+        # BIN fast lane: sweep newly-listed fixed-price items between full runs.
+        if _last_bin_scan is None or \
+                (now - _last_bin_scan) >= timedelta(minutes=BIN_SCAN_MINUTES):
+            run_bin_scan()
 
         # Targeted scrapes: checked every loop tick.
         run_targeted_scrapes()

@@ -215,6 +215,7 @@ JOIN ModelStats ms ON {_join_cond(cfg, 'ms', a)}
 LEFT JOIN Scraper.DealOutcomes dout ON dout.EbayID = e.ID
 WHERE
     e.SoldDate IS NULL
+    AND COALESCE(e.ListingType, 'auction') = 'auction'
     AND {EFF_UNIT} < ms.AvgPrice * {threshold}
     AND {FEEDBACK_OK}
     AND {FRESH_OK}
@@ -223,6 +224,101 @@ WHERE
     AND e.EndTime < NOW() + {interval}
 ORDER BY DealScore DESC;
 """
+
+
+def build_bin_deals_query(product_type: str, min_discount: float = 25) -> str:
+    """Buy-It-Now bargains: live fixed-price listings priced under the sold
+    median RIGHT NOW. No bidding dynamics — the listed price IS the final
+    price — so there's no prediction gate, no bid damping and no urgency
+    weighting; the discount is real the moment it's seen. Sorted by discount.
+    The default threshold is stricter than the auction feed's 20%: a BIN find
+    pings a phone immediately, so it has to be worth interrupting someone."""
+    cfg = CATEGORIES[product_type]
+    a = cfg['alias']
+    threshold = _clamp_threshold(min_discount)
+    ctes = _stats_ctes(cfg, min_sold=5)
+    extra = ',\n    '.join(cfg['deal_select'])
+    return f"""{ctes}
+SELECT
+    e.ID,
+    {extra},
+    ROUND({EFF}, 2)                              AS CurrentPrice,
+    ROUND(e.Price / 100, 2)                      AS ItemPrice,
+    ROUND(COALESCE(e.Shipping, 0) / 100, 2)      AS Shipping,
+    {QTY}                                        AS Quantity,
+    ROUND({EFF_UNIT}, 2)                         AS PerUnitPrice,
+    ms.AvgPrice                                  AS AvgMarketPrice,
+    ms.MinMarketPrice,
+    ms.MaxMarketPrice,
+    ROUND(ms.AvgPrice * {QTY} - {EFF}, 2)        AS PotentialGain,
+    ROUND((1 - {EFF_UNIT} / ms.AvgPrice) * 100, 1) AS DiscountPct,
+    e.SellerFeedbackPct,
+    e.SellerFeedbackCount,
+    e.URL
+FROM Scraper.EBAY e
+JOIN Scraper.{cfg['table']} {a} ON {a}.ID = e.ID
+JOIN ModelStats ms ON {_join_cond(cfg, 'ms', a)}
+WHERE
+    e.SoldDate IS NULL
+    AND e.ListingType = 'bin'
+    AND {EFF_UNIT} < ms.AvgPrice * {threshold}
+    AND {FEEDBACK_OK}
+    AND {FRESH_OK}
+ORDER BY DiscountPct DESC;
+"""
+
+
+def group_median_query(product_type: str, params: dict) -> tuple[str, list]:
+    """(sql, binds) for one market group's current sold median.
+
+    Same basis as the market stats (recency window, single units only) but
+    scoped to a single group — feeds median_below price alerts, where the
+    question is "what is THIS group's median right now", not the full guide.
+    Returns one row (MedPrice, N) or none when the group has no recent sales.
+    """
+    cfg = CATEGORIES[product_type]
+    a = cfg['alias']
+    cond, values = model_where(product_type, params)
+    sql = f"""
+SELECT DISTINCT MEDIAN({EFF}) OVER () AS MedPrice, COUNT(*) OVER () AS N
+FROM Scraper.{cfg['table']} {a}
+JOIN Scraper.EBAY e ON e.ID = {a}.ID
+WHERE e.SoldDate IS NOT NULL AND e.Price IS NOT NULL
+  AND e.SoldDate > NOW() - INTERVAL {MARKET_STATS_DAYS} DAY
+  AND COALESCE(e.Quantity, 1) = 1
+  AND {cond}
+"""
+    return sql, values
+
+
+def group_live_below_query(product_type: str, params: dict, max_price: float) -> tuple[str, list]:
+    """(sql, binds) for live listings in one market group under a price cap.
+
+    Feeds listing_below price alerts: any fresh, live listing whose
+    delivery-inclusive PER-UNIT price is below the user's target. Same
+    trust gates as the deal feed (freshness, seller feedback, reserve) so an
+    alert never fires on a phantom or scam listing. Cheapest first, capped —
+    the alert names the best hit, it doesn't enumerate the market.
+    """
+    cfg = CATEGORIES[product_type]
+    a = cfg['alias']
+    cond, values = model_where(product_type, params)
+    sql = f"""
+SELECT e.ID, e.Title, ROUND({EFF_UNIT}, 2) AS PerUnitPrice, {QTY} AS Quantity,
+       ROUND({EFF}, 2) AS CurrentPrice, e.Bids, e.EndTime, e.URL,
+       COALESCE(e.ListingType, 'auction') AS ListingType
+FROM Scraper.{cfg['table']} {a}
+JOIN Scraper.EBAY e ON e.ID = {a}.ID
+WHERE e.SoldDate IS NULL
+  AND {FRESH_OK}
+  AND {FEEDBACK_OK}
+  AND COALESCE(e.ReserveNotMet, 0) = 0
+  AND {cond}
+  AND {EFF_UNIT} < %s
+ORDER BY PerUnitPrice ASC
+LIMIT 3
+"""
+    return sql, values + [max_price]
 
 
 def build_count_query(product_type: str, window_hours: int = 2, min_discount: float = 20) -> str:
@@ -239,7 +335,8 @@ FROM Scraper.EBAY e
 JOIN Scraper.{cfg['table']} {a} ON {a}.ID = e.ID
 JOIN RawStats rs ON {_join_cond(cfg, 'rs', a)}
 WHERE rs.SoldCount >= 5
-  AND e.SoldDate IS NULL AND {EFF_UNIT} < rs.MedPrice * {threshold}
+  AND e.SoldDate IS NULL AND COALESCE(e.ListingType, 'auction') = 'auction'
+  AND {EFF_UNIT} < rs.MedPrice * {threshold}
   AND {FEEDBACK_OK}
   AND {FRESH_OK}
   AND COALESCE(e.ReserveNotMet, 0) = 0

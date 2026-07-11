@@ -34,6 +34,18 @@
 - [ ] **Motherboard category** — group by chipset (B450/B550/Z690… regex-extractable) with a chipset→socket map (B550→AM4, Z690→LGA1700); null-safe DDR4-vs-DDR5 split for dual-gen chipsets; must skip mobo+CPU combos (mirror of the CPU-side combo filter); accept wide in-group spread — board tier (Prime vs ROG) doubles prices within one chipset, so medians are a valuation aid more than a deal signal. PSU deliberately NOT planned: brand tier dominates within wattage/rating groups and surfacing used PSUs as “deals” is anti-advice
 - [ ] **Monitor curl_cffi stability in Docker/Linux** — `chrome120` appears to be working across recent full scrape runs; keep an eye on whether it holds or regresses intermittently (Zyte still covers any failures)
 
+## Acting on deals
+
+- [x] **BIN watcher** — scheduler fast lane (`BIN_SCAN_MINUTES`, default 30) sweeps newly-listed Buy-It-Now items per category; finds ≥`BIN_MIN_DISCOUNT` (25%) below median push immediately (no prediction gate — fixed prices can't be bid up), deduped via `BinNotified`, enrichment-gated like auction deals
+- [x] **Model price alerts** — "Alert me" on model pages: fire when any live listing (6h cooldown) or the 120d median (24h) drops below a target; per-user, managed in Settings, evaluated after each full scrape (`EvaluateAlerts`)
+- [x] **Max-bid advisor** — deal pages show bid ceilings (before delivery) for staying 20% / 15% / 0% under market, greyed once the current price passes them
+- [x] **User accounts** — session login, admin/user roles, bootstrap mode (first account created becomes admin), per-user alerts; Settings gained account/users/alerts cards
+- [ ] **Watchlist + endgame alert** — "watch" button on deal pages; watched deals push at T−2min with current price, predicted final and max-bid suggestion, deep-linked to eBay (a sniping companion without eBay OAuth)
+- [ ] **Build-basket watching** — alert when a saved basket's achievable total (best live prices per component) drops under a budget
+- [ ] **Best-time-to-buy analytics** — from a year of sold history: day-of-week/hour-of-day price effects per category, shown on model pages; could eventually condition the premiums
+- [ ] **Per-recipient notification thresholds** — min-saving / min-discount per recipient so low-value deals don't ping everyone
+- [ ] **BIN fast lane** — the BIN watcher scans on an interval; a faster newly-listed lane (2–5 min) for chosen categories would catch the mispricings that sell within minutes
+
 ## Ranking & Scoring
 
 - [x] **Price distribution** — show min / max / spread alongside average so you can judge reliability; σ-filtered (±2 SD) to exclude outlier sales; applied to both PRICES tab and deal tables

@@ -53,6 +53,45 @@ function bigPosbar(d) {
     <div class="posbar-legend"><span>${fmtGBP0(s.min)}</span><span>median ${fmtGBP0(s.median)}</span><span>${fmtGBP0(s.max)}</span></div>`;
 }
 
+/* Max-bid advisor: what your top bid can be (before delivery) while the
+   delivery-inclusive per-unit price stays under market by a given margin. */
+function maxBidAdvisor(d) {
+  const l = d.listing, s = d.stats;
+  const live = !l.SoldDate && l.EndTime && new Date(l.EndTime) > Date.now();
+  if (!live || !s || s.median == null) return;
+  const qty = Number(l.Quantity) || 1;
+  const ship = Number(l.Shipping) || 0;
+  const cap = margin => s.median * qty * (1 - margin) - ship;
+  const rows = [
+    { margin: 0.20, note: 'the surfacing bar — a definite deal' },
+    { margin: 0.15, note: 'still a comfortable win' },
+    { margin: 0.00, note: 'break-even with the market — walk away above this' },
+  ].filter(r => cap(r.margin) > 0);
+  if (!rows.length) return;
+  const current = Number(l.ItemPrice) || 0;
+  $('#maxbid-card').style.display = '';
+  $('#maxbid-body').innerHTML = `
+    <div class="tbl-wrap" style="box-shadow:none;border:none">
+      <table class="tbl"><thead>
+        <tr><th>To stay under market by</th><th class="num">Bid up to</th><th>Meaning</th></tr>
+      </thead><tbody>
+        ${rows.map(r => {
+          const v = cap(r.margin);
+          const dead = current > v;
+          return `<tr${dead ? ' style="opacity:.45"' : ''}>
+            <td>${(r.margin * 100).toFixed(0)}%</td>
+            <td class="num"><b>${fmtGBP(v)}</b></td>
+            <td class="dimcell">${dead ? 'already past this — ' : ''}${r.note}</td>
+          </tr>`;
+        }).join('')}
+      </tbody></table>
+    </div>
+    <p class="help" style="margin:8px 0 0">
+      Based on the ${fmtGBP(s.median)} market median${qty > 1 ? ` × ${qty} units` : ''}${ship > 0 ? `, minus ${fmtGBP(ship)} delivery` : ''}.
+      Bids are what you enter on eBay (delivery excluded); margins compare the delivery-inclusive total against market.
+    </p>`;
+}
+
 function trajectory(d) {
   const snaps = d.snapshots || [];
   if (snaps.length < 2) return;
@@ -166,7 +205,7 @@ function outcome(d) {
     else
       $('#deal-sub').textContent = (data.category || '').toUpperCase();
     $('#ebay-link').href = safeUrl(data.listing.URL);
-    statStrip(data); bigPosbar(data); trajectory(data);
+    statStrip(data); bigPosbar(data); maxBidAdvisor(data); trajectory(data);
     facts(data); market(data); outcome(data);
   } catch (e) {
     $('#stats').innerHTML = `<div class="state">Couldn’t load this deal: ${esc(e.message)}</div>`;

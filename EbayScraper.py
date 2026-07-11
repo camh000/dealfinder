@@ -248,10 +248,15 @@ def __GetHTML(query, country, condition='', listing_type='all', alreadySold=True
     # alreadySold values:
     #   True        → sold listings only       (&LH_Complete=1&LH_Sold=1)
     #   'completed' → all completed listings   (&LH_Complete=1)   sold + ended-unsold
+    #   'new_first' → active, newest first     (&_sop=10)  BIN watcher: good
+    #                 fixed-price bargains go in minutes, so recency IS the filter
     #   False       → active listings          (&_sop=1)
     if alreadySold == 'completed':
         cache_suffix = 'completed'
         alreadySoldString = '&LH_Complete=1'
+    elif alreadySold == 'new_first':
+        cache_suffix = 'new_first'
+        alreadySoldString = '&_sop=10'
     elif alreadySold:
         cache_suffix = 'sold'
         alreadySoldString = '&LH_Complete=1&LH_Sold=1'
@@ -387,12 +392,20 @@ _LOT_QTY_PATTERNS = [
     re.compile(r'\b\d+(?:\.\d+)?\s*(?:tb|gb)\b[^,;(]{0,20}?(?<=[\s,\-])[x×]\s*(\d{1,2})(?!\.\d)\b', re.IGNORECASE),   # 4TB ... x5
     re.compile(r'\b(?:job\s*lot|joblot|lot|bundle)\b[^,;(]{0,15}?(?<=[\s,\-])[x×]\s*(\d{1,2})(?!\.\d)\b', re.IGNORECASE),  # job lot x6
     re.compile(r'\b(?:job\s*lot|joblot|lot|bundle)\b[^,;(]{0,15}?\b(\d{1,2})\s*[x×](?![A-Za-z0-9])', re.IGNORECASE),  # job lot 5x 2.5" drives
+    # Quantity-first titles: "20x Assorted 2TB ... JOB LOT". Anchored to the
+    # title START — a leading count is how sellers head a lot listing, and
+    # the anchor keeps model codes / "2x faster" marketing mid-title out.
+    re.compile(r'^\s*(\d{1,2})\s*[x×](?![A-Za-z0-9])', re.IGNORECASE),
+    # Trailing "x2 Units" / "x4 drives": the unit noun right after the count
+    # makes this unambiguous wherever it sits in the title.
+    re.compile(r'(?<=[\s,\-.])[x×]\s*(\d{1,2})\s*(?:units?|drives?|hdds?|ssds?|sticks?|pcs?|pieces?)\b', re.IGNORECASE),
 ]
 
 # Above this a "quantity" is more likely a misparse than a real lot; treat the
 # listing as a single so it prices itself out of the deal feed (false negative
-# beats a 50x phantom valuation).
-LOT_MAX_QTY = 30
+# beats a phantom N-fold valuation). 40-drive enterprise clearouts are real,
+# so the cap sits above them.
+LOT_MAX_QTY = 50
 
 _LOT_RISK_RE = re.compile(
     r'\buntested\b|\bspares?\b|\brepairs?\b|\bfaulty\b|\bnot\s+working\b|'
@@ -1229,16 +1242,19 @@ def _get_connection():
     cur.close()
     return conn
 
-def _upload(cur, p: Product, product_type: str) -> int:
+def _upload(cur, p: Product, product_type: str, listing_kind: str = 'auction') -> int:
     """Returns the EBAY rowcount: 1 = inserted, 2 = updated, 0 = no change."""
     # LastSeenAt = the last time a scrape actually saw this listing on eBay.
     # Seller-cancelled listings vanish from search but keep a future EndTime —
     # the deal queries use this stamp to drop them instead of showing phantom
     # deals until the original end time.
+    # ListingType is sticky towards 'bin': the BIN sweep is the only path
+    # that knows a row is fixed-price, and a later targeted/sold re-scrape
+    # (listing_type='all') must never demote it back to 'auction'.
     cur.execute("""
         INSERT INTO EBAY (ID, Title, Price, Shipping, Quantity, Bids, EndTime, SoldDate, URL,
-                          SellerFeedbackPct, SellerFeedbackCount, LastSeenAt)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                          SellerFeedbackPct, SellerFeedbackCount, ListingType, LastSeenAt)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         ON DUPLICATE KEY UPDATE
             Title = VALUES(Title),
             Price = VALUES(Price),
@@ -1250,10 +1266,11 @@ def _upload(cur, p: Product, product_type: str) -> int:
             URL = VALUES(URL),
             SellerFeedbackPct = VALUES(SellerFeedbackPct),
             SellerFeedbackCount = VALUES(SellerFeedbackCount),
+            ListingType = IF(VALUES(ListingType) = 'bin', 'bin', ListingType),
             LastSeenAt = NOW();
         """, (p.id, p.title, p.price * 100, int(round((p.shipping or 0) * 100)),
               p.quantity or 1, p.bid_count, p.time_end, p.sold_date, p.url,
-              p.feedback_pct, p.feedback_count)
+              p.feedback_pct, p.feedback_count, listing_kind)
     )
     ebay_rc = cur.rowcount
     if product_type == 'GPU':
@@ -1584,6 +1601,29 @@ def VerifyPendingOutcomes(hours_after: int = 6, give_up_days: int = 7) -> int:
         conn.close()
 
 
+def _product_from_dict(d: dict) -> Product:
+    """Parsed item dict → Product (the single dict/dataclass field mapping)."""
+    return Product(
+        id=d["id"], title=d["title"], price=d["price"],
+        shipping=d.get("shipping") or 0,
+        time_left=d["time-left"], time_end=d["time-end"],
+        sold_date=d["sold-date"], bid_count=d["bid-count"],
+        reviews_count=d["reviews-count"], url=d["url"],
+        brand=d["brand"], model=d["model"], vram=d["vram"],
+        socket=d["socket"], cores=d["cores"],
+        capacity_gb=d["capacity-gb"], interface=d["interface"],
+        form_factor=d["form-factor"], rpm=d["rpm"],
+        drive_type=d.get("drive-type"),
+        ram_type=d["ram-type"], speed=d["speed"],
+        ram_format=d.get("ram-format"),
+        quantity=d.get("quantity") or 1,
+        pcie_gen=d.get("pcie-gen"),
+        kit_config=d.get("kit-config"),
+        feedback_pct=d.get("feedback-pct"),
+        feedback_count=d.get("feedback-count"),
+    )
+
+
 def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', condition='all', listing_type='all', cache=False):
     conn = _get_connection()
     cur = conn.cursor()
@@ -1593,30 +1633,7 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
         for query in query_list:
             items = Scrape(query, product_type, country, condition, listing_type, cache=cache)
 
-            products = [
-                Product(
-                    id=d["id"], title=d["title"], price=d["price"],
-                    shipping=d.get("shipping") or 0,
-                    time_left=d["time-left"], time_end=d["time-end"],
-                    sold_date=d["sold-date"], bid_count=d["bid-count"],
-                    reviews_count=d["reviews-count"], url=d["url"],
-                    brand=d["brand"], model=d["model"], vram=d["vram"],
-                    socket=d["socket"], cores=d["cores"],
-                    capacity_gb=d["capacity-gb"], interface=d["interface"],
-                    form_factor=d["form-factor"], rpm=d["rpm"],
-                    drive_type=d.get("drive-type"),
-                    ram_type=d["ram-type"], speed=d["speed"],
-                    ram_format=d.get("ram-format"),
-                    quantity=d.get("quantity") or 1,
-                    pcie_gen=d.get("pcie-gen"),
-                    kit_config=d.get("kit-config"),
-                    feedback_pct=d.get("feedback-pct"),
-                    feedback_count=d.get("feedback-count"),
-                )
-                for d in items
-            ]
-
-            for p in products:
+            for p in map(_product_from_dict, items):
                 try:
                     rc = _upload(cur, p, product_type)
                     if rc == 1:
@@ -1630,6 +1647,45 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
         log.info("Scrape complete [%s]: %d new, %d updated", product_type, inserted, updated)
         return inserted, updated
 
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+def ScrapeBinAndUpload(query_list: list[str], product_type: str, country='us', condition='all'):
+    """Newly-listed Buy-It-Now sweep for one category.
+
+    One fetch per query: active fixed-price listings, newest first (_sop=10)
+    — a good BIN bargain is gone in minutes, so only the fresh end of the
+    results matters. Rows are upserted with ListingType='bin' so the deal
+    queries can treat them separately from auctions (no bids, no end time,
+    listed price IS the final price).
+
+    Deliberately does NOT record field coverage: the canary window belongs to
+    the hourly full scrape, and BIN cards legitimately lack end times/bids —
+    counting them would fake a parser collapse.
+    """
+    conn = _get_connection()
+    cur = conn.cursor()
+    try:
+        inserted = updated = 0
+        for query in query_list:
+            soup = __GetHTML(query, country, condition, 'bin', alreadySold='new_first')
+            items = __ParseItems(soup, query, product_type)
+            for p in map(_product_from_dict, items):
+                try:
+                    rc = _upload(cur, p, product_type, listing_kind='bin')
+                    if rc == 1:
+                        inserted += 1
+                    elif rc >= 2:
+                        updated += 1
+                except mariadb.Error as e:
+                    log.error("DB error uploading BIN item %s: %s", p.id, e)
+        conn.commit()
+        log.info("BIN scrape complete [%s]: %d new, %d updated", product_type, inserted, updated)
+        return inserted, updated
     except Exception as e:
         conn.rollback()
         raise e
@@ -2506,6 +2562,223 @@ def GetNotifyRecipients() -> list[dict]:
     except Exception as e:
         log.error("GetNotifyRecipients failed: %s", e)
         return []
+
+
+def EnsureListingType() -> None:
+    """EBAY.ListingType ('auction' | 'bin'). The BIN watcher needs fixed-price
+    rows scoreable separately: no bids, usually no end time, and the listed
+    price IS the final price. Every pre-existing row is an auction (the full
+    scrape runs with LH_Auction=1), so the default backfills correctly."""
+    DUP_COLUMN_ERRNO = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                ALTER TABLE Scraper.EBAY
+                ADD COLUMN ListingType VARCHAR(8) NOT NULL DEFAULT 'auction'
+            """)
+            conn.commit()
+            log.info("EBAY: added ListingType column")
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                raise
+    except mariadb.Error as e:
+        log.error("EnsureListingType failed: %s", e)
+    finally:
+        conn.close()
+
+
+def EnsureBinNotified() -> None:
+    """Dedupe table for the BIN watcher: one row per fixed-price find ever
+    pushed. BIN deals have no outcome to track (no bidding — the discount is
+    real at first sight), so this replaces DealOutcomes as the once-only gate."""
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.BinNotified (
+                EbayID     BIGINT   NOT NULL PRIMARY KEY,
+                NotifiedAt DATETIME NOT NULL
+            )
+        """)
+        conn.commit()
+    except mariadb.Error as e:
+        log.error("EnsureBinNotified failed: %s", e)
+    finally:
+        conn.close()
+
+
+def SurfaceBinDeals(min_discount: float = 25) -> list[dict]:
+    """Detect fresh Buy-It-Now bargains; return only the never-notified ones.
+
+    No prediction gate and no outcome tracking — a fixed price can't be bid
+    past its value, so the discount on screen is the discount you get.
+    Dedupe is INSERT IGNORE into BinNotified. New finds pass the same
+    item-page enrichment gate as auction deals (wrong-category and for-parts
+    listings are delisted, reserve is irrelevant for BIN) so a £30 'RTX 4090'
+    backplate never pings a phone.
+    """
+    finds = []
+    conn = _get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        ins = conn.cursor()
+        for product_type in queries.CATEGORIES:
+            try:
+                cur.execute(queries.build_bin_deals_query(product_type, min_discount))
+                rows = cur.fetchall()
+            except mariadb.Error as e:
+                log.error("SurfaceBinDeals: %s query failed: %s", product_type, e)
+                continue
+            for row in rows:
+                ins.execute("""
+                    INSERT IGNORE INTO Scraper.BinNotified (EbayID, NotifiedAt)
+                    VALUES (%s, NOW())
+                """, (row['ID'],))
+                if ins.rowcount != 1:
+                    continue
+                suppress = _enrich_and_gate(ins, row['ID'], product_type)
+                if suppress:
+                    log.info("BIN find %s suppressed by enrichment: %s", row['ID'], suppress)
+                    continue
+                row['_label'] = queries.model_label_for_row(product_type, row)
+                row['_category'] = product_type.upper()
+                finds.append(row)
+        conn.commit()
+        if finds:
+            log.info("SurfaceBinDeals: %d new BIN find(s)", len(finds))
+        return finds
+    except Exception as e:
+        log.error("SurfaceBinDeals error: %s", e)
+        conn.rollback()
+        return []
+    finally:
+        conn.close()
+
+
+# Alert cooldowns: a listing sitting under the target must not ping every
+# scrape cycle, and medians move slowly — repeat pushes are noise, not news.
+_ALERT_COOLDOWN_HOURS = {'listing_below': 6, 'median_below': 24}
+
+
+def _ha_push(recipient: dict, title: str, message: str, url: str | None = None,
+             tag: str | None = None) -> bool:
+    """One Home Assistant notification to one NotifyRecipients row."""
+    try:
+        data = {}
+        if url:
+            data['url'] = url
+        if tag:
+            data['tag'] = tag
+        requests.post(
+            f"{recipient['HaUrl'].rstrip('/')}/api/services/notify/{recipient['NotifyService']}",
+            headers={"Authorization": f"Bearer {recipient['HaToken']}"},
+            json={"title": title, "message": message, "data": data},
+            timeout=10,
+        )
+        return True
+    except Exception as e:
+        log.warning("HA push to %s failed: %s", recipient.get('Name'), e)
+        return False
+
+
+def EvaluateAlerts() -> int:
+    """Check user price alerts (created on model pages) against current data.
+
+    listing_below — any live, fresh listing in the alert's market group whose
+    delivery-inclusive per-unit price is under the target (deal-feed trust
+    gates apply). median_below — the group's 120-day sold median itself has
+    dropped under the target.
+
+    Each alert pushes to its chosen recipient, or to every enabled recipient
+    when none was picked, then stamps LastFiredAt for the cooldown. Returns
+    the number of alerts fired. Tolerates the PriceAlerts table not existing
+    yet — the web container creates it on its first boot.
+    """
+    conn = _get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute("""
+                SELECT ID, Category, GroupParams, Label, Kind, TargetPrice,
+                       RecipientID, LastFiredAt
+                FROM Scraper.PriceAlerts WHERE Enabled = 1
+            """)
+            alerts = cur.fetchall()
+        except mariadb.Error:
+            return 0
+        if not alerts:
+            return 0
+        recipients = GetNotifyRecipients()
+        if not recipients:
+            return 0
+        import json
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        fired = 0
+        upd = conn.cursor()
+        for a in alerts:
+            cooldown = _ALERT_COOLDOWN_HOURS.get(a['Kind'], 6)
+            if a['LastFiredAt'] and (now - a['LastFiredAt']) < timedelta(hours=cooldown):
+                continue
+            cat = (a['Category'] or '').lower()
+            if cat not in queries.CATEGORIES:
+                continue
+            try:
+                group = json.loads(a['GroupParams'] or '{}')
+            except ValueError:
+                continue
+            target_pounds = float(a['TargetPrice']) / 100
+            label = a['Label'] or cat.upper()
+            title = message = url = None
+            try:
+                if a['Kind'] == 'median_below':
+                    sql, binds = queries.group_median_query(cat, group)
+                    cur.execute(sql, binds)
+                    row = cur.fetchone()
+                    if row and row['MedPrice'] is not None and float(row['MedPrice']) < target_pounds:
+                        title = f"Price alert: {label}"
+                        message = (f"120-day median now £{float(row['MedPrice']):.2f} "
+                                   f"(target £{target_pounds:.2f}, {row['N']} sales)")
+                else:  # listing_below
+                    sql, binds = queries.group_live_below_query(cat, group, target_pounds)
+                    cur.execute(sql, binds)
+                    hits = cur.fetchall()
+                    if hits:
+                        h = hits[0]
+                        qty = int(h['Quantity'] or 1)
+                        per_unit = f"£{float(h['PerUnitPrice']):.2f}"
+                        if qty > 1:
+                            per_unit += f"/unit (×{qty})"
+                        kind_txt = ('Buy It Now' if h['ListingType'] == 'bin'
+                                    else f"auction, {h['Bids'] or 0} bid(s)")
+                        title = f"Price alert: {label} under £{target_pounds:.2f}"
+                        message = f"{h['Title'][:90]} — {per_unit}, {kind_txt}"
+                        if len(hits) > 1:
+                            message += f" (+{len(hits) - 1} more)"
+                        url = h['URL']
+            except mariadb.Error as e:
+                log.error("EvaluateAlerts: alert %s query failed: %s", a['ID'], e)
+                continue
+            if not title:
+                continue
+            targets = [r for r in recipients
+                       if not a['RecipientID'] or r['ID'] == a['RecipientID']]
+            sent = any([_ha_push(r, title, message, url=url,
+                                 tag=f"dealfinder-alert-{a['ID']}") for r in targets])
+            if sent:
+                upd.execute("UPDATE Scraper.PriceAlerts SET LastFiredAt = NOW() WHERE ID = %s",
+                            (a['ID'],))
+                conn.commit()
+                fired += 1
+        if fired:
+            log.info("EvaluateAlerts: %d alert(s) fired", fired)
+        return fired
+    except Exception as e:
+        log.error("EvaluateAlerts error: %s", e)
+        return 0
+    finally:
+        conn.close()
 
 
 def PruneStaleListings(days: int = 14) -> int:

@@ -82,6 +82,20 @@ async function refreshChrome() {
 refreshChrome();
 setInterval(refreshChrome, 5 * 60 * 1000);
 
+/* ── account chip: shows who's signed in, links to settings ── */
+(async () => {
+  const chip = $('#acct-chip');
+  if (!chip || document.body.dataset.page === 'login') return;
+  try {
+    const data = await fetch('/api/me').then(r => r.json());
+    if (data.user) {
+      chip.textContent = data.user.name;
+      chip.title = data.user.admin ? 'signed in (admin) — account settings' : 'signed in — account settings';
+      chip.style.display = '';
+    }
+  } catch { /* signed out or offline — chip stays hidden */ }
+})();
+
 /* ── countdown engine: any element with data-ends-ms ticks 1/s ── */
 function fmtCountdown(sec) {
   if (sec >= 86400) return Math.floor(sec / 86400) + 'd ' + Math.floor((sec % 86400) / 3600) + 'h';

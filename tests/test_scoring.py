@@ -143,6 +143,50 @@ class TestQueryBuilders:
             assert queries.FRESH_OK in sql
         assert "LastSeenAt" not in queries.build_price_guide_query(ptype)
 
+    @pytest.mark.parametrize("ptype", ALL_TYPES)
+    def test_bin_query_renders(self, ptype):
+        """The BIN watcher query: fixed-price rows only, no auction machinery
+        (no end-time window, no bid-damped score), same trust + stats basis."""
+        sql = queries.build_bin_deals_query(ptype, min_discount=25)
+        assert "{" not in sql and "}" not in sql
+        assert "e.ListingType = 'bin'" in sql
+        assert "MEDIAN(Eff) OVER" in sql
+        assert "rs.SoldCount >= 5" in sql
+        assert queries.FEEDBACK_OK in sql
+        assert queries.FRESH_OK in sql
+        assert "EndTime" not in sql
+        assert "DealScore" not in sql
+        assert "ORDER BY DiscountPct DESC" in sql
+
+    @pytest.mark.parametrize("ptype", ALL_TYPES)
+    def test_auction_feed_excludes_bin_rows(self, ptype):
+        """Once BIN rows share the EBAY table, the auction feed and its badge
+        count must filter them out (pre-migration rows COALESCE to auction)."""
+        for sql in (queries.build_deals_query(ptype),
+                    queries.build_count_query(ptype)):
+            assert "COALESCE(e.ListingType, 'auction') = 'auction'" in sql
+
+    @pytest.mark.parametrize("ptype", ALL_TYPES)
+    def test_alert_query_binds_match_placeholders(self, ptype):
+        """Every %s in the alert queries must have a bind value (group columns
+        vary per category, so the counts are easy to skew when editing)."""
+        group = {c: 'x' for c, _ in queries.CATEGORIES[ptype]['group_cols']}
+        sql, binds = queries.group_median_query(ptype, group)
+        assert sql.count("%s") == len(binds)
+        assert "MEDIAN(" in sql
+        sql, binds = queries.group_live_below_query(ptype, group, 50.0)
+        assert sql.count("%s") == len(binds)
+        assert binds[-1] == 50.0
+        assert "LIMIT 3" in sql
+        # alerts respect the same trust gates as the deal feed
+        assert queries.FRESH_OK in sql and queries.FEEDBACK_OK in sql
+
+    def test_alert_query_null_group_values(self):
+        """Absent/empty group params must select the NULL group, not bind ''."""
+        sql, binds = queries.group_median_query("ram", {"Type": "DDR4", "CapacityGB": "16"})
+        assert "IS NULL" in sql          # FormFactor + KitConfig unset
+        assert binds == ["DDR4", "16"]
+
     def test_deals_query_exposes_lot_columns(self):
         sql = queries.build_deals_query("hdd")
         assert "AS Quantity" in sql
@@ -216,6 +260,15 @@ class TestLotQuantity:
         # lot-keyword + "Nx" with no capacity unit after the x
         ("Job Lot / Bundle of 5x 2.5\" SATA Laptop Hard Drives", 5),
         ("Mixed Job Lot 6x 2.5\" Laptop Hard Drives SATA/PATA 1TB", 6),
+        # quantity-first titles (leading count, capacity later or never)
+        ("20x Assorted 2TB 3.5\" SAS HDD JOB LOT", 20),
+        ("40x Assorted 1.2TB 2.5\" SAS HDD JOB LOT", 40),
+        ("2x Dell Enterprise SAS Hard Drives", 2),
+        # trailing "xN <unit-noun>"
+        ("Dell Constellation ES.2, 3TB 3.5\" SAS HDD. 7.2K RPM. x2 Units", 2),
+        ("Samsung 500GB 2.5\" SATA x3 drives", 3),
+        # mid-title "Nx" marketing speak must NOT read as a lot
+        ("WD Black 4TB drive 2x faster than previous gen", 1),
         # implausible quantity → treated as a single (prices itself out)
         ("99 x 4TB drives", 1),
     ])

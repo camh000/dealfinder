@@ -5,8 +5,22 @@
 {% block content %}
 <div class="page-head"><h1>Settings</h1></div>
 
+<div class="card" id="bootstrap-card" style="display:none">
+  <h2>Create the admin account</h2>
+  <p class="help">No accounts exist yet, so the app is open to anyone on the network.
+    Create the first account to become admin and lock it down.</p>
+  <div class="form-grid">
+    <div class="fg"><label>Username</label><input type="text" id="boot-user"></div>
+    <div class="fg"><label>Password (min 8 chars)</label><input type="password" id="boot-pass"></div>
+  </div>
+  <div class="check-row">
+    <button class="btn" id="boot-create">Create admin account</button>
+    <span class="sub" id="boot-status"></span>
+  </div>
+</div>
+
 <div class="card">
-  <h2>Appearance</h2>
+  <h2>Appearance <span class="sub" style="font-weight:400">(per browser)</span></h2>
   <div class="radio-row" style="margin-bottom:10px">
     <span class="sub" style="min-width:70px">Theme</span>
     <label><input type="radio" name="theme" value="dark"> Dark</label>
@@ -20,12 +34,46 @@
   </div>
 </div>
 
-<div class="card">
+<div class="card" id="account-card" style="display:none">
+  <h2>Your account <span class="sub" style="font-weight:400" id="acct-who"></span></h2>
+  <div class="form-grid">
+    <div class="fg"><label>New password (min 8 chars)</label><input type="password" id="pw-new"></div>
+  </div>
+  <div class="check-row">
+    <button class="btn-ghost" id="pw-save">Change password</button>
+    <button class="btn-ghost" id="logout-btn">Sign out</button>
+    <span class="sub" id="pw-status"></span>
+  </div>
+</div>
+
+<div class="card" id="alerts-card" style="display:none">
+  <h2>Your price alerts</h2>
+  <p class="help">Created from any model page ("Alert me"). Checked after every scrape;
+    each alert fires at most once per cooldown, to the Home Assistant recipient you picked.</p>
+  <div id="alerts-list"><div class="state" style="padding:10px">loading…</div></div>
+</div>
+
+<div class="card" id="users-card" style="display:none">
+  <h2>Users <span class="sub" style="font-weight:400">(admin)</span></h2>
+  <div id="users-list"></div>
+  <div class="form-grid" style="margin-top:10px">
+    <div class="fg"><label>Username</label><input type="text" id="nu-name"></div>
+    <div class="fg"><label>Password (min 8 chars)</label><input type="password" id="nu-pass"></div>
+  </div>
+  <div class="check-row">
+    <label><input type="checkbox" id="nu-admin"> Admin</label>
+    <button class="btn" id="nu-create">Add user</button>
+    <span class="sub" id="nu-status"></span>
+  </div>
+</div>
+
+<div class="card" id="notify-card">
   <h2>Deal notifications</h2>
   <p class="help">
     Push notifications go to each enabled recipient's Home Assistant, filtered to the
-    categories they've ticked. Sent once per deal, when it's first spotted — and only
-    when the outcome-calibrated prediction says the discount will survive the bidding.
+    categories they've ticked. Auction deals are sent once per deal when first spotted —
+    and only when the prediction says the discount survives the bidding. BIN finds are
+    sent the moment they're seen.
   </p>
   <div id="recipients"><div class="state"><span class="loader"></span>loading…</div></div>
   <button class="btn" id="add-recipient" style="margin-top:4px">Add recipient</button>

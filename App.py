@@ -1,4 +1,4 @@
-from flask import Flask, abort, jsonify, redirect, render_template, request, make_response
+from flask import Flask, abort, jsonify, redirect, render_template, request, make_response, session
 from flask.json.provider import DefaultJSONProvider
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -8,7 +8,9 @@ import json
 import mariadb
 import os
 import logging
+import secrets
 import statistics
+from werkzeug.security import check_password_hash, generate_password_hash
 from dotenv import load_dotenv
 
 import queries
@@ -296,6 +298,29 @@ def ensure_reserve_column():
 ensure_reserve_column()
 
 
+def ensure_listing_type_column():
+    """EBAY.ListingType — the deal queries filter auctions vs BIN on it.
+    The scraper container owns the real migration; this guards deploy order."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE Scraper.EBAY ADD COLUMN ListingType VARCHAR(8) NOT NULL DEFAULT 'auction'")
+            conn.commit()
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("EBAY: unexpected error adding ListingType: %s", e)
+    except Exception:
+        pass
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_listing_type_column()
+
+
 def ensure_seller_feedback_columns():
     """EBAY.SellerFeedbackPct/-Count — the deal queries reference them, so the
     web container must guarantee they exist even if it starts first."""
@@ -452,6 +477,375 @@ def ensure_ssd_table():
 
 
 ensure_ssd_table()
+
+
+# ── user accounts ──────────────────────────────────────────────────────────────
+# Session-cookie login. Bootstrap mode: while no users exist, everything is
+# open and Settings offers "create the admin account"; the first user created
+# becomes the admin. Passwords are werkzeug-hashed; the session secret is
+# generated once and persisted in AppConfig so logins survive restarts.
+
+def ensure_auth_tables():
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.AppConfig (
+                K VARCHAR(40) PRIMARY KEY,
+                V TEXT
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.Users (
+                ID           INT AUTO_INCREMENT PRIMARY KEY,
+                Username     VARCHAR(40) NOT NULL UNIQUE,
+                PasswordHash VARCHAR(255) NOT NULL,
+                IsAdmin      TINYINT(1) NOT NULL DEFAULT 0,
+                CreatedAt    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.PriceAlerts (
+                ID          INT AUTO_INCREMENT PRIMARY KEY,
+                UserID      INT NOT NULL,
+                Category    VARCHAR(10) NOT NULL,
+                GroupParams TEXT NOT NULL,
+                Label       VARCHAR(150),
+                Kind        VARCHAR(20) NOT NULL DEFAULT 'listing_below',
+                TargetPrice INT NOT NULL,
+                RecipientID INT NULL,
+                Enabled     TINYINT(1) NOT NULL DEFAULT 1,
+                CreatedAt   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                LastFiredAt DATETIME NULL
+            )
+        """)
+        conn.commit()
+    except Exception as e:
+        log.error("Could not ensure auth tables: %s", e)
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_auth_tables()
+
+
+def _app_secret() -> str:
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT V FROM Scraper.AppConfig WHERE K = 'secret_key'")
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        secret = secrets.token_hex(32)
+        cur.execute("INSERT INTO Scraper.AppConfig (K, V) VALUES ('secret_key', %s)", (secret,))
+        conn.commit()
+        return secret
+    except Exception:
+        # No DB (tests/dev) — sessions just will not survive restarts.
+        return secrets.token_hex(32)
+    finally:
+        if conn:
+            conn.close()
+
+
+app.secret_key = _app_secret()
+
+_users_exist_cache = {"at": 0.0, "val": False}
+
+
+def _users_exist() -> bool:
+    import time as _time
+    if _time.time() - _users_exist_cache["at"] < 30:
+        return _users_exist_cache["val"]
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM Scraper.Users")
+        val = cur.fetchone()[0] > 0
+    except Exception:
+        val = False
+    finally:
+        if conn:
+            conn.close()
+    _users_exist_cache.update(at=_time.time(), val=val)
+    return val
+
+
+_AUTH_EXEMPT = ('/login', '/sw.js', '/api/login')
+
+
+@app.before_request
+def _session_gate():
+    if request.path.startswith('/static') or request.path in _AUTH_EXEMPT:
+        return None
+    if not _users_exist():          # bootstrap mode — open until an admin exists
+        return None
+    if session.get('uid'):
+        return None
+    if request.path.startswith('/api/'):
+        return jsonify({"status": "error", "message": "login required"}), 401
+    return redirect('/login?next=' + request.path)
+
+
+def _current_user():
+    return {"id": session.get('uid'), "name": session.get('uname'),
+            "admin": bool(session.get('admin'))} if session.get('uid') else None
+
+
+def _require_admin():
+    if not _users_exist():
+        return None                  # bootstrap: first user setup is open
+    u = _current_user()
+    if not u or not u["admin"]:
+        return jsonify({"status": "error", "message": "admin only"}), 403
+    return None
+
+
+@app.route('/login', methods=['GET'])
+def login_page():
+    if not _users_exist() or session.get('uid'):
+        return redirect('/')
+    return render_template('login.html')
+
+
+@app.route('/api/login', methods=['POST'])
+def api_login():
+    body = request.get_json(silent=True) or {}
+    name = (body.get('username') or '').strip()[:40]
+    pw = body.get('password') or ''
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT ID, Username, PasswordHash, IsAdmin FROM Scraper.Users WHERE Username = %s", (name,))
+        row = cur.fetchone()
+        if not row or not check_password_hash(row['PasswordHash'], pw):
+            return jsonify({"status": "error", "message": "wrong username or password"}), 401
+        session.permanent = True
+        session['uid'] = row['ID']
+        session['uname'] = row['Username']
+        session['admin'] = bool(row['IsAdmin'])
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        log.error("login error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/logout', methods=['POST'])
+def api_logout():
+    session.clear()
+    return jsonify({"status": "ok"})
+
+
+@app.route('/api/me')
+def api_me():
+    return jsonify({"status": "ok", "user": _current_user(),
+                    "bootstrap": not _users_exist()})
+
+
+@app.route('/api/users', methods=['GET'])
+def users_list():
+    err = _require_admin()
+    if err:
+        return err
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT ID, Username, IsAdmin, CreatedAt FROM Scraper.Users ORDER BY ID")
+        rows = cur.fetchall()
+        for r in rows:
+            r['IsAdmin'] = bool(r['IsAdmin'])
+            r['CreatedAt'] = _iso_utc(r['CreatedAt'])
+        return jsonify({"status": "ok", "users": rows})
+    except Exception as e:
+        log.error("users_list error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/users', methods=['POST'])
+def users_create():
+    err = _require_admin()
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    name = (body.get('username') or '').strip()[:40]
+    pw = body.get('password') or ''
+    if not name or len(pw) < 8:
+        return jsonify({"status": "error", "message": "username required; password min 8 chars"}), 400
+    bootstrap = not _users_exist()
+    is_admin = 1 if (bootstrap or body.get('is_admin')) else 0   # first user is always admin
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO Scraper.Users (Username, PasswordHash, IsAdmin) VALUES (%s, %s, %s)",
+                    (name, generate_password_hash(pw), is_admin))
+        conn.commit()
+        _users_exist_cache["at"] = 0
+        if bootstrap:               # log the founder straight in
+            session.permanent = True
+            session['uid'] = cur.lastrowid
+            session['uname'] = name
+            session['admin'] = True
+        return jsonify({"status": "ok"})
+    except mariadb.IntegrityError:
+        return jsonify({"status": "error", "message": "username taken"}), 400
+    except Exception as e:
+        log.error("users_create error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/users/<int:uid>', methods=['DELETE'])
+def users_delete(uid):
+    err = _require_admin()
+    if err:
+        return err
+    if uid == session.get('uid'):
+        return jsonify({"status": "error", "message": "you cannot delete yourself"}), 400
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM Scraper.PriceAlerts WHERE UserID = %s", (uid,))
+        cur.execute("DELETE FROM Scraper.Users WHERE ID = %s", (uid,))
+        conn.commit()
+        _users_exist_cache["at"] = 0
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        log.error("users_delete error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/password', methods=['POST'])
+def password_change():
+    u = _current_user()
+    if not u:
+        return jsonify({"status": "error", "message": "login required"}), 401
+    body = request.get_json(silent=True) or {}
+    pw = body.get('password') or ''
+    if len(pw) < 8:
+        return jsonify({"status": "error", "message": "password min 8 chars"}), 400
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE Scraper.Users SET PasswordHash = %s WHERE ID = %s",
+                    (generate_password_hash(pw), u["id"]))
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        log.error("password_change error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/alerts', methods=['GET'])
+def alerts_list():
+    u = _current_user()
+    if not u and _users_exist():
+        return jsonify({"status": "error", "message": "login required"}), 401
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT a.ID, a.Category, a.GroupParams, a.Label, a.Kind,
+                   ROUND(a.TargetPrice / 100, 2) AS TargetPrice, a.Enabled,
+                   a.LastFiredAt, a.RecipientID, r.Name AS RecipientName
+            FROM Scraper.PriceAlerts a
+            LEFT JOIN Scraper.NotifyRecipients r ON r.ID = a.RecipientID
+            WHERE a.UserID = %s ORDER BY a.ID DESC
+        """, (u["id"] if u else 0,))
+        rows = cur.fetchall()
+        for r in rows:
+            r['Enabled'] = bool(r['Enabled'])
+            r['GroupParams'] = json.loads(r['GroupParams'] or '{}')
+            r['LastFiredAt'] = _iso_utc(r['LastFiredAt'])
+        return jsonify({"status": "ok", "alerts": rows})
+    except Exception as e:
+        log.error("alerts_list error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/alerts', methods=['POST'])
+def alerts_create():
+    u = _current_user()
+    if not u and _users_exist():
+        return jsonify({"status": "error", "message": "login required"}), 401
+    body = request.get_json(silent=True) or {}
+    cat = (body.get('category') or '').lower()
+    if cat not in queries.CATEGORIES:
+        return jsonify({"status": "error", "message": "unknown category"}), 400
+    group = body.get('group') or {}
+    kind = body.get('kind') if body.get('kind') in ('listing_below', 'median_below') else 'listing_below'
+    try:
+        target = int(round(float(body.get('target_price')) * 100))
+        if target <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "message": "target_price must be a positive number"}), 400
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO Scraper.PriceAlerts (UserID, Category, GroupParams, Label, Kind, TargetPrice, RecipientID)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (u["id"] if u else 0, cat, json.dumps(group),
+              (body.get('label') or '')[:150], kind, target,
+              body.get('recipient_id') or None))
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        log.error("alerts_create error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/alerts/<int:aid>', methods=['DELETE'])
+def alerts_delete(aid):
+    u = _current_user()
+    if not u and _users_exist():
+        return jsonify({"status": "error", "message": "login required"}), 401
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM Scraper.PriceAlerts WHERE ID = %s AND UserID = %s",
+                    (aid, u["id"] if u else 0))
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        log.error("alerts_delete error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 def _compute_sw_version() -> str:
