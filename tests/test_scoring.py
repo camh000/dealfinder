@@ -283,6 +283,12 @@ class TestLotQuantity:
         ("Integral 1TB M.2 2242 NVMe PCIe Gen3 X4 SSD", 1),
         ("WD Black SN770 1TB NVMe PCIe Gen4 x4 M.2 SSD", 1),
         ("Samsung 970 EVO 500GB PCIe 3.0 x4 NVMe M.2 SSD", 1),
+        # Seagate Exos family names (X16/X18/X20...) are models, not counts
+        ("Seagate 18TB Exos X18 3.5\" SATA Enterprise Hard Drive", 1),
+        ("Seagate Exos X18 18TB SATA 6Gb/s 3.5\"", 1),
+        ("Seagate EXOS X16 16TB 7200RPM", 1),
+        # ...but a genuine lot OF Exos drives still counts
+        ("2 x Seagate Exos X16 16TB SATA", 2),
         # implausible quantity → treated as a single (prices itself out)
         ("99 x 4TB drives", 1),
     ])
@@ -351,6 +357,42 @@ class TestBinFindFilters:
         assert EbayScraper.bin_find_passes_filters("RTX 3070 8GB", "GPU", f)
         assert EbayScraper.bin_find_passes_filters("ARC A770 16GB", "GPU", f)
         assert not EbayScraper.bin_find_passes_filters("GTX 1080", "GPU", f)
+
+
+class TestVariationListings:
+    """eBay 'choose a capacity' BIN listings show the CHEAPEST variant's
+    price against a title naming several capacities — a £4.98 '8TB' phantom
+    (Cam-spotted on the first live /bin feed)."""
+
+    @pytest.mark.parametrize("title,n", [
+        ("Seagate Hard Drive 500GB 1TB 2TB 4TB 8TB SATA", 5),
+        ("WD Blue 1TB (1000GB) 3.5\" SATA", 1),            # same value twice
+        ("Seagate BarraCuda 8TB 3.5\" SATA", 1),
+        ("Samsung 870 EVO 250GB 500GB 1TB 2TB 4TB SSD", 5),
+        ("No capacity here at all", 0),
+    ])
+    def test_title_capacity_values(self, title, n):
+        assert len(EbayScraper.title_capacity_values(title)) == n
+
+    def test_price_range_flagged_at_parse(self):
+        """A '£X to £Y' price card must carry price-range=True."""
+        from bs4 import BeautifulSoup
+        html = """
+        <div class="su-card-container su-card-container--horizontal">
+          <a href="https://www.ebay.co.uk/itm/111222333444">x</a>
+          <a class="su-link su-item-card__title"><span>Seagate Hard Drive 500GB 1TB 2TB 4TB SATA</span></a>
+          <span class="su-item-card__price">£3.84 to £59.99</span>
+        </div>
+        <div class="su-card-container su-card-container--horizontal">
+          <a href="https://www.ebay.co.uk/itm/111222333445">x</a>
+          <a class="su-link su-item-card__title"><span>Seagate BarraCuda 4TB SATA Hard Drive</span></a>
+          <span class="su-item-card__price">£59.99</span>
+        </div>"""
+        parse_items = vars(EbayScraper)["__ParseItems"]
+        items = parse_items(BeautifulSoup(html, 'html.parser'), "test", "HDD")
+        flags = {str(i['id']): i['price-range'] for i in items}
+        assert flags.get('111222333444') is True
+        assert flags.get('111222333445') is False
 
 
 class TestStorageCrossClassification:

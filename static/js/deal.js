@@ -28,7 +28,10 @@ function statStrip(d) {
   if (live)
     cells.push(`<div class="stat"><b class="countdown num" ${endsAttr(l.EndTime)}></b>
         <span>remaining${l.EndTimeExact ? ' (exact)' : ''}</span></div>`);
-  cells.push(`<div class="stat"><b class="num">${l.Bids || 0}</b><span>bids</span></div>`);
+  if (l.ListingType === 'bin')
+    cells.push(`<div class="stat"><b class="num">BIN</b><span>fixed price — no bidding</span></div>`);
+  else
+    cells.push(`<div class="stat"><b class="num">${l.Bids || 0}</b><span>bids</span></div>`);
   if (l.SellerFeedbackPct != null && l.SellerFeedbackCount >= 3)
     cells.push(`<div class="stat"><b class="num">${l.SellerFeedbackPct}%</b>
         <span>seller (${l.SellerFeedbackCount})</span></div>`);
@@ -53,11 +56,14 @@ function bigPosbar(d) {
     <div class="posbar-legend"><span>${fmtGBP0(s.min)}</span><span>median ${fmtGBP0(s.median)}</span><span>${fmtGBP0(s.max)}</span></div>`;
 }
 
-/* Max-bid advisor: what your top bid can be (before delivery) while the
-   delivery-inclusive per-unit price stays under market by a given margin. */
+/* Max-bid / offer advisor: what you can pay (before delivery) while the
+   delivery-inclusive per-unit price stays under market by a given margin.
+   Auctions: "bid up to". Buy-It-Now: "offer" — same arithmetic, and if the
+   asking price already clears a margin there's nothing to haggle for. */
 function maxBidAdvisor(d) {
   const l = d.listing, s = d.stats;
-  const live = !l.SoldDate && l.EndTime && new Date(l.EndTime) > Date.now();
+  const isBin = l.ListingType === 'bin';
+  const live = !l.SoldDate && (isBin || (l.EndTime && new Date(l.EndTime) > Date.now()));
   if (!live || !s || s.median == null) return;
   const qty = Number(l.Quantity) || 1;
   const ship = Number(l.Shipping) || 0;
@@ -70,25 +76,31 @@ function maxBidAdvisor(d) {
   if (!rows.length) return;
   const current = Number(l.ItemPrice) || 0;
   $('#maxbid-card').style.display = '';
+  $('#maxbid-title').textContent = isBin ? 'Offer advisor' : 'Max-bid advisor';
   $('#maxbid-body').innerHTML = `
     <div class="tbl-wrap" style="box-shadow:none;border:none">
       <table class="tbl"><thead>
-        <tr><th>To stay under market by</th><th class="num">Bid up to</th><th>Meaning</th></tr>
+        <tr><th>To stay under market by</th><th class="num">${isBin ? 'Offer' : 'Bid up to'}</th><th>Meaning</th></tr>
       </thead><tbody>
         ${rows.map(r => {
           const v = cap(r.margin);
-          const dead = current > v;
+          // auctions: a margin is dead once the bidding passes its cap;
+          // BIN: a margin needs no offer once the ASKING price is under it
+          const dead = isBin ? current <= v : current > v;
+          const deadNote = isBin ? 'asking price already clears this — just buy — ' : 'already past this — ';
           return `<tr${dead ? ' style="opacity:.45"' : ''}>
             <td>${(r.margin * 100).toFixed(0)}%</td>
             <td class="num"><b>${fmtGBP(v)}</b></td>
-            <td class="dimcell">${dead ? 'already past this — ' : ''}${r.note}</td>
+            <td class="dimcell">${dead ? deadNote : ''}${r.note}</td>
           </tr>`;
         }).join('')}
       </tbody></table>
     </div>
     <p class="help" style="margin:8px 0 0">
       Based on the ${fmtGBP(s.median)} market median${qty > 1 ? ` × ${qty} units` : ''}${ship > 0 ? `, minus ${fmtGBP(ship)} delivery` : ''}.
-      Bids are what you enter on eBay (delivery excluded); margins compare the delivery-inclusive total against market.
+      ${isBin
+        ? `Asking price is ${fmtGBP(current)} — if the listing takes Best Offers, open below the margin you want; the figures are item-price only (delivery excluded).`
+        : 'Bids are what you enter on eBay (delivery excluded); margins compare the delivery-inclusive total against market.'}
     </p>`;
 }
 

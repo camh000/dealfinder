@@ -424,9 +424,14 @@ _LOT_QTY_PATTERNS = [
 ]
 
 # PCIe lane specs ("PCIe Gen3 x4", "PCIe 3.0 x4 NVMe SSD") look exactly like
-# the capacity-then-xN lot form; a match whose span mentions the bus is a
-# width, not a count.
-_LOT_LANE_RE = re.compile(r'pcie|\bgen\s*\d|\blanes?\b', re.IGNORECASE)
+# the capacity-then-xN lot form, and so does Seagate's Exos family naming
+# ("Seagate 18TB Exos X18" is one drive, not eighteen). A match whose span
+# mentions either is a spec, not a count.
+_LOT_LANE_RE = re.compile(r'pcie|\bgen\s*\d|\blanes?\b|\bexos\b', re.IGNORECASE)
+
+# Strip family tokens like "Exos X18" down to "Exos" before quantity matching
+# — belt for orderings the span guard can't see.
+_MODEL_FAMILY_X_RE = re.compile(r'\b(exos)\s*x\s*\d+\b', re.IGNORECASE)
 
 # Above this a "quantity" is more likely a misparse than a real lot; treat the
 # listing as a single so it prices itself out of the deal feed (false negative
@@ -457,13 +462,28 @@ _ACCESSORY_RE = re.compile(
 
 def extract_lot_quantity(title: str) -> int:
     """Number of units in a multi-item listing; 1 when not confidently a lot."""
+    t = _MODEL_FAMILY_X_RE.sub(r'\1', title or '')
     for pat in _LOT_QTY_PATTERNS:
-        m = pat.search(title or '')
+        m = pat.search(t)
         if m and not _LOT_LANE_RE.search(m.group(0)):
             qty = int(m.group(1))
             if 2 <= qty <= LOT_MAX_QTY:
                 return qty
     return 1
+
+
+def title_capacity_values(title: str) -> set:
+    """Distinct storage capacities named in a title, normalised to GB.
+
+    More than one distinct value in an HDD/SSD BIN title means a
+    "choose your capacity" variation listing (or an inherently ambiguous
+    mixed lot) — the card's single price can't be matched to a spec.
+    '1TB (1000GB)' normalises to ONE value and stays fine.
+    """
+    vals = set()
+    for num, unit in re.findall(r'(\d+(?:\.\d+)?)\s*(TB|GB)\b', title or '', re.IGNORECASE):
+        vals.add(int(float(num) * (1000 if unit.upper() == 'TB' else 1)))
+    return vals
 
 
 def lot_is_risky(title: str) -> bool:
@@ -525,12 +545,18 @@ def __ParseItems(soup, query, productType):
         try:
             price_el = (item.find('span', {'class': 'su-item-card__price'})
                         or item.find('span', {'class': 's-card__price'}))
-            price = __ParseRawPrice(price_el.get_text(strip=True))
+            price_text = price_el.get_text(strip=True)
+            price = __ParseRawPrice(price_text)
             if price is None:
                 raise ValueError("Price pattern not found in text")
         except (AttributeError, TypeError, ValueError) as e:
             log.warning("[%s] Skipping item '%s...' - could not parse price: %s", query, title[:40], e)
             continue
+        # Multi-variation listings ("choose a capacity" dropdowns) show a
+        # price RANGE ("£3.84 to £59.99") — the number we parse is the
+        # CHEAPEST variant's, which has nothing to do with the title's spec.
+        # Auctions can't have variations; the BIN path skips these entirely.
+        price_is_range = bool(re.search(r'\d\s+to\s+£?\s*\d', price_text))
 
         shipping = __ExtractShipping(item)
 
@@ -1014,6 +1040,7 @@ def __ParseItems(soup, query, productType):
             'id': id,
             'title': title,
             'price': price,
+            'price-range': price_is_range,
             'shipping': shipping,
             'time-left': timeLeft,
             'time-end': timeEnd,
@@ -1723,7 +1750,18 @@ def ScrapeBinAndUpload(query_list: list[str], product_type: str, country='us', c
                 log.warning("BIN scan: fetch failed for %r (%s) — skipping query", query, e)
                 continue
             items = __ParseItems(soup, query, product_type)
-            for p in map(_product_from_dict, items):
+            for d in items:
+                # "Choose a capacity" variation listings: the card's price is
+                # the CHEAPEST variant's — pair it with the title's spec and
+                # you invent a 90%-off phantom. Skip on the price-range tell,
+                # plus a multi-capacity title backstop for storage.
+                if d.get('price-range'):
+                    log.debug("BIN scan: skipping variation listing (price range): %s", d['title'][:60])
+                    continue
+                if product_type in ('HDD', 'SSD') and len(title_capacity_values(d['title'])) > 1:
+                    log.debug("BIN scan: skipping multi-capacity title: %s", d['title'][:60])
+                    continue
+                p = _product_from_dict(d)
                 try:
                     rc = _upload(cur, p, product_type, listing_kind='bin')
                     if rc == 1:

@@ -2,9 +2,10 @@
    No countdowns, no bids, no predictions — the price on screen is the price.
 
    Unlike auctions (where bidding corrects a silly start price), a BIN price
-   is whatever the seller typed — and 90%-off fixed prices are eBay's classic
-   scam shape (hijacked accounts, fake stock, "read description"). Anything
-   at SCAM_DISCOUNT+ gets flagged and sunk to its own section, not hidden. */
+   is whatever the seller typed. The scraper now skips "choose a capacity"
+   variation listings (the usual source of impossible discounts), so anything
+   still showing SCAM_DISCOUNT+ under market deserves suspicion — flagged and
+   sunk to its own section, not hidden. */
 const SCAM_DISCOUNT = 60;
 
 let allDeals = [], cat = 'all';
@@ -31,7 +32,7 @@ function card(d) {
   const chips = [`<span class="chip">${d._cat.toUpperCase()}</span>`,
                  '<span class="chip new">BIN</span>'];
   if (disc >= SCAM_DISCOUNT)
-    chips.push('<span class="chip" style="color:var(--loss);background:var(--loss-soft)" title="Fixed prices this far under market are usually fakes, empty boxes or hijacked accounts — read the listing very carefully.">⚠ TOO GOOD?</span>');
+    chips.push('<span class="chip" style="color:var(--loss);background:var(--loss-soft)" title="Fixed prices this far under market are rarely real — read the listing very carefully before buying.">⚠ TOO GOOD?</span>');
   if (qty > 1) chips.push(`<span class="chip hot">×${qty} LOT</span>`);
   return `<article class="row-card">
     <div class="id-col">

@@ -1888,7 +1888,8 @@ def deal_detail(ebay_id):
                    COALESCE(Quantity, 1) AS Quantity, Bids, EndTime,
                    COALESCE(EndTimeExact, 0) AS EndTimeExact, SoldDate, URL,
                    SellerFeedbackPct, SellerFeedbackCount, LastSeenAt,
-                   COALESCE(ReserveNotMet, 0) AS ReserveNotMet
+                   COALESCE(ReserveNotMet, 0) AS ReserveNotMet,
+                   COALESCE(ListingType, 'auction') AS ListingType
             FROM Scraper.EBAY WHERE ID = %s
         """, (ebay_id,))
         listing = cur.fetchone()
