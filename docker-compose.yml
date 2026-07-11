@@ -5,8 +5,18 @@ services:
       context: .
       dockerfile: Dockerfile.web
     container_name: dealfinder-web
-    ports:
-      - "5010:5000"   # host 5000 now belongs to Frigate
+    # Public-facing: lives ALONE on the DMZ VLAN (ipvlan, no host port).
+    # LAN + tunnel reach it at http://192.168.5.10:5000; its only path back
+    # into the LAN is the UCG pinhole to MariaDB on 192.168.1.104:3305 —
+    # a compromised web container can reach the DB port and nothing else.
+    networks:
+      dmz:
+        ipv4_address: 192.168.5.10
+    # DMZ is isolated from AdGuard on the LAN — public DNS or none at all
+    # (the app only dials the DB, by IP).
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
     env_file:
       - credentials.env
     # 'always' (not 'unless-stopped'): survives host reboots, engine updates
@@ -14,9 +24,6 @@ services:
     # unless-stopped deliberately never restarts a manually-stopped container.
     restart: always
     init: true
-    # Reaches MariaDB on the Unraid host IP
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   scraper:
     build:
@@ -33,3 +40,9 @@ services:
     init: true
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+networks:
+  # The vpn-torrents stack owns the DMZ ipvlan (parent bond0.2, 192.168.5.0/24).
+  dmz:
+    external: true
+    name: vpn-torrents_dmz
