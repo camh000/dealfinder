@@ -19,19 +19,19 @@
   <button class="pill" data-cat="ram">RAM</button>
 </div>
 
-<h2 class="sub" style="margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)">Resolved</h2>
-<div class="tbl-wrap" style="margin-bottom:var(--gap)">
-  <table class="tbl" id="resolved-tbl">
-    <thead></thead>
-    <tbody><tr><td class="state" colspan="10"><span class="loader"></span>loading…</td></tr></tbody>
-  </table>
-</div>
-
-<div id="pending-section" style="display:none">
+<div id="pending-section" style="display:none;margin-bottom:var(--gap)">
   <h2 class="sub" style="margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)">Pending / awaiting result</h2>
   <div class="tbl-wrap">
     <table class="tbl" id="pending-tbl"><thead></thead><tbody></tbody></table>
   </div>
+</div>
+
+<h2 class="sub" style="margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)">Resolved</h2>
+<div class="tbl-wrap">
+  <table class="tbl" id="resolved-tbl">
+    <thead></thead>
+    <tbody><tr><td class="state" colspan="10"><span class="loader"></span>loading…</td></tr></tbody>
+  </table>
 </div>
 {% endblock %}
 
