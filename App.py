@@ -691,14 +691,20 @@ def outcomes():
         # Lazy-backfill: lock in FinalPrice for rows resolved before the column existed.
         # Once written, d.FinalPrice is immutable — future re-listings of the sold item
         # won't change e.Price in the DB but this guards against it anyway.
-        cur.execute("""
-            UPDATE Scraper.DealOutcomes d
-            JOIN Scraper.EBAY e ON e.ID = d.EbayID
-            SET d.FinalPrice = e.Price
-            WHERE e.SoldDate IS NOT NULL AND d.FinalPrice IS NULL AND d.EndedUnsold = 0
-        """)
-        if cur.rowcount > 0:
-            conn.commit()
+        # Opportunistic — a lock conflict with the scraper's writes must
+        # not fail the whole response (it deadlocked once at deploy time).
+        try:
+            cur.execute("""
+                UPDATE Scraper.DealOutcomes d
+                JOIN Scraper.EBAY e ON e.ID = d.EbayID
+                SET d.FinalPrice = e.Price
+                WHERE e.SoldDate IS NOT NULL AND d.FinalPrice IS NULL AND d.EndedUnsold = 0
+            """)
+            if cur.rowcount > 0:
+                conn.commit()
+        except mariadb.Error as e:
+            log.warning("FinalPrice backfill skipped: %s", e)
+            conn.rollback()
 
         cur.execute(OUTCOMES_RESOLVED_QUERY)
         resolved = cur.fetchall()
