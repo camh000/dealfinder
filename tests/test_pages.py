@@ -27,6 +27,7 @@ def client(request):
     ("/prices", "Price guide"),
     ("/model/gpu?Model=RTX+3060+12GB", "price guide"),
     ("/settings", "Settings"),
+    ("/deal/123456789012", "Deal detail"),
     ("/health", "System health"),
 ])
 def test_page_renders(client, path, marker):

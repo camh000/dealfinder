@@ -1972,6 +1972,7 @@ def EnsureOutcomeColumns() -> None:
                         "VerifyMisses INT NOT NULL DEFAULT 0",
                         "NearMiss TINYINT(1) NOT NULL DEFAULT 0",
                         "ItemLocation VARCHAR(80) NULL",
+                        "ItemCondition VARCHAR(40) NULL",
                         "Epid VARCHAR(20) NULL",
                         "CategoryPath VARCHAR(200) NULL",
                         "EnrichNote VARCHAR(60) NULL"):
@@ -2348,10 +2349,11 @@ def _enrich_and_gate(cur, ebay_id: int, product_type: str):
         cur.execute(f"DELETE FROM Scraper.{table} WHERE ID = %s", (ebay_id,))
     cur.execute("""
         UPDATE Scraper.DealOutcomes
-        SET ItemLocation = %s, Epid = %s, CategoryPath = %s, EnrichNote = %s
+        SET ItemLocation = %s, Epid = %s, CategoryPath = %s,
+            ItemCondition = %s, EnrichNote = %s
         WHERE EbayID = %s
     """, (enrich['location'], enrich['epid'], enrich['category_path'],
-          suppress, ebay_id))
+          enrich['condition'], suppress, ebay_id))
     return suppress
 
 

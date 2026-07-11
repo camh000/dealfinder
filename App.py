@@ -198,6 +198,11 @@ def ensure_outcomes_table():
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN PredictedFinal INT NULL",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN VerifyMisses INT NOT NULL DEFAULT 0",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN NearMiss TINYINT(1) NOT NULL DEFAULT 0",
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN ItemLocation VARCHAR(80) NULL",
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN Epid VARCHAR(20) NULL",
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN CategoryPath VARCHAR(200) NULL",
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN EnrichNote VARCHAR(60) NULL",
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN ItemCondition VARCHAR(40) NULL",
         ]:
             col_name = col_sql.split("ADD COLUMN ")[1].split()[0]
             try:
@@ -521,6 +526,11 @@ def outcomes_page():
 @app.route("/prices")
 def prices_page():
     return render_template("prices.html")
+
+
+@app.route("/deal/<int:ebay_id>")
+def deal_page(ebay_id):
+    return render_template("deal.html", ebay_id=ebay_id)
 
 
 @app.route("/model/<cat>")
@@ -1096,6 +1106,109 @@ def model_detail():
                         "trend": trend, "sold": sold[:40], "live": live})
     except Exception as e:
         log.error("model_detail error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route("/api/deal/<int:ebay_id>")
+def deal_detail(ebay_id):
+    """Everything we know about one listing: the row, its category
+    attributes, its market group, its outcome record, its price/bid
+    trajectory, and the outcome-calibrated prediction."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+
+        cur.execute("""
+            SELECT ID, Title, ROUND(Price / 100, 2) AS ItemPrice,
+                   ROUND(COALESCE(Shipping, 0) / 100, 2) AS Shipping,
+                   COALESCE(Quantity, 1) AS Quantity, Bids, EndTime,
+                   COALESCE(EndTimeExact, 0) AS EndTimeExact, SoldDate, URL,
+                   SellerFeedbackPct, SellerFeedbackCount, LastSeenAt,
+                   COALESCE(ReserveNotMet, 0) AS ReserveNotMet
+            FROM Scraper.EBAY WHERE ID = %s
+        """, (ebay_id,))
+        listing = cur.fetchone()
+        if listing is None:
+            return jsonify({"status": "error", "message": "unknown listing"}), 404
+
+        category, attrs = None, None
+        for cat in PAGE_CATEGORIES:
+            cfg = queries.CATEGORIES[cat]
+            cur.execute(f"SELECT * FROM Scraper.{cfg['table']} WHERE ID = %s", (ebay_id,))
+            row = cur.fetchone()
+            if row:
+                category, attrs = cat, row
+                break
+
+        group, stats = None, None
+        if category:
+            cfg = queries.CATEGORIES[category]
+            group = {col: attrs.get(col) for col, _ in cfg['group_cols']}
+            cond, values = queries.model_where(category, group)
+            a, table = cfg['alias'], cfg['table']
+            pcur = conn.cursor()
+            pcur.execute(f"""
+                SELECT (e.Price + COALESCE(e.Shipping, 0)) / 100
+                FROM Scraper.{table} {a}
+                JOIN Scraper.EBAY e ON e.ID = {a}.ID
+                WHERE e.SoldDate IS NOT NULL AND e.Price IS NOT NULL
+                  AND e.SoldDate > NOW() - INTERVAL {queries.MARKET_STATS_DAYS} DAY
+                  AND COALESCE(e.Quantity, 1) = 1 AND {cond}
+            """, tuple(values))
+            prices = [float(r[0]) for r in pcur.fetchall()]
+            if prices:
+                stats = {"median": round(statistics.median(prices), 2),
+                         "min": round(min(prices), 2), "max": round(max(prices), 2),
+                         "n": len(prices)}
+
+        cur.execute("""
+            SELECT SurfacedAt, ROUND(SurfacedPrice / 100, 2) AS SurfacedPrice,
+                   ROUND(AvgMarketPrice / 100, 2) AS AvgMarketPrice, DiscountPct,
+                   BidCount AS BidsAtSurfacing,
+                   ROUND(PredictedFinal / 100, 2) AS PredictedFinal,
+                   ROUND(FinalPrice / 100, 2) AS FinalPrice,
+                   EndedUnsold, GaveUp, NearMiss, ItemLocation, Epid,
+                   CategoryPath, ItemCondition, EnrichNote, Model
+            FROM Scraper.DealOutcomes WHERE EbayID = %s
+        """, (ebay_id,))
+        outcome = cur.fetchone()
+
+        pcur = conn.cursor()
+        pcur.execute("""
+            SELECT SnapAt, ROUND(EffPrice / 100, 2), Bids
+            FROM Scraper.DealSnapshots WHERE EbayID = %s ORDER BY SnapAt
+        """, (ebay_id,))
+        snapshots = [[_iso_utc(t), float(p), int(b or 0)] for t, p, b in pcur.fetchall()]
+
+        prediction = None
+        if category and listing["SoldDate"] is None:
+            pcur.execute(queries.SNIPE_PREMIUM_QUERY)
+            premiums = queries.median_ratios(pcur.fetchall())
+            eff = float(listing["ItemPrice"] or 0) + float(listing["Shipping"] or 0)
+            entry = (premiums.get((category.upper(), queries.bid_bucket(int(listing["Bids"] or 0))))
+                     or premiums.get((category.upper(), 'all')))
+            if entry and eff > 0:
+                prediction = {"final": round(eff * entry[0], 2), "n": entry[1],
+                              "ratio": entry[0]}
+
+        for col in ("EndTime", "SoldDate", "LastSeenAt"):
+            if listing.get(col):
+                listing[col] = _iso_utc(listing[col])
+        if outcome and outcome.get("SurfacedAt"):
+            outcome["SurfacedAt"] = _iso_utc(outcome["SurfacedAt"])
+
+        label = queries.model_label_for_row(category, {**(attrs or {}), "Quantity": listing["Quantity"]}) if category else None
+
+        return jsonify({"status": "ok", "listing": listing, "category": category,
+                        "attrs": attrs, "group": group, "group_label": label,
+                        "stats": stats, "outcome": outcome,
+                        "snapshots": snapshots, "prediction": prediction})
+    except Exception as e:
+        log.error("deal_detail error: %s", e)
         return jsonify({"status": "error", "message": "internal error"}), 500
     finally:
         if conn:

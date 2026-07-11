@@ -74,7 +74,7 @@ function renderResolved() {
     return `<tr>
       <td class="dimcell">${fmtDateTime(r.EndTime)}</td>
       <td><span class="chip">${esc(r.Category)}</span></td>
-      <td>${esc(r.Model || '—')}</td>
+      <td><a href="/deal/${r.EbayID}" style="color:inherit">${esc(r.Model || '—')}</a></td>
       <td class="num">${fmtGBP(r.SurfacedPrice)}<div class="dimcell">${r.SurfacedDiscountPct}% off</div></td>
       <td class="num dimcell">${fmtGBP(r.AvgMarketPrice)}</td>
       <td class="num">${predCell}</td>
@@ -104,7 +104,7 @@ function renderPending() {
     return `<tr>
       <td class="dimcell">${fmtDateTime(r.SurfacedAt)}</td>
       <td><span class="chip">${esc(r.Category)}</span></td>
-      <td>${esc(r.Model || '—')}</td>
+      <td><a href="/deal/${r.EbayID}" style="color:inherit">${esc(r.Model || '—')}</a></td>
       <td class="num">${fmtGBP(r.SurfacedPrice)}<div class="dimcell">${r.SurfacedDiscountPct}% off</div></td>
       <td class="num dimcell">${fmtGBP(r.AvgMarketPrice)}</td>
       <td class="num">${fmtGBP(r.CurrentPrice)}<div class="dimcell">${r.CurrentBids || 0} bids</div></td>

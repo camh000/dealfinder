@@ -49,7 +49,7 @@ function identity(d) {
     if (d.FormFactor && d.FormFactor !== 'Ext') chips.push(`<span class="chip">${esc(d.FormFactor)}</span>`);
   }
   if (d.SurfacedAt) subs.push(`spotted ${timeAgo(d.SurfacedAt)}`);
-  return `<h3>${esc(title)}</h3><div>${chips.join('')}</div>
+  return `<h3><a href="/deal/${d.ID}" style="color:inherit">${esc(title)}</a></h3><div>${chips.join('')}</div>
           ${subs.length ? `<div class="sub faint">${subs.join(' · ')}</div>` : ''}`;
 }
 

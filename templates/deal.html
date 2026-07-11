@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Deal detail — PC/DEALS{% endblock %}
+{% block page %}{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 id="deal-title">…</h1>
+  <span class="sub" id="deal-sub"></span>
+  <span class="spacer"></span>
+  <a class="btn" id="ebay-link" href="#" target="_blank" rel="noopener noreferrer">View on eBay →</a>
+</div>
+
+<div class="stats" id="stats"><div class="state"><span class="loader"></span>loading…</div></div>
+
+<div class="card" id="posbar-card" style="display:none">
+  <h2>Where this price sits in the market</h2>
+  <div id="big-posbar"></div>
+</div>
+
+<div class="card" id="traj-card" style="display:none">
+  <h2>Price &amp; bidding while we watched
+    <span class="sub" style="font-weight:400" id="traj-sub"></span></h2>
+  <div id="traj-chart"></div>
+  <p class="help" style="margin:8px 0 0">— observed price &nbsp;·&nbsp; ● bid arrived &nbsp;·&nbsp; ╌ market median &nbsp;·&nbsp; ◯ predicted final</p>
+</div>
+
+<div class="split" style="grid-template-columns: 1fr 1fr; align-items:stretch">
+  <div class="card" style="margin-bottom:0">
+    <h2>Listing facts</h2>
+    <div class="tbl-wrap" style="box-shadow:none;border:none">
+      <table class="tbl" id="facts-tbl"><tbody></tbody></table>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:0">
+    <h2>Market context</h2>
+    <div class="tbl-wrap" style="box-shadow:none;border:none">
+      <table class="tbl" id="market-tbl"><tbody></tbody></table>
+    </div>
+  </div>
+</div>
+
+<div class="card" id="outcome-card" style="display:none;margin-top:var(--gap)">
+  <h2>Outcome</h2>
+  <div id="outcome-body"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>window.DEAL_ID = {{ ebay_id | tojson }};</script>
+<script src="/static/js/deal.js"></script>
+{% endblock %}
