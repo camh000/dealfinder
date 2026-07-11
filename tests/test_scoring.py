@@ -555,6 +555,70 @@ class TestRamKitConfig:
         assert queries.model_label_for_row("ram", {"CapacityGB": 16, "Type": "DDR4", "FormFactor": "DIMM"}) == "16GB DDR4"
 
 
+ITEM_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'fixtures', 'ebay_item_page_2026-07.html')
+
+
+class TestItemEnrichment:
+    @pytest.fixture(scope="class")
+    def enrich(self):
+        if not os.path.isfile(ITEM_FIXTURE):
+            pytest.skip("item-page fixture not captured")
+        with open(ITEM_FIXTURE, encoding='utf-8') as f:
+            return EbayScraper._extract_enrichment(f.read())
+
+    def test_fixture_extraction(self, enrich):
+        assert enrich['condition'] == 'Used'
+        assert enrich['reserve_not_met'] is False
+        assert enrich['category_path'].endswith('Graphics/Video Cards')
+        assert 'United Kingdom' in enrich['location']
+
+    def test_reserve_detection(self):
+        assert EbayScraper._extract_enrichment(
+            '<div>Reserve not met</div>')['reserve_not_met'] is True
+        assert EbayScraper._extract_enrichment(
+            '<div>Reserve price not met</div>')['reserve_not_met'] is True
+        assert EbayScraper._extract_enrichment(
+            '<div>All Rights Reserved.</div>')['reserve_not_met'] is False
+
+    def test_category_matching(self):
+        gpu_path = 'Electronics > Computer Components & Parts > Graphics/Video Cards'
+        fans_path = 'Electronics > Computer Components & Parts > Fans, Heatsinks & Cooling'
+        assert EbayScraper.category_matches('gpu', gpu_path) is True
+        assert EbayScraper.category_matches('gpu', fans_path) is False
+        assert EbayScraper.category_matches('cpu', 'x > CPUs/Processors') is True
+        assert EbayScraper.category_matches('ram', 'x > Memory (RAM)') is True
+        assert EbayScraper.category_matches('hdd', 'x > Internal Hard Disk Drives') is True
+        assert EbayScraper.category_matches('gpu', '') is True
+        assert EbayScraper.category_matches('gpu', None) is True
+
+    def test_gate_suppresses_and_delists(self):
+        from unittest.mock import MagicMock, patch
+        cur = MagicMock()
+        fake = {'end': None, 'condition': 'For parts or not working',
+                'reserve_not_met': False, 'category_path': None,
+                'location': None, 'epid': None}
+        with patch.object(EbayScraper, 'EnrichListing', return_value=fake):
+            reason = EbayScraper._enrich_and_gate(cur, 123, 'gpu')
+        assert 'condition' in reason
+        assert any('DELETE FROM Scraper.GPU' in str(c[0][0])
+                   for c in cur.execute.call_args_list)
+
+    def test_gate_passes_clean_listings(self):
+        from unittest.mock import MagicMock, patch
+        cur = MagicMock()
+        fake = {'end': None, 'condition': 'Used', 'reserve_not_met': False,
+                'category_path': 'x > Graphics/Video Cards',
+                'location': 'Leeds, United Kingdom', 'epid': '123'}
+        with patch.object(EbayScraper, 'EnrichListing', return_value=fake):
+            assert EbayScraper._enrich_and_gate(cur, 123, 'gpu') is None
+
+    def test_gate_never_blocks_on_fetch_failure(self):
+        from unittest.mock import MagicMock, patch
+        with patch.object(EbayScraper, 'EnrichListing', return_value=None):
+            assert EbayScraper._enrich_and_gate(MagicMock(), 123, 'gpu') is None
+
+
 class TestExactEndTime:
     def test_end_date_extracted(self):
         from datetime import datetime, timedelta, timezone
@@ -627,6 +691,7 @@ class TestNearMissCohort:
         gpu_only = {'gpu': queries.CATEGORIES['gpu']}
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
              patch.object(EbayScraper, 'GetSnipePremiums', return_value={}), \
+             patch.object(EbayScraper, 'EnrichListing', return_value=None), \
              patch.object(queries, 'CATEGORIES', gpu_only):
             new_deals = EbayScraper.SurfaceDeals(2, 20, nearmiss_discount=12)
 

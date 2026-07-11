@@ -1970,7 +1970,11 @@ def EnsureOutcomeColumns() -> None:
         cur = conn.cursor()
         for col_sql in ("PredictedFinal INT NULL",
                         "VerifyMisses INT NOT NULL DEFAULT 0",
-                        "NearMiss TINYINT(1) NOT NULL DEFAULT 0"):
+                        "NearMiss TINYINT(1) NOT NULL DEFAULT 0",
+                        "ItemLocation VARCHAR(80) NULL",
+                        "Epid VARCHAR(20) NULL",
+                        "CategoryPath VARCHAR(200) NULL",
+                        "EnrichNote VARCHAR(60) NULL"):
             try:
                 cur.execute(f"ALTER TABLE Scraper.DealOutcomes ADD COLUMN {col_sql}")
                 conn.commit()
@@ -2039,6 +2043,15 @@ def RefineEndTime(ebay_id: int):
     countdown-derived upserts from degrading it back to minute precision.
     """
     try:
+        conn = _get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT EndTimeExact FROM Scraper.EBAY WHERE ID = %s", (ebay_id,))
+            row = cur.fetchone()
+            if row and row[0]:
+                return None  # already exact (surfacing enrichment did it)
+        finally:
+            conn.close()
         html = _fetch_direct(f'https://www.ebay.co.uk/itm/{ebay_id}')
         exact = _parse_end_date(html) if html else None
         if exact is None:
@@ -2059,6 +2072,110 @@ def RefineEndTime(ebay_id: int):
     except Exception as e:
         log.warning("EndTime refinement failed for %s: %s", ebay_id, e)
         return None
+
+
+# ── item-page enrichment ──────────────────────────────────────────────────────
+# One fetch per newly surfaced deal pulls eBay's own structured facts — the
+# final validation gate before a notification: eBay's category (accessory
+# detector), structured condition (unlabelled for-parts detector), reserve
+# status (unmeetable-price detector), plus location/ePID for the record.
+
+_RESERVE_NOT_MET_RE = re.compile(r'reserve\s+(?:price\s+)?not\s+met', re.IGNORECASE)
+_LOCATED_IN_RE = re.compile(r'Located in:\s*([^<]{2,80})<')
+_EPID_RE = re.compile(r'"epid"\s*:\s*"?(\d{6,15})')
+
+# eBay leaf-category tokens that legitimise a listing per our category.
+_CAT_OK_TOKENS = {
+    'GPU': ('graphics',),
+    'CPU': ('processor', 'cpu'),
+    'HDD': ('drive', 'storage'),
+    'SSD': ('drive', 'storage'),
+    'RAM': ('memory', 'ram'),
+}
+
+
+def category_matches(product_type: str, category_path: str) -> bool:
+    """True when eBay's breadcrumb is consistent with our category (or when
+    there's no breadcrumb to judge by — absence never suppresses)."""
+    if not category_path:
+        return True
+    path = category_path.lower()
+    return any(tok in path for tok in _CAT_OK_TOKENS.get(product_type.upper(), ()))
+
+
+def _extract_condition(html: str):
+    """The structured condition value ("Used", "For parts or not working")."""
+    i = html.find('"condition":{')
+    if i == -1:
+        return None
+    window = html[i:i + 2000]
+    j = window.find('"values"')
+    if j == -1:
+        return None
+    # Several text spans live here ("See all condition definitions" links,
+    # the label itself); the condition value is the one shaped like
+    # "Used: long explanation..." or a bare known label.
+    for m in re.finditer(r'"text"\s*:\s*"([^"]{2,600})"', window[j:]):
+        text = m.group(1).strip()
+        if (text.lower().startswith(('see all', 'read more', 'read less'))
+                or text == 'Condition'):
+            continue
+        return text.split(':')[0].strip()[:40] or None
+    return None
+
+
+def _extract_enrichment(html: str) -> dict:
+    """Everything useful from one item page. All fields optional."""
+    from bs4 import BeautifulSoup
+    path = None
+    try:
+        soup = BeautifulSoup(html, 'html.parser')
+        nav = soup.find(attrs={'data-testid': 'x-breadcrumb'})
+        if nav:
+            crumbs = [a.get_text(strip=True) for a in nav.find_all('a')]
+            if crumbs:
+                path = ' > '.join(crumbs)[:200]
+    except Exception:
+        pass
+    loc = _LOCATED_IN_RE.search(html)
+    epid = _EPID_RE.search(html)
+    return {
+        'end': _parse_end_date(html),
+        'condition': _extract_condition(html),
+        'reserve_not_met': bool(_RESERVE_NOT_MET_RE.search(html)),
+        'category_path': path,
+        'location': loc.group(1).strip() if loc else None,
+        'epid': epid.group(1) if epid else None,
+    }
+
+
+def EnrichListing(ebay_id: int) -> dict | None:
+    """Fetch the item page once and extract the enrichment dict. None on
+    fetch failure — enrichment must never block surfacing."""
+    try:
+        html = _fetch_direct(f'https://www.ebay.co.uk/itm/{ebay_id}')
+        return _extract_enrichment(html) if html else None
+    except Exception as e:
+        log.warning("Enrichment fetch failed for %s: %s", ebay_id, e)
+        return None
+
+
+def EnsureEnrichmentColumns() -> None:
+    """EBAY.ReserveNotMet (deal queries gate on it) — reserve-not-met
+    auctions show a price nobody can actually win at."""
+    DUP_COLUMN_ERRNO = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE Scraper.EBAY ADD COLUMN ReserveNotMet TINYINT(1) NOT NULL DEFAULT 0")
+            conn.commit()
+            log.info("EBAY: added ReserveNotMet column")
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("EBAY: unexpected error adding ReserveNotMet: %s", e)
+    finally:
+        conn.close()
 
 
 def EnsureEndTimeExact() -> None:
@@ -2197,6 +2314,45 @@ def EnsureCategoryAttributes() -> None:
         conn.close()
 
 
+def _enrich_and_gate(cur, ebay_id: int, product_type: str):
+    """One item-page fetch for a newly surfaced deal: store eBay's structured
+    facts and return a suppression reason (or None). Suppressed listings are
+    also DELISTED from their category when eBay's own data says they were
+    never the component (wrong category / for-parts condition) — that pulls
+    them from the feed and the market stats, not just the notification.
+    Enrichment failure returns None: never block surfacing on a bad fetch."""
+    enrich = EnrichListing(ebay_id)
+    if not enrich:
+        return None
+    suppress = None
+    if enrich['end'] is not None:
+        cur.execute("""
+            UPDATE Scraper.EBAY SET EndTime = %s, EndTimeExact = 1 WHERE ID = %s
+        """, (enrich['end'], ebay_id))
+    if enrich['reserve_not_met']:
+        cur.execute("UPDATE Scraper.EBAY SET ReserveNotMet = 1 WHERE ID = %s", (ebay_id,))
+        suppress = 'reserve not met'
+    cond = enrich['condition'] or ''
+    delist = False
+    if re.search(r'parts|not\s+working', cond, re.IGNORECASE):
+        suppress = f'condition: {cond[:40]}'
+        delist = True
+    if not category_matches(product_type, enrich['category_path'] or ''):
+        leaf = (enrich['category_path'] or '').split(' > ')[-1]
+        suppress = f'category: {leaf[:45]}'
+        delist = True
+    if delist:
+        table = queries.CATEGORIES[product_type]['table']
+        cur.execute(f"DELETE FROM Scraper.{table} WHERE ID = %s", (ebay_id,))
+    cur.execute("""
+        UPDATE Scraper.DealOutcomes
+        SET ItemLocation = %s, Epid = %s, CategoryPath = %s, EnrichNote = %s
+        WHERE EbayID = %s
+    """, (enrich['location'], enrich['epid'], enrich['category_path'],
+          suppress, ebay_id))
+    return suppress
+
+
 def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
                  nearmiss_discount: float | None = None) -> list[dict]:
     """Detect current deals server-side and record first sightings.
@@ -2267,9 +2423,14 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
                     if near_miss:
                         near_misses += 1
                     else:
-                        row['_label'] = label
-                        row['_category'] = product_type.upper()
-                        new_deals.append(row)
+                        suppress = _enrich_and_gate(ins, row['ID'], product_type)
+                        if suppress:
+                            log.info("Deal %s suppressed by enrichment: %s",
+                                     row['ID'], suppress)
+                        else:
+                            row['_label'] = label
+                            row['_category'] = product_type.upper()
+                            new_deals.append(row)
         conn.commit()
         if new_deals or near_misses:
             log.info("SurfaceDeals: %d new deal(s), %d near-miss(es) recorded",

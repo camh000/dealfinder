@@ -269,6 +269,28 @@ def ensure_quantity_column():
 ensure_quantity_column()
 
 
+def ensure_reserve_column():
+    """EBAY.ReserveNotMet — the deal queries gate on it."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE Scraper.EBAY ADD COLUMN ReserveNotMet TINYINT(1) NOT NULL DEFAULT 0")
+            conn.commit()
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("EBAY: unexpected error adding ReserveNotMet: %s", e)
+    except Exception:
+        pass
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_reserve_column()
+
+
 def ensure_seller_feedback_columns():
     """EBAY.SellerFeedbackPct/-Count — the deal queries reference them, so the
     web container must guarantee they exist even if it starts first."""

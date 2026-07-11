@@ -491,6 +491,12 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("SSD table setup failed: %s", e)
 
+    # ReserveNotMet flag (item-page enrichment).
+    try:
+        EbayScraper.EnsureEnrichmentColumns()
+    except Exception as e:
+        log.error("Enrichment column migration failed: %s", e)
+
     # EndTimeExact flag (exact end refinement from item pages).
     try:
         EbayScraper.EnsureEndTimeExact()

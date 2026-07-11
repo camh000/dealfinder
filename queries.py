@@ -218,6 +218,7 @@ WHERE
     AND {EFF_UNIT} < ms.AvgPrice * {threshold}
     AND {FEEDBACK_OK}
     AND {FRESH_OK}
+    AND COALESCE(e.ReserveNotMet, 0) = 0
     AND e.EndTime > NOW()
     AND e.EndTime < NOW() + {interval}
 ORDER BY DealScore DESC;
@@ -241,6 +242,7 @@ WHERE rs.SoldCount >= 5
   AND e.SoldDate IS NULL AND {EFF_UNIT} < rs.MedPrice * {threshold}
   AND {FEEDBACK_OK}
   AND {FRESH_OK}
+  AND COALESCE(e.ReserveNotMet, 0) = 0
   AND e.EndTime > NOW() AND e.EndTime < NOW() + {interval};
 """
 
