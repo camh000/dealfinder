@@ -29,6 +29,8 @@ def client(request):
     ("/settings", "Settings"),
     ("/deal/123456789012", "Deal detail"),
     ("/health", "System health"),
+    ("/insights/predictions", "Prediction model"),
+    ("/insights/nearmiss", "Near-miss experiment"),
 ])
 def test_page_renders(client, path, marker):
     resp = client.get(path)
@@ -58,3 +60,27 @@ def test_sw_served_with_version(client):
     assert resp.status_code == 200
     assert b"pcd-" in resp.data
     assert b"'pcd-v1'" not in resp.data  # placeholder must be rewritten
+
+
+def test_wilson_ci_behaves(client):
+    import App
+    assert App._wilson_ci(0, 0) == [0.0, 0.0]
+    lo, hi = App._wilson_ci(5, 5)
+    assert lo < 100.0 and hi == 100.0        # 5-for-5 is not "100% proven"
+    lo, hi = App._wilson_ci(50, 100)
+    assert lo < 50.0 < hi
+    assert hi - lo < 25                       # n=100 narrows the interval
+    # more data → tighter interval at the same rate
+    lo2, hi2 = App._wilson_ci(500, 1000)
+    assert (hi2 - lo2) < (hi - lo)
+
+
+def test_err_stats_shape(client):
+    import App
+    assert App._err_stats([]) == {"n": 0}
+    s = App._err_stats([(10.0, 20.0), (-10.0, 30.0), (0.0, 25.0)])
+    assert s["n"] == 3
+    assert s["median_abs_err_pct"] == 10.0
+    assert s["bias_pct"] == 0.0
+    assert s["baseline_median_abs_err_pct"] == 25.0
+    assert s["within_10_pct"] == 100.0

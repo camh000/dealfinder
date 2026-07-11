@@ -18,8 +18,11 @@ function statStrip() {
   const nm = all ? summary?.near_miss : null;
   const pred = all ? summary?.prediction : null;
   const life = all ? summary?.lifetime : null;
-  const cell = (v, label, cls = '', title = '') =>
-    `<div class="stat" ${title ? `title="${esc(title)}"` : ''}><b class="${cls} num">${v}</b><span>${label}</span></div>`;
+  const cell = (v, label, cls = '', title = '', href = '') => {
+    const body = `<b class="${cls} num">${v}</b><span>${label}${href ? ' ↗' : ''}</span>`;
+    return `<div class="stat" ${title ? `title="${esc(title)}"` : ''}>${
+      href ? `<a href="${href}">${body}</a>` : body}</div>`;
+  };
   $('#stats').innerHTML = [
     cell(priced.length + pen.length + gaveUp, 'tracked'),
     cell(priced.length, 'resolved'),
@@ -29,9 +32,11 @@ function statStrip() {
     gaveUp ? cell(gaveUp, 'gave up', 'warn',
       'Unresolvable — the listing left eBay search before it could be verified') : '',
     nm && nm.resolved > 0 ? cell(`${nm.win_rate}%`, 'near-miss WR', '',
-      `Control cohort: 12–20%-off listings, recorded but never surfaced (n=${nm.resolved}). If this rivals the main win rate, the 20% bar is too strict.`) : '',
+      `Control cohort: 12–20%-off listings, recorded but never surfaced (n=${nm.resolved}). Click for the full experiment.`,
+      '/insights/nearmiss') : '',
     pred && pred.n >= 5 ? cell(`±${pred.median_abs_err_pct}%`, 'prediction error', '',
-      `Median gap between the predicted final price and reality, over ${pred.n} resolved deals`) : '',
+      `Median gap between the predicted final price and reality, over ${pred.n} resolved deals. Click for the full model report.`,
+      '/insights/predictions') : '',
     life && life.market_value_tracked ? cell(fmtGBP0(life.market_value_tracked), 'value tracked', '',
       life.median_actual_discount != null
         ? `Lifetime market value of tracked deals — median closed ${life.median_actual_discount}% under market`

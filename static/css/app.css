@@ -301,6 +301,14 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-row); }
 .chart .medline { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 4 4; }
 .chart .medlabel { fill: var(--text); font-weight: 600; }
 .chart .predpt { fill: var(--surface); stroke: var(--accent); stroke-width: 2; }
+.chart .diag { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 5 5; }
+.chart .bar { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1; }
+.chart .bar.hot { fill: color-mix(in srgb, var(--warn) 22%, transparent); stroke: var(--warn); }
+.chart .ci { stroke: var(--text); stroke-width: 1.2; opacity: 0.55; }
+.chart .scpt { opacity: 0.75; }
+.chart .scpt:hover { opacity: 1; r: 6; }
+.stat a { color: inherit; text-decoration: none; }
+.stat a:hover b { color: var(--accent); }
 
 /* ── states ───────────────────────────────────────────────────────────── */
 .state { padding: 40px 20px; text-align: center; color: var(--dim); font-size: 14px; }

@@ -859,6 +859,218 @@ def alerts_delete(aid):
             conn.close()
 
 
+# ── insight pages: prediction accuracy + near-miss experiment ──────────────────
+# Linked from the OUTCOMES stat cards. Read-only analytics over DealOutcomes;
+# all math in Python so the SQL stays one plain SELECT each.
+
+def _wilson_ci(k: int, n: int, z: float = 1.96) -> list:
+    """95% Wilson score interval for a win rate, as [lo%, hi%]. Honest about
+    small n — a 5-for-5 cohort shows ~[57, 100], not '100% proven'."""
+    if not n:
+        return [0.0, 0.0]
+    p = k / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return [round(max(0.0, centre - half) * 100, 1), round(min(1.0, centre + half) * 100, 1)]
+
+
+def _err_stats(rows: list) -> dict:
+    """Prediction-error aggregates for a list of (signed_err_pct, baseline_abs_pct)."""
+    if not rows:
+        return {"n": 0}
+    errs = [e for e, _ in rows]
+    abs_errs = sorted(abs(e) for e in errs)
+    baselines = sorted(b for _, b in rows)
+    n = len(errs)
+    return {
+        "n": n,
+        "median_abs_err_pct": round(statistics.median(abs_errs), 1),
+        "bias_pct": round(statistics.median(errs), 1),
+        "baseline_median_abs_err_pct": round(statistics.median(baselines), 1),
+        "within_10_pct": round(sum(1 for e in abs_errs if e <= 10) / n * 100, 1),
+        "within_20_pct": round(sum(1 for e in abs_errs if e <= 20) / n * 100, 1),
+    }
+
+
+@app.route('/insights/predictions')
+def insights_predictions_page():
+    return render_template('predictions.html')
+
+
+@app.route('/insights/nearmiss')
+def insights_nearmiss_page():
+    return render_template('nearmiss.html')
+
+
+@app.route('/api/insights/predictions')
+def api_insights_predictions():
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT d.EbayID, d.Category, d.Model, d.BidCount,
+                   ROUND(d.SurfacedPrice / 100, 2)                 AS SurfacedPrice,
+                   ROUND(d.PredictedFinal / 100, 2)                AS PredictedFinal,
+                   ROUND(COALESCE(d.FinalPrice, e.Price) / 100, 2) AS FinalPrice,
+                   ROUND(d.AvgMarketPrice / 100, 2)                AS AvgMarketPrice,
+                   COALESCE(e.EndTime, d.EndTime)                  AS EndTime
+            FROM Scraper.DealOutcomes d
+            JOIN Scraper.EBAY e ON e.ID = d.EbayID
+            WHERE e.SoldDate IS NOT NULL AND d.EndedUnsold = 0 AND d.NearMiss = 0
+              AND d.PredictedFinal IS NOT NULL AND d.PredictedFinal > 0
+              AND COALESCE(d.FinalPrice, e.Price) IS NOT NULL
+              AND d.SurfacedPrice > 0
+            ORDER BY COALESCE(e.EndTime, d.EndTime) DESC
+        """)
+        raw = cur.fetchall()
+
+        by_cat, by_bucket, pairs = {}, {}, []
+        for r in raw:
+            final, pred, surf = float(r['FinalPrice']), float(r['PredictedFinal']), float(r['SurfacedPrice'])
+            # signed: positive = closed ABOVE the prediction (we under-called)
+            r['ErrPct'] = round((final - pred) / pred * 100, 1)
+            baseline = abs(final - surf) / surf * 100  # "no model": final = surfaced price
+            pair = (r['ErrPct'], baseline)
+            pairs.append(pair)
+            by_cat.setdefault(r['Category'], []).append(pair)
+            by_bucket.setdefault(queries.bid_bucket(r['BidCount']), []).append(pair)
+            r['EndTime'] = _iso_utc(r['EndTime'])
+
+        histogram = []
+        for lo in range(-50, 50, 10):
+            n = sum(1 for e, _ in pairs
+                    if (lo <= max(-50, min(49.999, e)) < lo + 10))
+            histogram.append({"lo": lo, "hi": lo + 10, "n": n})
+
+        # What the model currently believes: the live premium ratios.
+        cur2 = conn.cursor()
+        cur2.execute(queries.SNIPE_PREMIUM_QUERY)
+        ratios = [{"category": cat, "bucket": bucket, "ratio": ratio, "n": n}
+                  for (cat, bucket), (ratio, n)
+                  in sorted(queries.median_ratios(cur2.fetchall()).items())]
+
+        return jsonify({
+            "status": "ok",
+            "overall": _err_stats(pairs),
+            "by_category": [{"category": c, **_err_stats(v)}
+                            for c, v in sorted(by_cat.items())],
+            "by_bucket": [{"bucket": b, **_err_stats(v)}
+                          for b, v in sorted(by_bucket.items())],
+            "histogram": histogram,
+            "ratios": ratios,
+            "rows": raw[:150],
+        })
+    except Exception as e:
+        log.error("insights_predictions error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+# Near-miss experiment bands: the control cohort spans [12, 20); the main
+# feed is >= 20. Sliced finer so the chart shows WHERE the threshold bites.
+_NM_BANDS = [(12, 16), (16, 20), (20, 25), (25, 30), (30, 999)]
+_NM_TARGET_N = 50   # resolved near-misses needed before the verdict means much
+
+
+@app.route('/api/insights/nearmiss')
+def api_insights_nearmiss():
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT d.EbayID, d.Category, d.Model, d.NearMiss, d.DiscountPct,
+                   d.EndedUnsold, d.GaveUp,
+                   ROUND(d.SurfacedPrice / 100, 2)                 AS SurfacedPrice,
+                   ROUND(COALESCE(d.FinalPrice, e.Price) / 100, 2) AS FinalPrice,
+                   ROUND(d.AvgMarketPrice / 100, 2)                AS AvgMarketPrice,
+                   (e.SoldDate IS NOT NULL)                        AS Sold,
+                   COALESCE(e.EndTime, d.EndTime)                  AS EndTime,
+                   d.SurfacedAt
+            FROM Scraper.DealOutcomes d
+            JOIN Scraper.EBAY e ON e.ID = d.EbayID
+            ORDER BY COALESCE(e.EndTime, d.EndTime) DESC
+        """)
+        raw = cur.fetchall()
+
+        def resolved_win(r):
+            if not r['Sold'] or r['EndedUnsold'] or r['FinalPrice'] is None \
+                    or not r['AvgMarketPrice']:
+                return None
+            return float(r['FinalPrice']) < float(r['AvgMarketPrice'])
+
+        def cohort(rows):
+            res = [(r, resolved_win(r)) for r in rows]
+            done = [(r, w) for r, w in res if w is not None]
+            wins = sum(1 for _, w in done if w)
+            discs = sorted((1 - float(r['FinalPrice']) / float(r['AvgMarketPrice'])) * 100
+                           for r, _ in done)
+            return {
+                "tracked": len(rows),
+                "resolved": len(done),
+                "wins": wins,
+                "win_rate": round(wins / len(done) * 100, 1) if done else None,
+                "wr_ci": _wilson_ci(wins, len(done)),
+                "pending": sum(1 for r in rows if not r['Sold'] and not r['EndedUnsold'] and not r['GaveUp']),
+                "ended_unsold": sum(1 for r in rows if r['EndedUnsold']),
+                "gave_up": sum(1 for r in rows if r['GaveUp']),
+                "median_actual_discount": round(statistics.median(discs), 1) if discs else None,
+            }
+
+        nm_rows = [r for r in raw if r['NearMiss']]
+        main_rows = [r for r in raw if not r['NearMiss']]
+
+        bands = []
+        for lo, hi in _NM_BANDS:
+            in_band = [r for r in raw if r['DiscountPct'] is not None
+                       and lo <= float(r['DiscountPct']) < hi]
+            done = [(r, resolved_win(r)) for r in in_band]
+            done = [(r, w) for r, w in done if w is not None]
+            wins = sum(1 for _, w in done if w)
+            bands.append({
+                "label": f"{lo}–{hi}%" if hi < 999 else f"{lo}%+",
+                "lo": lo,
+                "resolved": len(done),
+                "wins": wins,
+                "win_rate": round(wins / len(done) * 100, 1) if done else None,
+                "wr_ci": _wilson_ci(wins, len(done)),
+                "near_miss_band": hi <= 20,
+            })
+
+        recent = []
+        for r in nm_rows[:100]:
+            w = resolved_win(r)
+            recent.append({
+                "EbayID": r['EbayID'], "Category": r['Category'], "Model": r['Model'],
+                "DiscountPct": r['DiscountPct'],
+                "SurfacedPrice": r['SurfacedPrice'], "FinalPrice": r['FinalPrice'],
+                "AvgMarketPrice": r['AvgMarketPrice'],
+                "EndTime": _iso_utc(r['EndTime']),
+                "result": ('win' if w else 'miss') if w is not None
+                          else ('unsold' if r['EndedUnsold'] else
+                                'gave up' if r['GaveUp'] else 'pending'),
+            })
+
+        return jsonify({
+            "status": "ok",
+            "near_miss": cohort(nm_rows),
+            "main": cohort(main_rows),
+            "bands": bands,
+            "target_n": _NM_TARGET_N,
+            "rows": recent,
+        })
+    except Exception as e:
+        log.error("insights_nearmiss error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 # ── BIN watcher settings ────────────────────────────────────────────────────────
 # Runtime-adjustable from Settings (admin). Stored in AppConfig; the scraper
 # re-reads them every scan decision (EbayScraper.GetBinConfig, 60s cache), so

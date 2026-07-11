@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Near-miss experiment — PC/DEALS{% endblock %}
+{% block page %}outcomes{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Near-miss experiment</h1>
+  <span class="sub">is the 20%-off surfacing bar set right?</span>
+  <span class="spacer"></span>
+  <a class="btn-ghost" href="/outcomes" style="text-decoration:none">← outcomes</a>
+</div>
+
+<div class="card">
+  <p class="help" style="margin:0">
+    Listings spotted at <b>12–20% off</b> — just under the surfacing bar — are recorded as a
+    <b>control cohort</b>: never notified, never shown in the feed, excluded from the model's
+    training. If they end up winning about as often as the real deals, the 20% bar is too strict
+    and we're leaving deals on the table. If they lose much more often, the bar is earning its keep.
+  </p>
+</div>
+
+<div class="stats" id="stats"><div class="state"><span class="loader"></span>loading…</div></div>
+
+<div class="card" id="verdict-card" style="display:none">
+  <h2>Verdict so far</h2>
+  <div id="verdict"></div>
+  <div id="progress" style="margin-top:12px"></div>
+</div>
+
+<div class="card">
+  <h2>Win rate by discount at spotting</h2>
+  <div id="bands"></div>
+  <p class="help" style="margin:8px 0 0">Highlighted bars are the near-miss band (12–20%);
+    whiskers are 95% confidence intervals — where they overlap heavily, the data can't yet
+    tell the bands apart. A win = the listing sold below its market median.</p>
+</div>
+
+<div class="card">
+  <h2>Recent near-misses</h2>
+  <div class="tbl-wrap" style="box-shadow:none;border:none">
+    <table class="tbl" id="recent-tbl"><thead>
+      <tr><th>Ended</th><th>Cat</th><th>Model</th><th class="num">Off at spotting</th>
+      <th class="num">Market</th><th class="num">Final</th><th>Result</th></tr>
+    </thead><tbody><tr><td class="state" colspan="7"><span class="loader"></span>loading…</td></tr></tbody></table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/nearmiss.js"></script>
+{% endblock %}

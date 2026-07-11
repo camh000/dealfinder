@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Prediction model — PC/DEALS{% endblock %}
+{% block page %}outcomes{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Prediction model</h1>
+  <span class="sub">how well "predicted final price" matches reality</span>
+  <span class="spacer"></span>
+  <a class="btn-ghost" href="/outcomes" style="text-decoration:none">← outcomes</a>
+</div>
+
+<div class="stats" id="stats"><div class="state"><span class="loader"></span>loading…</div></div>
+
+<div class="split" style="grid-template-columns: 3fr 2fr; align-items:stretch">
+  <div class="card" style="margin-bottom:0">
+    <h2>Predicted vs actual final price</h2>
+    <div id="scatter"></div>
+    <p class="help" style="margin:8px 0 0">Each dot is a resolved deal — on the dashed line the
+      prediction was perfect; above it the auction closed higher than called, below it lower.
+      Hover for details, click to open the deal.</p>
+  </div>
+  <div class="card" style="margin-bottom:0">
+    <h2>Error distribution</h2>
+    <div id="hist"></div>
+    <p class="help" style="margin:8px 0 0">Signed error (final vs predicted). A hump centred on
+      0 means unbiased; leaning right means auctions keep closing above the calls.</p>
+  </div>
+</div>
+
+<div class="split" style="grid-template-columns: 1fr 1fr; align-items:stretch; margin-top:var(--gap)">
+  <div class="card" style="margin-bottom:0">
+    <h2>By category</h2>
+    <div class="tbl-wrap" style="box-shadow:none;border:none">
+      <table class="tbl" id="cat-tbl"><thead>
+        <tr><th>Category</th><th class="num">n</th><th class="num">median err</th>
+        <th class="num">bias</th><th class="num">no-model err</th><th></th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+    <p class="help" style="margin:8px 0 0">"No-model err" = pretending the final price equals the
+      surfaced price. The model earns its keep wherever its error is lower.</p>
+  </div>
+  <div class="card" style="margin-bottom:0">
+    <h2>By bid count at spotting</h2>
+    <div class="tbl-wrap" style="box-shadow:none;border:none">
+      <table class="tbl" id="bucket-tbl"><thead>
+        <tr><th>Bids</th><th class="num">n</th><th class="num">median err</th><th class="num">bias</th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+    <h2 style="margin-top:18px">Current premium ratios</h2>
+    <div class="tbl-wrap" style="box-shadow:none;border:none">
+      <table class="tbl" id="ratio-tbl"><thead>
+        <tr><th>Category</th><th>Bids</th><th class="num">× premium</th><th class="num">n</th></tr>
+      </thead><tbody></tbody></table>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:var(--gap)">
+  <h2>Recent resolved predictions</h2>
+  <div class="tbl-wrap" style="box-shadow:none;border:none">
+    <table class="tbl" id="recent-tbl"><thead>
+      <tr><th>Ended</th><th>Cat</th><th>Model</th><th class="num">Surfaced</th>
+      <th class="num">Predicted</th><th class="num">Final</th><th class="num">Error</th></tr>
+    </thead><tbody><tr><td class="state" colspan="7"><span class="loader"></span>loading…</td></tr></tbody></table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/predictions.js"></script>
+{% endblock %}
