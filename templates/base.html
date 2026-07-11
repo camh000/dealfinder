@@ -11,7 +11,8 @@
 <script>
 /* theme + density bootstrap — runs before first paint to avoid flash */
 (function () {
-  var t = localStorage.getItem('pcd-theme');
+  var q = new URLSearchParams(location.search).get('theme');
+  var t = (q === 'dark' || q === 'light') ? q : localStorage.getItem('pcd-theme');
   if (t !== 'dark' && t !== 'light')
     t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   document.documentElement.dataset.theme = t;
