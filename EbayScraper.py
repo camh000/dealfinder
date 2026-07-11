@@ -722,16 +722,23 @@ def __ParseItems(soup, query, productType):
             # model, RAM or storage) — "GTX 1650 Graphics Card for Desktop
             # PC" is a real card describing what it fits.
             _tl = title.lower()
-            # System evidence must not confuse VRAM specs ("GT 710 2GB DDR3")
-            # with system RAM — hence the explicit 'ram' word, storage, or a
-            # CPU mention, never a bare "NGB DDRn".
+            # System evidence for the PC phrases must not confuse VRAM specs
+            # ("GT 710 2GB DDR3") with system RAM — hence 'ram' word, storage,
+            # or a CPU mention (incl. suffixed mobile chips like i5-1240P).
             _spec_evidence = bool(
                 re.search(r'\d+\s*gb\s+ram\b', _tl)
                 or re.search(r'\d+\s*(?:tb|gb)\s*(?:ssd|nvme|hdd|m\.2)', _tl)
-                or re.search(r'\b(?:intel\s+)?core\s*i[3579]\b|\bi[3579][\s\-]\d{3,5}\b|'
+                or re.search(r'\b(?:intel\s+)?core\s*i[3579]\b|\bi[3579][\s\-]\d{3,5}[a-z]{0,2}\b|'
                              r'\bryzen\b|\bxeon\b|\bcore\s+ultra\b|\bceleron\b|\bpentium\b', _tl))
+            # Standalone spec-sheet tell needs BOTH memory-ish and storage —
+            # "Dell G3 3590 i7 16GB RAM 512GB SSD GTX 1660" carries no PC
+            # phrase at all, while "2GB DDR3" alone is just an old card.
+            _ram_and_storage = bool(
+                re.search(r'\d+\s*gb\s*(?:ddr\d?|ram)\b', _tl)
+                and re.search(r'\d+\s*(?:tb|gb)\s*(?:ssd|nvme|hdd|m\.2)', _tl))
             _is_system_gpu = (
                 'laptop' in _tl or 'notebook' in _tl
+                or _ram_and_storage
                 or (_spec_evidence
                     and any(k in _tl for k in ['gaming pc', 'desktop pc', 'mini pc', 'mini-pc',
                                                 'all-in-one', 'complete pc', 'pc bundle',
@@ -755,6 +762,8 @@ def __ParseItems(soup, query, productType):
                                         'desktop pc', 'all-in-one', 'laptop', 'notebook',
                                         'gaming pc', 'gaming computer', 'custom pc',
                                         'full pc', 'complete pc', 'pc bundle', 'pc build',
+                                        'compact pc', 'prebuilt', 'pre-built',
+                                        'desktop computer', 'gaming rig', 'gaming setup',
                                         'poweredge', 'proliant', 'supermicro', 'thinkserver',
                                         'rack server', 'tower server', 'server bundle'])
                 or (bool(re.search(r'\d+\s*gb\s*(ddr\d?|ram)', _tl))
@@ -882,9 +891,10 @@ def __ParseItems(soup, query, productType):
             # a RAM spec or a CPU model: no bare-drive title ever states those.
             _is_system_hdd = (
                 bool(re.search(r'\d+\s*gb\s*(?:ddr\d|ram)\b', _tl))
-                or bool(re.search(r'\b(?:intel\s+)?core\s*i[3579]\b|\bi[3579][\s\-]\d{3,5}\b|'
+                or bool(re.search(r'\b(?:intel\s+)?core\s*i[3579]\b|\bi[3579][\s\-]\d{3,5}[a-z]{0,2}\b|'
                                   r'\bryzen\b|\bxeon\b|\bcore\s+ultra\b', _tl))
                 or 'gaming laptop' in _tl
+                or 'graphics card' in _tl
             )
             if _is_system_hdd:
                 log.debug("[%s] Skipping system listing in HDD: %s", query, title[:60])
@@ -937,6 +947,13 @@ def __ParseItems(soup, query, productType):
             socket      = None
             cores       = None
             capacity_gb = extract_capacity_gb(title)
+            # No real drive is under ~40GB — a small figure means the title's
+            # first capacity belongs to something else (an eGPU's "16GB
+            # Laptop Graphics Card" once landed here as a 16GB drive).
+            if capacity_gb is not None and capacity_gb < 40:
+                log.debug("[%s] Skipping implausible drive capacity %sGB: %s",
+                          query, capacity_gb, title[:60])
+                continue
             interface   = extract_interface(title)
             form_factor = extract_form_factor(title)
             rpm         = extract_rpm(title)
@@ -1027,9 +1044,14 @@ def __ParseItems(soup, query, productType):
                     'mini pc', 'mini-pc', ' nuc', 'barebones',
                     'desktop pc', 'all-in-one', 'gaming pc', 'gaming computer',
                     'custom pc', 'full pc', 'complete pc', 'pc bundle', 'pc build',
+                    'compact pc', 'prebuilt', 'pre-built', 'desktop computer',
+                    'gaming rig', 'gaming setup',
                 ])
                 or (('laptop' in _tl or 'notebook' in _tl)
                     and bool(re.search(r'\d+\s*(tb|gb)\s*(ssd|nvme|hdd|emmc)', _tl)))
+                # a bare RAM kit never states drive storage — "16GB DDR4, 1TB
+                # SSD" is a tower's spec sheet (they were parsing as the RAM)
+                or bool(re.search(r'\d+\s*(?:tb|gb)\s*(?:ssd|nvme|hdd)\b', _tl))
             )
             if _is_system_ram:
                 log.debug("[%s] Skipping system listing: %s", query, title[:60])

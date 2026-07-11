@@ -923,6 +923,23 @@ class TestJunkListingGate:
     def test_component_for_pc_titles_still_parse(self, title, cat):
         assert _parse_one(title, cat) is not None, f"real component wrongly skipped: {title}"
 
+    @pytest.mark.parametrize("title,cat", [
+        # systems that leaked back in via OTHER categories during the first
+        # restore pass — every branch needs its own airtight tell
+        ("Dell G3 3590 | 9th Gen i7 9750H 2.6GHz | 16GB RAM | 512GB SSD | Nvidia GTX 1660", "GPU"),
+        ("HP Z VR G2 I7-9850H 16GB DDR4 1TB SSD RTX2080 (8GB) Gaming Compact PC", "RAM"),
+        ("Gigabyte G6 KF Laptop NVIDIA RTX 4060, I7 13620H, 16GB DDR5, 512GB SSD", "RAM"),
+        ("MSI Prestige 14 A12UC-044U Laptop 12th Gen i5-1240P NVIDIA RTX 3050", "HDD"),
+        ("ASUS GeForce RTX 4090 ROG XG Mobile 16GB Laptop Graphics Card eGPU", "HDD"),
+        ("Dell i7 12th Gaming CAD 32GB RAM DDR5 1TB SSD Nvidia RTX 4GB", "RAM"),
+    ])
+    def test_systems_rejected_from_every_side_door(self, title, cat):
+        assert _parse_one(title, cat) is None, f"system leaked into {cat}: {title}"
+
+    def test_real_ram_kits_still_parse(self):
+        assert _parse_one("Corsair Vengeance LPX 16GB (2x8GB) DDR4 3200MHz", "RAM") is not None
+        assert _parse_one("Crucial 32GB DDR5 4800 SODIMM Laptop Memory", "RAM") is not None
+
     def test_accessory_detector_direct(self):
         assert EbayScraper.is_accessory_listing("RTX 4090 heatsink and fans (no gpu)") is True
         assert EbayScraper.is_accessory_listing("RTX 4090 24GB Gaming OC") is False
