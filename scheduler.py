@@ -129,7 +129,10 @@ HDD_QUERY_LIST = [
     "hard drive 12TB",
     # Job lots — parsed with a per-unit quantity and valued against the
     # single-item medians (lots themselves never enter the market stats).
+    # Two phrasings: the TB-anchored one misses small-capacity lots
+    # ("Job Lot 6x 2.5\" Hard Drives 500GB").
     "hard drive job lot TB",
+    "hard drives job lot",
 ]
 
 SSD_QUERY_LIST = [
