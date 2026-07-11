@@ -71,15 +71,17 @@
   <h2>BIN watcher <span class="sub" style="font-weight:400">(admin)</span></h2>
   <p class="help">Sweeps newly-listed Buy-It-Now items between full scrapes and pushes finds
     immediately — no prediction gate, since a fixed price can't be bid up. Changes apply
-    within a minute, no restart needed.</p>
+    within a minute, no restart needed. <b>Which hardware types each person gets is set per
+    recipient</b> — the category ticks in Deal notifications below apply to BIN finds too.</p>
   <div class="form-grid">
     <div class="fg"><label>Scan every (minutes, 5–240)</label>
       <input type="number" id="bin-scan" min="5" max="240" step="5"></div>
     <div class="fg"><label>Min discount to notify (%, 5–90)</label>
       <input type="number" id="bin-disc" min="5" max="90" step="1"></div>
   </div>
-  <p class="help" style="margin-top:12px">Model filters — only push a find when its model
-    contains one of these comma-separated terms. Blank = everything in that category.</p>
+  <p class="help" style="margin-top:12px">Model filters — narrow WITHIN a type: a find only
+    pushes when its model contains one of these comma-separated terms (applies to everyone,
+    on top of the per-recipient category ticks). Blank = everything in that type.</p>
   <div class="form-grid" id="bin-filters">
     <div class="fg"><label>GPU</label><input type="text" data-bin-filter="gpu" placeholder="e.g. RTX 30, RTX 40, Arc"></div>
     <div class="fg"><label>CPU</label><input type="text" data-bin-filter="cpu" placeholder="e.g. i7, Ryzen 7, Xeon"></div>
