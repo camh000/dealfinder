@@ -7,6 +7,7 @@ const ASSETS = [
   '/static/js/common.js',
   '/static/js/deals.js',
   '/static/js/deal.js',
+  '/static/js/bin.js',
   '/static/js/outcomes.js',
   '/static/js/prices.js',
   '/static/js/model.js',

@@ -859,6 +859,47 @@ def alerts_delete(aid):
             conn.close()
 
 
+# ── Buy-It-Now feed ─────────────────────────────────────────────────────────────
+# The BIN watcher notifies at bin_min_discount (default 25%); this page is the
+# browsable version at a friendlier threshold — every live fixed-price listing
+# currently under its market median, no auction dynamics, first to buy wins.
+
+@app.route('/bin')
+def bin_page():
+    return render_template('bin.html')
+
+
+@app.route('/api/bin-deals')
+def api_bin_deals():
+    want = (request.args.get('type') or 'all').lower()
+    if want != 'all' and want not in queries.CATEGORIES:
+        return jsonify({"status": "error", "message": "unknown category"}), 400
+    try:
+        min_discount = max(5.0, min(float(request.args.get('min_discount', 10)), 90.0))
+    except ValueError:
+        min_discount = 10.0
+    cats = list(queries.CATEGORIES) if want == 'all' else [want]
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        rows = []
+        for cat in cats:
+            cur.execute(queries.build_bin_deals_query(cat, min_discount))
+            for r in cur.fetchall():
+                r['_cat'] = cat
+                r['_label'] = queries.model_label_for_row(cat, r)
+                rows.append(r)
+        rows.sort(key=lambda r: float(r.get('DiscountPct') or 0), reverse=True)
+        return jsonify({"status": "ok", "deals": rows})
+    except Exception as e:
+        log.error("bin_deals error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 # ── insight pages: prediction accuracy + near-miss experiment ──────────────────
 # Linked from the OUTCOMES stat cards. Read-only analytics over DealOutcomes;
 # all math in Python so the SQL stays one plain SELECT each.

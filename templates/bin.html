@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Buy It Now — PC/DEALS{% endblock %}
+{% block page %}bin{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Buy It Now</h1>
+  <span class="sub">live fixed-price listings under their sold-market median — no bidding, first to buy wins</span>
+</div>
+
+<div class="toolbar">
+  <div class="pills" id="cat-pills">
+    <button class="pill active" data-cat="all">All</button>
+    <button class="pill" data-cat="gpu">GPU</button>
+    <button class="pill" data-cat="cpu">CPU</button>
+    <button class="pill" data-cat="hdd">HDD</button>
+    <button class="pill" data-cat="ssd">SSD</button>
+    <button class="pill" data-cat="ram">RAM</button>
+  </div>
+  <label>min discount <input type="number" id="f-disc" min="5" max="90" step="5" value="10" style="width:64px">%</label>
+  <span class="sub" id="bin-count"></span>
+  <span style="flex:1"></span>
+  <button class="btn-ghost" id="refresh-btn">refresh</button>
+</div>
+
+<div class="rows" id="rows"><div class="state"><span class="loader"></span>loading…</div></div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/bin.js"></script>
+{% endblock %}

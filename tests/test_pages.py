@@ -31,6 +31,7 @@ def client(request):
     ("/health", "System health"),
     ("/insights/predictions", "Prediction model"),
     ("/insights/nearmiss", "Near-miss experiment"),
+    ("/bin", "Buy It Now"),
 ])
 def test_page_renders(client, path, marker):
     resp = client.get(path)
@@ -47,6 +48,10 @@ def test_root_redirects_to_deals(client):
 def test_unknown_category_404s(client):
     assert client.get("/deals/psu").status_code == 404
     assert client.get("/model/psu").status_code == 404
+
+
+def test_bin_api_rejects_unknown_category(client):
+    assert client.get("/api/bin-deals?type=psu").status_code == 400
 
 
 def test_pages_share_base_chrome(client):
