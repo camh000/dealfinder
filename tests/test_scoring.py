@@ -209,6 +209,13 @@ class TestLotQuantity:
         ("Seagate Barracuda 8TB 3.5\" SATA", 1),
         # form factor must not read as a quantity
         ("Job lot of 3.5\" SATA hard drives", 1),
+        # model codes ending in X must not read as "x N" (WD30EZRX 3.5")
+        ("Western Digital 3TB SATA WD30EZRX 3.5\" 64MB Hard Drive 5400 RPM", 1),
+        ("Seagate ST3000DM001 3TB SATA x 2", 2),
+        ("WD Red 4TB WD40EFRX 5.4K SATA NAS drive", 1),
+        # lot-keyword + "Nx" with no capacity unit after the x
+        ("Job Lot / Bundle of 5x 2.5\" SATA Laptop Hard Drives", 5),
+        ("Mixed Job Lot 6x 2.5\" Laptop Hard Drives SATA/PATA 1TB", 6),
         # implausible quantity → treated as a single (prices itself out)
         ("99 x 4TB drives", 1),
     ])

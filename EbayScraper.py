@@ -378,12 +378,15 @@ def qualify_gpu_model(model: str | None, vram: int | None) -> str | None:
 # Quantity must sit adjacent to a capacity token or an explicit lot phrase —
 # a stray number misread as a quantity inflates a valuation N-fold and
 # manufactures a phantom mega-deal. (?!\.\d) rejects form factors: the 3 in
-# 'lot of 3.5" drives' is not a quantity.
+# 'lot of 3.5" drives' is not a quantity — and in the trailing-x patterns the
+# x must stand alone ((?<=[\s,\-])): model codes end in X ("WD30EZRX 3.5")
+# and once parsed a lone drive as a x3 lot.
 _LOT_QTY_PATTERNS = [
     re.compile(r'\b(\d{1,2})\s*[x×]\s*\d+(?:\.\d+)?\s*(?:tb|gb)\b', re.IGNORECASE),          # 5 x 4TB
     re.compile(r'\b(?:job\s*lot|joblot|lot|bundle|pack)\s+of\s+(\d{1,2})(?!\.\d)\b', re.IGNORECASE),  # job lot of 10
-    re.compile(r'\b\d+(?:\.\d+)?\s*(?:tb|gb)\b[^,;(]{0,20}?[x×]\s*(\d{1,2})\b', re.IGNORECASE),       # 4TB ... x5
-    re.compile(r'\b(?:job\s*lot|joblot|lot|bundle)\b[^,;(]{0,15}?[x×]\s*(\d{1,2})\b', re.IGNORECASE), # job lot x6
+    re.compile(r'\b\d+(?:\.\d+)?\s*(?:tb|gb)\b[^,;(]{0,20}?(?<=[\s,\-])[x×]\s*(\d{1,2})(?!\.\d)\b', re.IGNORECASE),   # 4TB ... x5
+    re.compile(r'\b(?:job\s*lot|joblot|lot|bundle)\b[^,;(]{0,15}?(?<=[\s,\-])[x×]\s*(\d{1,2})(?!\.\d)\b', re.IGNORECASE),  # job lot x6
+    re.compile(r'\b(?:job\s*lot|joblot|lot|bundle)\b[^,;(]{0,15}?\b(\d{1,2})\s*[x×](?![A-Za-z0-9])', re.IGNORECASE),  # job lot 5x 2.5" drives
 ]
 
 # Above this a "quantity" is more likely a misparse than a real lot; treat the
