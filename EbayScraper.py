@@ -713,6 +713,26 @@ def __ParseItems(soup, query, productType):
                     return "AMD"
                 return "NVIDIA"
 
+            # Whole systems (gaming laptops, prebuilts) mention their card and
+            # were parsing AS the card — an Alienware selling for £463 is not
+            # a GTX 1080 sale. Bare "laptop" is safe to match here: desktop
+            # card listings never say it, and MXM laptop GPU modules are a
+            # different market that must not blend in either. The RAM+storage
+            # pair is the generic spec-sheet tell.
+            _tl = title.lower()
+            _is_system_gpu = (
+                any(k in _tl for k in ['laptop', 'notebook', 'gaming pc', 'desktop pc',
+                                        'mini pc', 'mini-pc', 'all-in-one', 'complete pc',
+                                        'pc bundle', 'custom pc', 'full pc', 'gaming computer',
+                                        'gaming rig', 'gaming setup', 'pre-built', 'prebuilt',
+                                        'desktop computer', 'compact pc'])
+                or (bool(re.search(r'\d+\s*gb\s*(?:ddr\d?|ram)\b', _tl))
+                    and bool(re.search(r'\d+\s*(?:tb|gb)\s*(?:ssd|nvme|hdd|m\.2)', _tl)))
+            )
+            if _is_system_gpu:
+                log.debug("[%s] Skipping system listing in GPU: %s", query, title[:60])
+                continue
+
             vram  = extract_vram(title)
             model = qualify_gpu_model(extract_model(title), vram)
             brand = extract_brand(title)
@@ -845,6 +865,19 @@ def __ParseItems(soup, query, productType):
             # or an SSHD hybrid — those price like a different market entirely.
             if title_is_solid_state(title):
                 log.debug("[%s] Skipping solid-state listing in HDD: %s", query, title[:60])
+                continue
+            # Whole systems mention their drive too ("Gaming Laptop ... 1TB
+            # HDD"). NB bare 'laptop' is NOT a tell here — 2.5" drives are
+            # legitimately sold as "laptop hard drives" — but no bare-drive
+            # title ever states RAM, and the PC phrases are unambiguous.
+            _is_system_hdd = (
+                bool(re.search(r'\d+\s*gb\s*(?:ddr\d?|ram)\b', _tl))
+                or any(k in _tl for k in ['gaming pc', 'gaming laptop', 'desktop pc',
+                                           'mini pc', 'all-in-one', 'complete pc',
+                                           'pc bundle', 'gaming computer', 'prebuilt'])
+            )
+            if _is_system_hdd:
+                log.debug("[%s] Skipping system listing in HDD: %s", query, title[:60])
                 continue
 
             HDD_BRANDS = ['SEAGATE','TOSHIBA','SAMSUNG','HITACHI','HGST','FUJITSU','MAXTOR']

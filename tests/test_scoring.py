@@ -887,6 +887,30 @@ class TestJunkListingGate:
         assert _parse_one("Intel Xeon Gold 6248 - dead, bent pins", "CPU") is None
         assert _parse_one("Samsung 970 EVO 1TB NVMe SSD damaged", "SSD") is None
 
+    @pytest.mark.parametrize("title", [
+        # real sold rows that were poisoning GPU medians (Cam: laptops in the 3050s)
+        "MSI GL65 9SC gaming laptop i5 9300H, Nvidia GTX 1650, 16gb Ram, 512GB SSD",
+        "Alienware 17 R5 Gaming Laptop Intel Core I9 8th Gen, NVIDIA GTX 1080",
+        "Lenovo IdeaPad Gaming 3 RTX 3050 Ti Laptop 16GB RAM",
+        "Fast Gaming PC, i5-7400, 16GB, GTX 1650 EX Plus, 256GB SSD & 1TB HD, WiFi",
+        "Mini PC - GTX 1060 6GB, 16GB RAM, 1.5TB M.2 SSD, i5-9400f 9th gen",
+        "HP Z VR G2 I7-9850H 16GB DDR4 1TB SSD RTX2080 (8GB) Gaming Compact PC",
+    ])
+    def test_systems_skipped_from_gpu(self, title):
+        assert _parse_one(title, "GPU") is None, f"system parsed as a GPU: {title}"
+
+    @pytest.mark.parametrize("title", [
+        "Dell G3 Gaming Laptop i7 16GB RAM 1TB HDD GTX 1660",
+        "Gaming PC Intel i5 16GB RAM 2TB SATA Hard Drive Windows 11",
+    ])
+    def test_systems_skipped_from_hdd(self, title):
+        assert _parse_one(title, "HDD") is None, f"system parsed as an HDD: {title}"
+
+    def test_laptop_drives_still_parse_as_hdd(self):
+        """'laptop hard drive' is a legitimate 2.5-inch drive, NOT a system."""
+        assert _parse_one("Seagate 1TB 2.5\" SATA Laptop Hard Drive Tested", "HDD") is not None
+        assert _parse_one("2x 2.5\" SATA Laptop Hard Drives 500GB", "HDD") is not None
+
     def test_accessory_detector_direct(self):
         assert EbayScraper.is_accessory_listing("RTX 4090 heatsink and fans (no gpu)") is True
         assert EbayScraper.is_accessory_listing("RTX 4090 24GB Gaming OC") is False
