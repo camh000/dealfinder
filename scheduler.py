@@ -157,6 +157,17 @@ _last_full_scrape: datetime | None = None
 # Maps str(ebay_id) → datetime of last targeted scrape for that item.
 _last_targeted: dict = {}
 
+# Exact end-time refinement: one item-page fetch per tracked deal once it's
+# inside REFINE_UNDER_S — search countdowns truncate to the minute, but item
+# pages embed the millisecond-exact "endDate". str(id) → True once attempted.
+REFINE_UNDER_S = 3600
+_refined: dict = {}
+
+# Sub-minute one-shots timed against the refined end: a final look as close
+# to the hammer as polling allows. (seconds_remaining, tag) — each fires once.
+_FINAL_ONESHOTS = [(90, 't90'), (25, 't25')]
+_oneshot_fired: dict = {}
+
 # ── Scrape functions ───────────────────────────────────────────────────────────
 
 def notify_new_deals(deals: list) -> None:
@@ -326,8 +337,33 @@ def run_targeted_scrapes():
     now = _utcnow()
     items_to_scrape = []
 
+    live_keys = set()
     for ebay_id, category, title, end_time in active_deals:
-        minutes_remaining = (end_time - now).total_seconds() / 60
+        key = str(ebay_id)
+        live_keys.add(key)
+        seconds_remaining = (end_time - now).total_seconds()
+
+        # One-time exact end refinement once inside the targeted window.
+        if 0 < seconds_remaining <= REFINE_UNDER_S and key not in _refined:
+            _refined[key] = True
+            exact = EbayScraper.RefineEndTime(ebay_id)
+            if exact is not None:
+                end_time = exact
+                seconds_remaining = (end_time - now).total_seconds()
+
+        # Sub-minute one-shots (fire once each, timed on the exact end).
+        fired = _oneshot_fired.setdefault(key, set())
+        oneshot_due = False
+        for threshold_s, tag in _FINAL_ONESHOTS:
+            if 0 < seconds_remaining <= threshold_s and tag not in fired:
+                fired.add(tag)
+                oneshot_due = True
+        if oneshot_due:
+            items_to_scrape.append((ebay_id, category, title))
+            _last_targeted[key] = now
+            continue
+
+        minutes_remaining = seconds_remaining / 60
 
         if minutes_remaining <= 0:
             # Already ended — WHERE clause should exclude these, but guard defensively.
@@ -350,6 +386,11 @@ def run_targeted_scrapes():
         if last_scraped is None or (now - last_scraped) >= timedelta(minutes=applicable_interval):
             items_to_scrape.append((ebay_id, category, title))
             _last_targeted[key] = now
+
+    # Drop bookkeeping for deals no longer live.
+    for d in (_last_targeted, _refined, _oneshot_fired):
+        for k in [k for k in d if k not in live_keys]:
+            del d[k]
 
     if items_to_scrape:
         log.info(
@@ -445,6 +486,12 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("SSD table setup failed: %s", e)
 
+    # EndTimeExact flag (exact end refinement from item pages).
+    try:
+        EbayScraper.EnsureEndTimeExact()
+    except Exception as e:
+        log.error("EndTimeExact migration failed: %s", e)
+
     # Deal price-trajectory table (feeds future time-aware premiums).
     try:
         EbayScraper.EnsureDealSnapshots()
@@ -461,7 +508,9 @@ if __name__ == "__main__":
     run_full_scrape()
 
     while True:
-        time.sleep(60)
+        # 10 s tick: sub-minute one-shots need finer scheduling than the
+        # old 60 s heartbeat. Idle ticks cost one small DB query.
+        time.sleep(10)
         now = _utcnow()
 
         # Full scrape: due if interval has elapsed since last run.
@@ -469,5 +518,5 @@ if __name__ == "__main__":
                 (now - _last_full_scrape) >= timedelta(minutes=FULL_SCRAPE_INTERVAL_MINUTES):
             run_full_scrape()
 
-        # Targeted scrapes: checked every loop tick (every 60 s).
+        # Targeted scrapes: checked every loop tick.
         run_targeted_scrapes()

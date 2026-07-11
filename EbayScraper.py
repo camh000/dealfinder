@@ -1245,7 +1245,7 @@ def _upload(cur, p: Product, product_type: str) -> int:
             Shipping = VALUES(Shipping),
             Quantity = VALUES(Quantity),
             Bids = VALUES(Bids),
-            EndTime = VALUES(EndTime),
+            EndTime = IF(EndTimeExact = 1, EndTime, VALUES(EndTime)),
             SoldDate = VALUES(SoldDate),
             URL = VALUES(URL),
             SellerFeedbackPct = VALUES(SellerFeedbackPct),
@@ -1680,11 +1680,13 @@ def GetActiveDeals() -> list:
         conn = _get_connection()
         cur = conn.cursor()
         try:
+            # e.EndTime is the live (and possibly exact-refined) end; the
+            # DealOutcomes copy is the surfacing-time approximation.
             cur.execute("""
-                SELECT o.EbayID, o.Category, e.Title, o.EndTime
+                SELECT o.EbayID, o.Category, e.Title, COALESCE(e.EndTime, o.EndTime)
                 FROM   Scraper.DealOutcomes o
                 JOIN   Scraper.EBAY e ON e.ID = o.EbayID
-                WHERE  o.EndTime > NOW()
+                WHERE  COALESCE(e.EndTime, o.EndTime) > NOW()
                   AND  e.SoldDate IS NULL
             """)
             rows = cur.fetchall()
@@ -1992,6 +1994,76 @@ def EnsureCanonicalUrls() -> None:
     except mariadb.Error as e:
         log.error("EnsureCanonicalUrls failed: %s", e)
         conn.rollback()
+    finally:
+        conn.close()
+
+
+# Item pages embed the auction's exact end ("endDate":"...Z") — search
+# results only show a truncated countdown ("44m"), so every derived EndTime
+# is up to 59s early. One item-page fetch per tracked deal fixes that.
+_END_DATE_RE = re.compile(r'"endDate"\s*:\s*"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)"')
+
+
+def _parse_end_date(html: str):
+    """Exact naive-UTC end datetime from an item page, or None."""
+    m = _END_DATE_RE.search(html or '')
+    if not m:
+        return None
+    try:
+        dt = datetime.fromisoformat(m.group(1).replace('Z', '+00:00'))
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    except ValueError:
+        return None
+    # Sanity: an auction end more than 14 days out (or long past) is a
+    # parse of the wrong field.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if not (now - timedelta(days=1) < dt < now + timedelta(days=14)):
+        return None
+    return dt
+
+
+def RefineEndTime(ebay_id: int):
+    """Fetch the listing's item page and pin EndTime to the second.
+
+    Returns the exact datetime (or None). EndTimeExact=1 stops later
+    countdown-derived upserts from degrading it back to minute precision.
+    """
+    try:
+        html = _fetch_direct(f'https://www.ebay.co.uk/itm/{ebay_id}')
+        exact = _parse_end_date(html) if html else None
+        if exact is None:
+            log.warning("EndTime refinement: no endDate found for %s", ebay_id)
+            return None
+        conn = _get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE Scraper.EBAY SET EndTime = %s, EndTimeExact = 1
+                WHERE ID = %s
+            """, (exact, ebay_id))
+            conn.commit()
+        finally:
+            conn.close()
+        log.info("EndTime refined to the second: ID=%s ends %s", ebay_id, exact)
+        return exact
+    except Exception as e:
+        log.warning("EndTime refinement failed for %s: %s", ebay_id, e)
+        return None
+
+
+def EnsureEndTimeExact() -> None:
+    """EBAY.EndTimeExact flag — set once an item-page fetch pinned the end."""
+    DUP_COLUMN_ERRNO = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE Scraper.EBAY ADD COLUMN EndTimeExact TINYINT(1) NOT NULL DEFAULT 0")
+            conn.commit()
+            log.info("EBAY: added EndTimeExact column")
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("EBAY: unexpected error adding EndTimeExact: %s", e)
     finally:
         conn.close()
 
