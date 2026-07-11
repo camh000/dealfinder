@@ -339,7 +339,9 @@ def title_is_spinning_disk(title: str) -> bool:
 #  - GPU: needs the token NEAR a memory noun, because old cards legitimately
 #    write VRAM as "2GB DDR3". \bddr\d\b never matches GDDR6 (no word
 #    boundary inside GDDR), so modern VRAM specs are safe either way.
-_MEMORY_TOKEN = r'\bddr\d\b|\bpc[2-5]l?-?\d{3,5}\b|\b(?:so|r|u|lr)dimm\b|\bdimm\b|\bmt/s\b'
+# no trailing \b after the PC-number: part codes run straight into letter
+# suffixes ("PC4-3200AA")
+_MEMORY_TOKEN = r'\bddr\d\b|\bpc[2-5]l?-?\d{3,5}|\b(?:so|r|u|lr)dimm\b|\bdimm\b|\bmt/s\b'
 _MEMORY_TOKEN_RE = re.compile(_MEMORY_TOKEN, re.IGNORECASE)
 _MEMORY_MODULE_RE = re.compile(
     rf'(?:{_MEMORY_TOKEN})[^,;]{{0,40}}?\b(?:ram|dimm|sodimm|rdimm|udimm|memory)\b|'
@@ -765,6 +767,10 @@ def __ParseItems(soup, query, productType):
                 and re.search(r'\d+\s*(?:tb|gb)\s*(?:ssd|nvme|hdd|m\.2)', _tl))
             _is_system_gpu = (
                 'laptop' in _tl or 'notebook' in _tl
+                # tower phrasing is unambiguous even with no spec sheet —
+                # no card title calls itself a tower
+                or any(k in _tl for k in ['tower pc', 'desktop tower', 'gaming tower',
+                                           'mid tower', 'full tower', 'midi tower'])
                 or _ram_and_storage
                 or (_spec_evidence
                     and any(k in _tl for k in ['gaming pc', 'desktop pc', 'mini pc', 'mini-pc',

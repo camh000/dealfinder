@@ -953,6 +953,9 @@ class TestJunkListingGate:
         ("Kingston Fury Beast 64 GB: 2 x 32 GB, DDR5, 6400 MT/s, UDIMM", "SSD"),
         # a tower with an SSD in its spec sheet is not an SSD
         ("HP Pavilion P6-2480ea Intel Core i5 3330 128Gb SATA SSD 6Gb DDR3 Win 10", "SSD"),
+        # letter-suffixed part codes and tower phrasing (last two stragglers)
+        ("Dell XPS System RAM 16GB (2 x 8GB) SK Hynix 1Rx16 PC4-3200AA", "GPU"),
+        ("RTX 2060 Gaming Desktop Tower PC, Black Tempered Glass Case", "GPU"),
     ])
     def test_memory_modules_rejected_from_storage_and_gpu(self, title, cat):
         assert _parse_one(title, cat) is None, f"RAM stick leaked into {cat}: {title}"
