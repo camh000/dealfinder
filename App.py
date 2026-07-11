@@ -1946,7 +1946,9 @@ def deal_detail(ebay_id):
         snapshots = [[_iso_utc(t), float(p), int(b or 0)] for t, p, b in pcur.fetchall()]
 
         prediction = None
-        if category and listing["SoldDate"] is None:
+        # No prediction for Buy-It-Now — the asking price IS the final price;
+        # snipe premiums only model bidding dynamics.
+        if category and listing["SoldDate"] is None and listing["ListingType"] != 'bin':
             pcur.execute(queries.SNIPE_PREMIUM_QUERY)
             premiums = queries.median_ratios(pcur.fetchall())
             eff = float(listing["ItemPrice"] or 0) + float(listing["Shipping"] or 0)
