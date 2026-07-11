@@ -19,6 +19,11 @@ services:
       - 1.0.0.1
     env_file:
       - credentials.env
+    environment:
+      # credentials.env says host.docker.internal, which only exists on the
+      # bridge network — from the DMZ the database is the Tower LAN IP,
+      # reached through the UCG pinhole (the container's ONLY path to the LAN).
+      DB_HOST: 192.168.1.104
     # 'always' (not 'unless-stopped'): survives host reboots, engine updates
     # and manual stops - the outage went unnoticed for weeks because
     # unless-stopped deliberately never restarts a manually-stopped container.
