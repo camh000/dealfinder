@@ -269,6 +269,10 @@ class TestLotQuantity:
         ("Samsung 500GB 2.5\" SATA x3 drives", 3),
         # mid-title "Nx" marketing speak must NOT read as a lot
         ("WD Black 4TB drive 2x faster than previous gen", 1),
+        # PCIe lane widths must NOT read as quantities
+        ("Integral 1TB M.2 2242 NVMe PCIe Gen3 X4 SSD", 1),
+        ("WD Black SN770 1TB NVMe PCIe Gen4 x4 M.2 SSD", 1),
+        ("Samsung 970 EVO 500GB PCIe 3.0 x4 NVMe M.2 SSD", 1),
         # implausible quantity → treated as a single (prices itself out)
         ("99 x 4TB drives", 1),
     ])

@@ -110,3 +110,32 @@ def test_bootstrap_user_creation_validates_password(app_module):
     client = app_module.app.test_client()
     resp = client.post("/api/users", json={"username": "cam", "password": "short"})
     assert resp.status_code == 400
+
+
+def test_bin_settings_defaults_without_db(app_module):
+    """GET falls back to env defaults when AppConfig is unreachable."""
+    cfg = app_module.app.test_client().get("/api/bin-settings").get_json()
+    assert cfg["status"] == "ok"
+    assert cfg["scan_minutes"] == 30
+    assert cfg["min_discount"] == 25
+    assert cfg["enabled"] is True
+
+
+def test_bin_settings_post_requires_admin(app_module, monkeypatch):
+    monkeypatch.setattr(app_module, "_users_exist", lambda: True)
+    client = app_module.app.test_client()
+    with client.session_transaction() as s:
+        s["uid"], s["uname"], s["admin"] = 2, "dad", False
+    resp = client.post("/api/bin-settings",
+                       json={"scan_minutes": 15, "min_discount": 30, "enabled": True})
+    assert resp.status_code == 403
+
+
+def test_bin_settings_post_validates_ranges(app_module):
+    client = app_module.app.test_client()   # bootstrap: admin check open
+    for body in ({"scan_minutes": 2, "min_discount": 30, "enabled": True},
+                 {"scan_minutes": 500, "min_discount": 30, "enabled": True},
+                 {"scan_minutes": 30, "min_discount": 2, "enabled": True},
+                 {"scan_minutes": 30, "min_discount": 95, "enabled": True},
+                 {"scan_minutes": "nope", "min_discount": 30, "enabled": True}):
+        assert client.post("/api/bin-settings", json=body).status_code == 400, body

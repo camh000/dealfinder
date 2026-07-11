@@ -848,6 +848,84 @@ def alerts_delete(aid):
             conn.close()
 
 
+# ── BIN watcher settings ────────────────────────────────────────────────────────
+# Runtime-adjustable from Settings (admin). Stored in AppConfig; the scraper
+# re-reads them every scan decision (EbayScraper.GetBinConfig, 60s cache), so
+# changes apply within a minute — no container restart. Env vars are the
+# defaults for installs that never touch the UI.
+
+_BIN_LIMITS = {'scan_minutes': (5, 240), 'min_discount': (5, 90)}
+
+
+def _bin_defaults() -> dict:
+    return {
+        'enabled': os.environ.get('BIN_ENABLED', '1').lower() not in ('0', 'false', ''),
+        'scan_minutes': int(os.environ.get('BIN_SCAN_MINUTES', '30')),
+        'min_discount': float(os.environ.get('BIN_MIN_DISCOUNT', '25')),
+    }
+
+
+@app.route('/api/bin-settings', methods=['GET'])
+def bin_settings_get():
+    cfg = _bin_defaults()
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT K, V FROM Scraper.AppConfig WHERE K IN "
+                    "('bin_enabled', 'bin_scan_minutes', 'bin_min_discount')")
+        stored = dict(cur.fetchall())
+        if 'bin_enabled' in stored:
+            cfg['enabled'] = stored['bin_enabled'] == '1'
+        if 'bin_scan_minutes' in stored:
+            cfg['scan_minutes'] = int(stored['bin_scan_minutes'])
+        if 'bin_min_discount' in stored:
+            cfg['min_discount'] = float(stored['bin_min_discount'])
+    except Exception as e:
+        log.error("bin_settings_get error: %s", e)
+    finally:
+        if conn:
+            conn.close()
+    return jsonify({"status": "ok", **cfg})
+
+
+@app.route('/api/bin-settings', methods=['POST'])
+def bin_settings_post():
+    err = _require_admin()
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    try:
+        scan = int(body.get('scan_minutes'))
+        disc = float(body.get('min_discount'))
+        enabled = bool(body.get('enabled'))
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "message": "scan_minutes and min_discount must be numbers"}), 400
+    lo, hi = _BIN_LIMITS['scan_minutes']
+    if not lo <= scan <= hi:
+        return jsonify({"status": "error", "message": f"scan interval must be {lo}-{hi} minutes"}), 400
+    lo, hi = _BIN_LIMITS['min_discount']
+    if not lo <= disc <= hi:
+        return jsonify({"status": "error", "message": f"min discount must be {lo}-{hi}%"}), 400
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        for k, v in (('bin_enabled', '1' if enabled else '0'),
+                     ('bin_scan_minutes', str(scan)),
+                     ('bin_min_discount', str(disc))):
+            cur.execute("INSERT INTO Scraper.AppConfig (K, V) VALUES (%s, %s) "
+                        "ON DUPLICATE KEY UPDATE V = VALUES(V)", (k, v))
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        log.error("bin_settings_post error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 def _compute_sw_version() -> str:
     """Produce a short version tag used for the SW cache name.
 

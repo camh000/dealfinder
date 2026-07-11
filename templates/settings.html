@@ -67,6 +67,24 @@
   </div>
 </div>
 
+<div class="card" id="bin-card" style="display:none">
+  <h2>BIN watcher <span class="sub" style="font-weight:400">(admin)</span></h2>
+  <p class="help">Sweeps newly-listed Buy-It-Now items between full scrapes and pushes finds
+    immediately — no prediction gate, since a fixed price can't be bid up. Changes apply
+    within a minute, no restart needed.</p>
+  <div class="form-grid">
+    <div class="fg"><label>Scan every (minutes, 5–240)</label>
+      <input type="number" id="bin-scan" min="5" max="240" step="5"></div>
+    <div class="fg"><label>Min discount to notify (%, 5–90)</label>
+      <input type="number" id="bin-disc" min="5" max="90" step="1"></div>
+  </div>
+  <div class="check-row">
+    <label><input type="checkbox" id="bin-enabled"> Enabled</label>
+    <button class="btn" id="bin-save">Save</button>
+    <span class="sub" id="bin-status"></span>
+  </div>
+</div>
+
 <div class="card" id="notify-card">
   <h2>Deal notifications</h2>
   <p class="help">

@@ -397,9 +397,15 @@ _LOT_QTY_PATTERNS = [
     # the anchor keeps model codes / "2x faster" marketing mid-title out.
     re.compile(r'^\s*(\d{1,2})\s*[x×](?![A-Za-z0-9])', re.IGNORECASE),
     # Trailing "x2 Units" / "x4 drives": the unit noun right after the count
-    # makes this unambiguous wherever it sits in the title.
-    re.compile(r'(?<=[\s,\-.])[x×]\s*(\d{1,2})\s*(?:units?|drives?|hdds?|ssds?|sticks?|pcs?|pieces?)\b', re.IGNORECASE),
+    # makes this unambiguous wherever it sits in the title. 'SSD'/'HDD' are
+    # deliberately NOT accepted nouns: "PCIe Gen3 x4 SSD" is a lane width.
+    re.compile(r'(?<=[\s,\-.])[x×]\s*(\d{1,2})\s*(?:units?|drives?|sticks?|pcs?|pieces?)\b', re.IGNORECASE),
 ]
+
+# PCIe lane specs ("PCIe Gen3 x4", "PCIe 3.0 x4 NVMe SSD") look exactly like
+# the capacity-then-xN lot form; a match whose span mentions the bus is a
+# width, not a count.
+_LOT_LANE_RE = re.compile(r'pcie|\bgen\s*\d|\blanes?\b', re.IGNORECASE)
 
 # Above this a "quantity" is more likely a misparse than a real lot; treat the
 # listing as a single so it prices itself out of the deal feed (false negative
@@ -427,7 +433,7 @@ def extract_lot_quantity(title: str) -> int:
     """Number of units in a multi-item listing; 1 when not confidently a lot."""
     for pat in _LOT_QTY_PATTERNS:
         m = pat.search(title or '')
-        if m:
+        if m and not _LOT_LANE_RE.search(m.group(0)):
             qty = int(m.group(1))
             if 2 <= qty <= LOT_MAX_QTY:
                 return qty
@@ -2655,6 +2661,45 @@ def SurfaceBinDeals(min_discount: float = 25) -> list[dict]:
         return []
     finally:
         conn.close()
+
+
+_bin_cfg_cache = {'at': 0.0, 'val': None}
+
+
+def GetBinConfig() -> dict:
+    """BIN watcher settings: AppConfig (Settings page) over env defaults.
+
+    {'enabled': bool, 'scan_minutes': int, 'min_discount': float}. Cached 60s
+    — the scheduler consults this every 10s tick, and a settings change
+    applying within a minute is as live as anyone needs. Tolerates AppConfig
+    not existing yet (the web container creates it)."""
+    now = time.time()
+    if _bin_cfg_cache['val'] is not None and now - _bin_cfg_cache['at'] < 60:
+        return _bin_cfg_cache['val']
+    cfg = {
+        'enabled': os.environ.get('BIN_ENABLED', '1').lower() not in ('0', 'false', ''),
+        'scan_minutes': int(os.environ.get('BIN_SCAN_MINUTES', '30')),
+        'min_discount': float(os.environ.get('BIN_MIN_DISCOUNT', '25')),
+    }
+    try:
+        conn = _get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT K, V FROM Scraper.AppConfig WHERE K IN "
+                        "('bin_enabled', 'bin_scan_minutes', 'bin_min_discount')")
+            stored = dict(cur.fetchall())
+        finally:
+            conn.close()
+        if 'bin_enabled' in stored:
+            cfg['enabled'] = stored['bin_enabled'] == '1'
+        if 'bin_scan_minutes' in stored:
+            cfg['scan_minutes'] = max(5, int(stored['bin_scan_minutes']))
+        if 'bin_min_discount' in stored:
+            cfg['min_discount'] = float(stored['bin_min_discount'])
+    except Exception:
+        pass
+    _bin_cfg_cache.update(at=now, val=cfg)
+    return cfg
 
 
 # Alert cooldowns: a listing sitting under the target must not ping every

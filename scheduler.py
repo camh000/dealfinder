@@ -81,8 +81,9 @@ SURFACE_NEARMISS_DISCOUNT = float(os.environ.get('SURFACE_NEARMISS_DISCOUNT', '1
 # moment it's seen — and gone in minutes, hence a cadence faster than the full
 # scrape. The discount bar is stricter than the auction feed's: every find
 # pings a phone immediately, so it has to be worth the interruption.
-BIN_SCAN_MINUTES = int(os.environ.get('BIN_SCAN_MINUTES', '30'))
-BIN_MIN_DISCOUNT = float(os.environ.get('BIN_MIN_DISCOUNT', '25'))
+# Enabled/interval/threshold live in EbayScraper.GetBinConfig(): the Settings
+# page (AppConfig) wins, BIN_SCAN_MINUTES / BIN_MIN_DISCOUNT / BIN_ENABLED
+# env vars are the defaults.
 
 # Targeted-scrape tiers: (threshold_minutes, interval_minutes)
 # When a tracked deal has <= threshold_minutes remaining, scrape it every interval_minutes.
@@ -281,11 +282,11 @@ def notify_bin_finds(finds: list) -> None:
                             r.get('Name'), row.get('ID'), e)
 
 
-def run_bin_scan():
+def run_bin_scan(min_discount: float):
     """Sweep newly-listed BIN items for all categories, then push new finds."""
     global _last_bin_scan
     _last_bin_scan = _utcnow()      # set first: a crashing scan must not hot-loop
-    log.info("Starting BIN scan...")
+    log.info("Starting BIN scan (min discount %.0f%%)...", min_discount)
     for query_list, product_type in [
         (GPU_QUERY_LIST, 'GPU'),
         (CPU_QUERY_LIST, 'CPU'),
@@ -299,7 +300,7 @@ def run_bin_scan():
         except Exception as e:
             log.error("BIN scan %s failed: %s", product_type, e)
     try:
-        notify_bin_finds(EbayScraper.SurfaceBinDeals(BIN_MIN_DISCOUNT))
+        notify_bin_finds(EbayScraper.SurfaceBinDeals(min_discount))
     except Exception as e:
         log.error("BIN surfacing failed: %s", e)
     log.info("BIN scan complete.")
@@ -617,10 +618,13 @@ if __name__ == "__main__":
                 (now - _last_full_scrape) >= timedelta(minutes=FULL_SCRAPE_INTERVAL_MINUTES):
             run_full_scrape()
 
-        # BIN fast lane: sweep newly-listed fixed-price items between full runs.
-        if _last_bin_scan is None or \
-                (now - _last_bin_scan) >= timedelta(minutes=BIN_SCAN_MINUTES):
-            run_bin_scan()
+        # BIN fast lane: sweep newly-listed fixed-price items between full
+        # runs. Settings are re-read each tick (60s cache) so the Settings
+        # page can retune or pause the lane without a restart.
+        bin_cfg = EbayScraper.GetBinConfig()
+        if bin_cfg['enabled'] and (_last_bin_scan is None or
+                (now - _last_bin_scan) >= timedelta(minutes=bin_cfg['scan_minutes'])):
+            run_bin_scan(bin_cfg['min_discount'])
 
         # Targeted scrapes: checked every loop tick.
         run_targeted_scrapes()

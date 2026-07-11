@@ -42,10 +42,40 @@ async function loadMe() {
   $('#account-card').style.display = me ? '' : 'none';
   $('#alerts-card').style.display = (me || bootstrap) ? '' : 'none';
   $('#users-card').style.display = (me && me.admin) ? '' : 'none';
+  $('#bin-card').style.display = (bootstrap || (me && me.admin)) ? '' : 'none';
   if (me) $('#acct-who').textContent = `— signed in as ${me.name}${me.admin ? ' (admin)' : ''}`;
   if (me && me.admin) loadUsers();
   if (me || bootstrap) loadAlerts();
+  if (bootstrap || (me && me.admin)) loadBinSettings();
 }
+
+/* ── BIN watcher (admin) ── */
+async function loadBinSettings() {
+  try {
+    const cfg = await fetch('/api/bin-settings').then(r => r.json());
+    if (cfg.status !== 'ok') return;
+    $('#bin-scan').value = cfg.scan_minutes;
+    $('#bin-disc').value = cfg.min_discount;
+    $('#bin-enabled').checked = cfg.enabled;
+  } catch { /* card just keeps its placeholders */ }
+}
+
+$('#bin-save')?.addEventListener('click', async () => {
+  $('#bin-status').textContent = '…';
+  try {
+    const res = await fetch('/api/bin-settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scan_minutes: Number($('#bin-scan').value),
+        min_discount: Number($('#bin-disc').value),
+        enabled: $('#bin-enabled').checked,
+      }),
+    });
+    const data = await res.json();
+    $('#bin-status').textContent = data.status === 'ok'
+      ? 'saved ✓ — live within a minute' : (data.message || 'error');
+  } catch { $('#bin-status').textContent = 'network error'; }
+});
 
 $('#boot-create')?.addEventListener('click', async () => {
   $('#boot-status').textContent = '…';
