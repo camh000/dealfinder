@@ -359,6 +359,7 @@ class TestGpuLeakGuard:
         "NVIDIA Quadro RTX 8000 48GB GDDR6 Graphics GPU",
         "Edge Gaming Pc RTX 5060Ti Water Cooled 1tb",
         "Custom Build Gaming Desktop PC NVIDIA GeForce RTX 1TB SSD Windows",
+        'VAT-FREE: Lenovo P17 G2 W-11855M RTX A5000 17" FHD 128GB-RAM 3TB-SSD WIN11',
     ])
     def test_gpu_titles_rejected_from_drives(self, title):
         assert _parse_one(title, "HDD") is None

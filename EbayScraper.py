@@ -613,7 +613,10 @@ def strip_leading_total(title: str) -> str:
 # token means a graphics card or a whole gaming machine leaked into HDD/SSD
 # (its "2TB" is the system's drive, not the product). title_is_system catches
 # most, but a bare GPU listing ("NVIDIA Quadro RTX 8000 48GB") isn't a system.
-_GPU_TELL_RE = re.compile(r'geforce|radeon|\bgtx\b|\bquadro\b|\brtx[\s-]*\d', re.IGNORECASE)
+# \brtx[\s-]*[a-z]?\d catches both consumer "RTX 3090" and workstation
+# "RTX A5000" (A-series) — a Lenovo P17 laptop with an RTX A5000 slipped the
+# \brtx\d form and parsed its "128GB-RAM" as a 128GB drive.
+_GPU_TELL_RE = re.compile(r'geforce|radeon|\bgtx\b|\bquadro\b|\brtx[\s-]*[a-z]?\d', re.IGNORECASE)
 
 
 def extract_lot_quantity(title: str) -> int:
