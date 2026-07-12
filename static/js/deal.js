@@ -29,10 +29,11 @@ function statStrip(d) {
     cells.push(`<div class="stat"><b class="countdown num" ${endsAttr(l.EndTime)}></b>
         <span>remaining${l.EndTimeExact ? ' (exact)' : ''}</span></div>`);
   if (l.ListingType === 'bin')
-    cells.push(`<div class="stat"><b class="num">BIN</b><span>fixed price${l.HasBestOffer === 1 ? ' · offers' : ''}</span></div>`);
+    cells.push(`<div class="stat"><b class="num">BIN</b><span>fixed price${
+      l.HasBid === 1 ? ' · +bids' : ''}${l.HasBestOffer === 1 ? ' · offers' : ''}</span></div>`);
   else
     cells.push(`<div class="stat"><b class="num">${l.Bids || 0}</b><span>bids${
-      l.HasBin === 1 ? ' · +Buy It Now' : l.HasBestOffer === 1 ? ' · +offers' : ''}</span></div>`);
+      l.HasBin === 1 ? ' · +Buy It Now' : ''}${l.HasBestOffer === 1 ? ' · offers' : ''}</span></div>`);
   if (l.SellerFeedbackPct != null && l.SellerFeedbackCount >= 3)
     cells.push(`<div class="stat"><b class="num">${l.SellerFeedbackPct}%</b>
         <span>seller (${l.SellerFeedbackCount})</span></div>`);
@@ -70,14 +71,17 @@ function bigPosbar(d) {
    listings hedge rather than hide. */
 function maxBidAdvisor(d) {
   const l = d.listing, s = d.stats;
-  const isBin = l.ListingType === 'bin';
-  const isAuction = !isBin;
-  const live = !l.SoldDate && (isBin || (l.EndTime && new Date(l.EndTime) > Date.now()));
+  const isBinType = l.ListingType === 'bin';
+  const live = !l.SoldDate && (isBinType || (l.EndTime && new Date(l.EndTime) > Date.now()));
   if (!live || !s || s.median == null) return;
 
-  const hasOffer = l.HasBestOffer === 1;
+  // A listing can offer several routes at once — trust the enriched flags,
+  // fall back to ListingType when a flag is NULL (not yet enriched).
+  const canBid   = l.HasBid === 1 || (l.HasBid == null && !isBinType);
+  const canBuy   = l.HasBin === 1 || (l.HasBin == null && isBinType);
+  const canOffer = l.HasBestOffer === 1;
   const offerKnown = l.HasBestOffer != null;
-  const hasBinOption = isBin || l.HasBin === 1;   // a fixed Buy-It-Now price exists
+
   const qty = Number(l.Quantity) || 1;
   const ship = Number(l.Shipping) || 0;
   const current = Number(l.ItemPrice) || 0;
@@ -85,8 +89,8 @@ function maxBidAdvisor(d) {
 
   $('#maxbid-card').style.display = '';
 
-  // Pure fixed price with NO offers → no negotiation table, just a verdict.
-  if (isBin && offerKnown && !hasOffer) {
+  // Fixed price you can only buy at (no bids, no offers) → verdict, no table.
+  if (canBuy && !canBid && !canOffer && offerKnown) {
     const disc = (1 - (current + ship) / (s.median * qty)) * 100;
     $('#maxbid-title').textContent = 'Fixed price';
     $('#maxbid-body').innerHTML = `<p class="help" style="font-size:14px;margin:0">
@@ -104,19 +108,28 @@ function maxBidAdvisor(d) {
   ].filter(r => cap(r.margin) > 0);
   if (!rows.length) return;
 
-  // Title + column header + closing note vary by which routes exist.
+  // Name the routes in plain English for the closing note.
+  const routeWords = [];
+  if (canBid) routeWords.push('place a bid');
+  if (canBuy) routeWords.push('use Buy It Now');
+  if (canOffer) routeWords.push('send a Best Offer');
+  const routesPhrase = routeWords.length === 1 ? routeWords[0]
+    : routeWords.slice(0, -1).join(', ') + ' or ' + routeWords.slice(-1);
+
+  // Title + column header. "Price advisor" whenever more than one route
+  // exists (Cam: an auction that also takes offers is a price advisor);
+  // single-route pages keep their specific name.
+  const routeCount = (canBid ? 1 : 0) + (canBuy ? 1 : 0) + (canOffer ? 1 : 0);
   let title, colHead, note;
-  if (isAuction && hasOffer) {
+  if (routeCount > 1) {
     title = 'Price advisor';
-    colHead = 'Bid / offer up to';
-    note = `This listing takes <b>both bids and Best Offers</b>. Whichever route you use — place a bid, or send an offer — don't go above these figures.`;
-  } else if (isAuction) {
+    colHead = 'Pay up to';
+    note = `This listing lets you <b>${routesPhrase}</b> — whichever route you take, don't pay above these figures to stay under market.`;
+  } else if (canBid) {
     title = 'Max-bid advisor';
     colHead = 'Bid up to';
-    note = hasBinOption
-      ? `This auction also has a <b>Buy It Now</b> — buying instantly is only worth it if that fixed price is below your cap.`
-      : `Bids are what you enter on eBay (delivery excluded); margins compare the delivery-inclusive total against market.`;
-  } else if (hasOffer) {
+    note = `Bids are what you enter on eBay (delivery excluded); margins compare the delivery-inclusive total against market.`;
+  } else if (canOffer) {
     title = 'Offer advisor';
     colHead = 'Offer';
     note = `This listing accepts <b>Best Offers</b> — asking is ${fmtGBP(current)}; open below the margin you want.`;
@@ -126,10 +139,11 @@ function maxBidAdvisor(d) {
     note = `Asking is ${fmtGBP(current)}. If this listing accepts Best Offers, open below the margin you want; otherwise just buy at or under these figures.`;
   }
 
-  // "Dead" row: for bidding, a margin is spent once the bid passes its cap;
-  // for a fixed asking price, it's already cleared once asking is under it.
-  const deadFor = v => isAuction ? current > v : current <= v;
-  const deadNote = isAuction ? 'already past this — ' : 'asking already clears this — just buy — ';
+  // "Dead" row: with bidding available a margin is spent once the current
+  // price passes its cap; a buy/offer-only listing already clears it when
+  // the asking price is under the cap.
+  const deadFor = v => canBid ? current > v : current <= v;
+  const deadNote = canBid ? 'already past this — ' : 'asking already clears this — just buy — ';
 
   $('#maxbid-title').textContent = title;
   $('#maxbid-body').innerHTML = `
@@ -209,13 +223,15 @@ function facts(d) {
   if (d.category) chips.push(d.category.toUpperCase());
   // buying routes this listing offers (from item-page enrichment) — a listing
   // can be several at once, e.g. an auction that also has a Buy It Now.
+  const canBid   = l.HasBid === 1 || (l.HasBid == null && l.ListingType !== 'bin');
+  const canBuy   = l.HasBin === 1 || (l.HasBin == null && l.ListingType === 'bin');
+  const canOffer = l.HasBestOffer === 1;
   const routes = [];
-  if (l.ListingType !== 'bin') routes.push('bidding');
-  if (l.ListingType === 'bin' || l.HasBin === 1) routes.push('Buy It Now');
-  if (l.HasBestOffer === 1) routes.push('Best Offer');
+  if (canBid) routes.push('bidding');
+  if (canBuy) routes.push('Buy It Now');
+  if (canOffer) routes.push('Best Offer');
   $('#facts-tbl tbody').innerHTML = [
-    factRow('Buying options', routes.length > 1 || l.HasBin === 1 || l.HasBestOffer === 1
-      ? routes.join(' · ') : null),
+    factRow('Buying options', routes.length > 1 ? routes.join(' · ') : null),
     factRow('Condition', o.ItemCondition && esc(o.ItemCondition)),
     factRow('Location', o.ItemLocation && esc(o.ItemLocation)),
     factRow('eBay category', o.CategoryPath && esc(o.CategoryPath.split(' > ').slice(-2).join(' > '))),

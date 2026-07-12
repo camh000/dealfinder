@@ -2480,13 +2480,14 @@ def EnsureEnrichmentColumns() -> None:
 
 
 def EnsureOfferColumns() -> None:
-    """EBAY.HasBin / HasBestOffer — item-page purchase-route flags feeding the
-    deal-page price advisor. NULL = not yet enriched (advisor hedges)."""
+    """EBAY.HasBid / HasBin / HasBestOffer — item-page purchase-route flags
+    feeding the deal-page price advisor. A listing can offer several at once
+    (an auction with a Buy-It-Now). NULL = not yet enriched (advisor hedges)."""
     DUP_COLUMN_ERRNO = 1060
     conn = _get_connection()
     try:
         cur = conn.cursor()
-        for col in ('HasBin', 'HasBestOffer'):
+        for col in ('HasBid', 'HasBin', 'HasBestOffer'):
             try:
                 cur.execute(f"ALTER TABLE Scraper.EBAY ADD COLUMN {col} TINYINT(1) NULL")
                 conn.commit()
@@ -2676,8 +2677,9 @@ def _enrich_and_gate(cur, ebay_id: int, product_type: str):
         suppress = 'reserve not met'
     # Purchase-route flags for the deal-page price advisor: a listing can take
     # bids, a Buy-It-Now and Best Offers all at once.
-    cur.execute("UPDATE Scraper.EBAY SET HasBin = %s, HasBestOffer = %s WHERE ID = %s",
-                (1 if enrich.get('has_bin') else 0,
+    cur.execute("UPDATE Scraper.EBAY SET HasBid = %s, HasBin = %s, HasBestOffer = %s WHERE ID = %s",
+                (1 if enrich.get('has_bid') else 0,
+                 1 if enrich.get('has_bin') else 0,
                  1 if enrich.get('has_best_offer') else 0, ebay_id))
     cond = enrich['condition'] or ''
     delist = False

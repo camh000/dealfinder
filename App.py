@@ -415,7 +415,7 @@ def ensure_offer_columns():
     try:
         conn = get_connection()
         cur = conn.cursor()
-        for col in ('HasBin', 'HasBestOffer'):
+        for col in ('HasBid', 'HasBin', 'HasBestOffer'):
             try:
                 cur.execute(f"ALTER TABLE Scraper.EBAY ADD COLUMN {col} TINYINT(1) NULL")
                 conn.commit()
@@ -1961,7 +1961,7 @@ def deal_detail(ebay_id):
                    SellerFeedbackPct, SellerFeedbackCount, LastSeenAt,
                    COALESCE(ReserveNotMet, 0) AS ReserveNotMet,
                    COALESCE(ListingType, 'auction') AS ListingType,
-                   HasBin, HasBestOffer
+                   HasBid, HasBin, HasBestOffer
             FROM Scraper.EBAY WHERE ID = %s
         """, (ebay_id,))
         listing = cur.fetchone()
