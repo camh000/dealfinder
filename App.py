@@ -41,6 +41,11 @@ def _noindex_header(resp):
     Disallow) still lets a crawler READ the noindex, which is what actually
     removes a URL from results. Belt-and-braces with the <meta robots> tag."""
     resp.headers['X-Robots-Tag'] = 'noindex, nofollow'
+    # API payloads are live data (deal feeds, insight cohorts, stats). Without
+    # this, a browser or Cloudflare can serve a stale response — e.g. the
+    # near-miss page showing an old win rate that "never changes".
+    if request.path.startswith('/api/'):
+        resp.headers['Cache-Control'] = 'no-store'
     return resp
 
 

@@ -67,6 +67,14 @@ def test_sw_served_with_version(client):
     assert b"'pcd-v1'" not in resp.data  # placeholder must be rewritten
 
 
+def test_api_responses_are_no_store(client):
+    """Live API payloads must not be cached (browser/CDN) or the near-miss
+    page shows a win rate that 'never changes'."""
+    assert client.get("/api/me").headers.get("Cache-Control") == "no-store"
+    # a plain page is NOT no-store (it can be an offline nav fallback)
+    assert client.get("/outcomes").headers.get("Cache-Control") != "no-store"
+
+
 def test_wilson_ci_behaves(client):
     import App
     assert App._wilson_ci(0, 0) == [0.0, 0.0]

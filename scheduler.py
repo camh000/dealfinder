@@ -1,6 +1,7 @@
 import time
 import logging
 import signal
+import threading
 import requests
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -563,6 +564,26 @@ def _handle_sigterm(signum, frame):
     raise SystemExit(0)
 
 
+# Watchdog: the scrape loop is single-threaded, so any operation that hangs
+# (a wedged fetch, an unresponsive DB) silently freezes everything — no scrapes,
+# no BIN finds, no notifications, and no error. The loop touches _last_beat
+# every tick; a daemon thread hard-exits the process if that stops advancing,
+# and docker's restart:always brings it back. Timeout sits well above the
+# slowest legitimate operation (a full scrape is minutes).
+WATCHDOG_TIMEOUT_S = int(os.environ.get('WATCHDOG_TIMEOUT_S', '900'))
+_last_beat = time.monotonic()
+
+
+def _watchdog():
+    while True:
+        time.sleep(60)
+        stalled = time.monotonic() - _last_beat
+        if stalled > WATCHDOG_TIMEOUT_S:
+            log.critical("Watchdog: scrape loop stalled %.0fs (> %ds) — force-exiting "
+                         "for a clean restart.", stalled, WATCHDOG_TIMEOUT_S)
+            os._exit(1)   # hard exit from this thread; the main thread is wedged
+
+
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _handle_sigterm)
     signal.signal(signal.SIGINT, _handle_sigterm)
@@ -681,9 +702,13 @@ if __name__ == "__main__":
     # Run full scrape immediately on startup so data is fresh before the first interval.
     run_full_scrape()
 
+    # Auto-recover from a wedged loop (see _watchdog).
+    threading.Thread(target=_watchdog, daemon=True).start()
+
     while True:
         # 10 s tick: sub-minute one-shots need finer scheduling than the
         # old 60 s heartbeat. Idle ticks cost one small DB query.
+        _last_beat = time.monotonic()   # watchdog heartbeat
         time.sleep(10)
         now = _utcnow()
 
