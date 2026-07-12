@@ -34,6 +34,16 @@ app = Flask(__name__)
 app.json = _JSONProvider(app)
 
 
+@app.after_request
+def _noindex_header(resp):
+    """Keep the whole app out of search indexes — public but unlisted. The
+    header covers API/non-HTML responses too, and (unlike a robots.txt
+    Disallow) still lets a crawler READ the noindex, which is what actually
+    removes a URL from results. Belt-and-braces with the <meta robots> tag."""
+    resp.headers['X-Robots-Tag'] = 'noindex, nofollow'
+    return resp
+
+
 # Optional HTTP Basic Auth — enabled when both env vars are set. Guards every
 # route (the notify-settings API manages HA tokens, so nothing is left open).
 # Browsers cache the credentials, so the PWA/service worker keeps working.
