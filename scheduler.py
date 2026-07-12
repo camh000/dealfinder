@@ -354,8 +354,9 @@ def run_data_audit():
         problems.append(f"{rej}+ row(s) the parser would now reject (a gate is leaking)")
     if mis >= AUDIT_ALERT_THRESHOLD:
         problems.append(f"{mis}+ mislabelled lot quantities")
-    if out >= AUDIT_ALERT_THRESHOLD:
-        problems.append(f"{out}+ sold rows priced way above their group median")
+    # price outliers are NOT an alert trigger — a group always has a few benign
+    # ones (genuine 2-packs, rare premium variants); they're for the on-demand
+    # report/test, not a 6-hourly phone buzz.
     if not problems:
         return
     # one example per finding type, so the push is actionable

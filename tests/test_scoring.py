@@ -981,6 +981,10 @@ class TestJunkListingGate:
         "ASUS Z13 Flow Intel Core i9 Nvidia RTX 3050 16GB 1TB SSD",
         "Dell G15 5520 RTX 3050 gaming",
         "Acer Nitro 5 RTX 3050 Ti",
+        # multi-digit laptop models (the \b-after-\d bug let these through)
+        "Dell Precision 7750, RAM:64GB, GPU:Nvidia RTX 4000",
+        "Dell XPS 9560 GTX 1050",
+        "Lenovo Legion 5 Pro RTX 3060 Gaming",
     ])
     def test_systems_skipped_from_gpu(self, title):
         assert _parse_one(title, "GPU") is None, f"system parsed as a GPU: {title}"

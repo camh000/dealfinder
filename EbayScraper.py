@@ -374,14 +374,17 @@ _CPU_MENTION_RE = re.compile(
 _SYS_STORAGE_RE = re.compile(r'\d+\s*(?:tb|gb)\s*(?:ssd|nvme|hdd|emmc)\b', re.IGNORECASE)
 # Laptop / prebuilt PRODUCT LINES that never name a bare component. Curated to
 # dodge GPU-brand collisions: no 'TUF'/'Aorus'/'ProArt'/'Ventus'/'Gaming'.
+# NB numeric-ending alternatives use \d+ (consume ALL digits): with a bare
+# \d the outer \b fails on multi-digit models ("Precision 7750" matched only
+# "precision 7", then \b before "750" failed → the laptop slipped through).
 _SYSTEM_LINE_RE = re.compile(
     r'\b(?:ideapad|thinkpad|thinkbook|legion|yoga|'                 # Lenovo
     r'victus|omen|elitebook|probook|spectre|envy|zbook|'            # HP
-    r'inspiron|latitude|alienware|precision\s*\d|xps\s*\d{2}|'      # Dell
-    r'dell\s+g\d{1,2}|'                                             # Dell G-series gaming
-    r'zephyrus|vivobook|zenbook|expertbook|rog\s+(?:strix\s+)?g\d|' # Asus
-    r'predator|aspire|nitro\s*\d|'                                  # Acer
-    r'katana|\bstealth\s+gs\d|\braider\s+ge\d|'                     # MSI laptops
+    r'inspiron|latitude|alienware|precision\s*\d+|xps\s*\d+|'       # Dell
+    r'dell\s+g\d+|'                                                 # Dell G-series gaming
+    r'zephyrus|vivobook|zenbook|expertbook|rog\s+(?:strix\s+)?g\d+|' # Asus
+    r'predator|aspire|nitro\s*\d+|'                                 # Acer
+    r'katana|stealth\s+gs\d+|raider\s+ge\d+|'                       # MSI laptops
     r'macbook|surface\s+(?:laptop|book|pro))\b', re.IGNORECASE)
 
 
@@ -855,7 +858,7 @@ def __ParseItems(soup, query, productType):
                                         'compact pc', 'prebuilt', 'pre-built',
                                         'desktop computer', 'gaming rig', 'gaming setup',
                                         'poweredge', 'proliant', 'supermicro', 'thinkserver',
-                                        'thinksystem', 'primergy', 'vxrail',
+                                        'thinksystem', 'primergy', 'vxrail', 'optiplex',
                                         'idrac', 'rack server', 'tower server', 'server bundle'])
                 # server/workstation CHASSIS models (Dell R450/R660, HP Z/XW,
                 # HPE DL/ML) — the audit found these leaking in as their Xeon.
@@ -1143,7 +1146,7 @@ def __ParseItems(soup, query, productType):
                     'desktop pc', 'all-in-one', 'gaming pc', 'gaming computer',
                     'custom pc', 'full pc', 'complete pc', 'pc bundle', 'pc build',
                     'compact pc', 'prebuilt', 'pre-built', 'desktop computer',
-                    'gaming rig', 'gaming setup',
+                    'gaming rig', 'gaming setup', 'vxrail', 'poweredge', 'proliant',
                 ])
                 or (('laptop' in _tl or 'notebook' in _tl)
                     and bool(re.search(r'\d+\s*(tb|gb)\s*(ssd|nvme|hdd|emmc)', _tl)))
@@ -1153,6 +1156,8 @@ def __ParseItems(soup, query, productType):
                 # server chassis with its RAM ("Dell R440 ... 8GB DDR4 ...")
                 # — the audit found these polluting the RAM groups
                 or bool(_SERVER_CHASSIS_RE.search(title))
+                # a "+ CPU + motherboard" combo bundle isn't a RAM kit
+                or ('combo' in _tl and bool(_CPU_MENTION_RE.search(title)))
             )
             if _is_system_ram:
                 log.debug("[%s] Skipping system listing: %s", query, title[:60])
