@@ -1,11 +1,14 @@
-/* Deals page: fetch → filter → render card rows with price-position bars,
-   sparklines from DealSnapshots, freshness chips, live countdowns. */
+/* Deals page: one feed across every category. Fetch all active auction deals,
+   then filter client-side by category chip + shared context filters (the same
+   toolbar as Prices and BIN) + min discount / saving / sort. Rows carry a
+   _cat tag so each renders with its own category's identity line. */
 
-const CAT = window.PAGE_CATEGORY;
 const LS_KEY = 'pcd-deal-filters';
 
-let allDeals = [];
+let allDeals = [], cat = 'all', ctx = {};
 const saved = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
+if (['all', 'gpu', 'cpu', 'hdd', 'ssd', 'ram'].includes(window.PRESELECT_CAT))
+  cat = window.PRESELECT_CAT;
 $('#f-window').value = saved.window || '2';
 $('#f-disc').value = saved.disc ?? 20;
 $('#f-save').value = saved.save ?? 0;
@@ -14,27 +17,28 @@ $('#f-sort').value = saved.sort || 'DealScore';
 function persist() {
   localStorage.setItem(LS_KEY, JSON.stringify({
     window: $('#f-window').value, disc: $('#f-disc').value,
-    save: $('#f-save').value, sort: $('#f-sort').value, brand: $('#f-brand').value,
+    save: $('#f-save').value, sort: $('#f-sort').value,
   }));
 }
 
-/* ── identity line per category ── */
+/* ── identity line, per row's own category ── */
 function identity(d) {
-  const chips = [];
+  const c = d._cat;
+  const chips = [`<span class="chip">${c.toUpperCase()}</span>`];
   const lot = Number(d.Quantity) > 1;
   if (lot) chips.push(`<span class="chip hot">×${d.Quantity} LOT</span>`);
   if (d.SurfacedAt && Date.now() - new Date(d.SurfacedAt).getTime() < 3600e3)
     chips.push('<span class="chip new">NEW</span>');
   let title = '', subs = [];
-  if (CAT === 'gpu') {
+  if (c === 'gpu') {
     title = d.Model || '—';
     if (d.Brand) chips.push(`<span class="chip">${esc(d.Brand)}</span>`);
     if (d.VRAM && !(d.Model || '').includes('GB')) chips.push(`<span class="chip">${d.VRAM}GB</span>`);
-  } else if (CAT === 'cpu') {
+  } else if (c === 'cpu') {
     title = d.Model || '—';
     if (d.Socket) chips.push(`<span class="chip">${esc(d.Socket)}</span>`);
     if (d.Cores) chips.push(`<span class="chip">${d.Cores} cores</span>`);
-  } else if (CAT === 'ram') {
+  } else if (c === 'ram') {
     title = `${d.CapacityGB}GB ${d.Type || ''}`.trim();
     if (d.KitConfig) chips.push(`<span class="chip">${esc(d.KitConfig)}</span>`);
     if (d.FormFactor === 'SODIMM') chips.push('<span class="chip">SODIMM</span>');
@@ -44,8 +48,8 @@ function identity(d) {
     title = `${fmtCap(d.CapacityGB)} ${d.Interface || 'SATA'}`;
     if (d.DriveType === 'External') chips.push('<span class="chip">EXT</span>');
     if (d.Brand) chips.push(`<span class="chip">${esc(d.Brand)}</span>`);
-    if (CAT === 'hdd' && d.RPM) chips.push(`<span class="chip">${d.RPM.toLocaleString()} rpm</span>`);
-    if (CAT === 'ssd' && d.Gen) chips.push(`<span class="chip">Gen${d.Gen}</span>`);
+    if (c === 'hdd' && d.RPM) chips.push(`<span class="chip">${d.RPM.toLocaleString()} rpm</span>`);
+    if (c === 'ssd' && d.Gen) chips.push(`<span class="chip">Gen${d.Gen}</span>`);
     if (d.FormFactor && d.FormFactor !== 'Ext') chips.push(`<span class="chip">${esc(d.FormFactor)}</span>`);
   }
   if (d.SurfacedAt) subs.push(`spotted ${timeAgo(d.SurfacedAt)}`);
@@ -68,7 +72,7 @@ function posbar(d) {
       ${pred != null ? `<span class="dot hollow" style="left:${pct(pred)}%" title="predicted final ${fmtGBP(pred)}"></span>` : ''}
       <span class="dot" style="left:${pct(now)}%" title="current ${fmtGBP(now)}"></span>
     </div>
-    <div class="posbar-legend"><span>${fmtGBP0(lo)}</span><span><a href="${modelHref(CAT, d)}" title="this model's market page" style="color:inherit">med ${fmtGBP0(med)}</a></span><span>${fmtGBP0(hi)}</span></div>`;
+    <div class="posbar-legend"><span>${fmtGBP0(lo)}</span><span><a href="${modelHref(d._cat, d)}" title="this model's market page" style="color:inherit">med ${fmtGBP0(med)}</a></span><span>${fmtGBP0(hi)}</span></div>`;
 }
 
 function priceCol(d) {
@@ -98,14 +102,12 @@ function metaCol(d) {
 }
 
 function render() {
-  const brand = $('#f-brand').value;
   const minDisc = Number($('#f-disc').value) || 0;
   const minSave = Number($('#f-save').value) || 0;
   const sortCol = $('#f-sort').value;
-  let rows = allDeals.filter(d =>
-    (!brand || d.Brand === brand) &&
-    Number(d.DiscountPct) >= minDisc &&
-    Number(d.PotentialGain) >= minSave);
+  let rows = allDeals.filter(d => cat === 'all' || d._cat === cat);
+  rows = filterByCtx(rows, cat, ctx);
+  rows = rows.filter(d => Number(d.DiscountPct) >= minDisc && Number(d.PotentialGain) >= minSave);
   rows = sortRows(rows, sortCol, sortCol === 'EndTime' || sortCol === 'ItemPrice');
   $('#deal-count').textContent = `${rows.length} deal${rows.length === 1 ? '' : 's'}`;
   const box = $('#rows');
@@ -139,24 +141,17 @@ async function loadSparklines(rows) {
   } catch { /* sparklines are decoration — never block the page */ }
 }
 
-function populateBrands() {
-  const brands = [...new Set(allDeals.map(d => d.Brand).filter(Boolean))].sort();
-  const sel = $('#f-brand');
-  const cur = saved.brand || '';
-  sel.innerHTML = '<option value="">all</option>' +
-    brands.map(b => `<option${b === cur ? ' selected' : ''}>${esc(b)}</option>`).join('');
-}
-
 async function load() {
   $('#refresh-btn').disabled = true;
   try {
     const w = $('#f-window').value;
+    // Fetch every category at the surfacing floor; the disc/save/ctx filters
+    // narrow it client-side without a round-trip.
     const minDisc = Math.min(Number($('#f-disc').value) || 20, 20);
-    const res = await fetch(`/api/deals?type=${CAT}&window=${w}&min_discount=${minDisc}`);
+    const res = await fetch(`/api/deals?type=all&window=${w}&min_discount=${minDisc}`);
     const data = await res.json();
     if (data.status !== 'ok') throw new Error(data.message || 'error');
     allDeals = data.deals;
-    populateBrands();
     render();
   } catch (e) {
     $('#rows').innerHTML = `<div class="state">Couldn’t load deals: ${esc(e.message)}</div>`;
@@ -165,22 +160,49 @@ async function load() {
   }
 }
 
-/* ── "Watch these": a whole-category auction feed subscription ── */
+/* ── category chips + context filters (shared with Prices/BIN) ── */
+$$('#cat-pills .pill').forEach(p => {
+  p.classList.toggle('active', p.dataset.cat === cat);
+  p.addEventListener('click', () => {
+    cat = p.dataset.cat;
+    ctx = {};                         // filters are per-type — reset on switch
+    $$('#cat-pills .pill').forEach(x => x.classList.toggle('active', x === p));
+    renderCtxFilters($('#ctx-filters'), cat, ctx, render);
+    render();
+  });
+});
+renderCtxFilters($('#ctx-filters'), cat, ctx, render);
+
+/* ── "Watch these": an auction feed for the current category + filters ── */
 $('#watch-btn').addEventListener('click', () => {
   const card = $('#watch-card');
   if (card.style.display !== 'none') { card.style.display = 'none'; return; }
+  if (cat === 'all') {
+    $('#deal-count').textContent = 'pick a category first (GPU/CPU/…) to watch';
+    return;
+  }
   card.style.display = '';
+  const bits = [];
+  for (const f of (CTX_FILTERS[cat] || [])) if (ctx[f.key]) {
+    const opt = f.opts.find(o => o[0] === ctx[f.key]);
+    bits.push(opt ? opt[1] : ctx[f.key]);
+  }
+  $('#watch-summary').innerHTML =
+    `New auction deals for <b>${cat.toUpperCase()}</b> — ${esc(bits.length ? bits.join(' · ') : 'any model')} — push to your notification endpoint.`;
   if (!$('#w-disc').value) $('#w-disc').value = Math.max(20, Number($('#f-disc').value) || 20);
 });
 
 $('#w-save').addEventListener('click', async () => {
   $('#w-status').textContent = '…';
   try {
+    const hasFilters = Object.keys(ctx).length > 0;
     const res = await fetch('/api/subscriptions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        category: CAT, kind: 'discount_pct', scope_kind: 'all',
-        listing_type: 'auction', min_discount: parseFloat($('#w-disc').value),
+        category: cat, kind: 'discount_pct',
+        scope_kind: hasFilters ? 'filter' : 'all',
+        listing_type: 'auction', filters: ctx,
+        min_discount: parseFloat($('#w-disc').value),
       }),
     });
     const data = await res.json();
@@ -193,7 +215,6 @@ $('#w-save').addEventListener('click', async () => {
 });
 
 $('#f-window').addEventListener('change', () => { persist(); load(); });
-$('#f-brand').addEventListener('change', () => { persist(); render(); });
 $('#f-disc').addEventListener('input', () => { persist(); render(); });
 $('#f-save').addEventListener('input', () => { persist(); render(); });
 $('#f-sort').addEventListener('change', () => { persist(); render(); });

@@ -21,8 +21,8 @@ def client(request):
 
 
 @pytest.mark.parametrize("path,marker", [
-    ("/deals/gpu", "GPU deals"),
-    ("/deals/ssd", "SSD deals"),
+    ("/deals", "Deals"),
+    ("/deals/ssd", "Deals"),          # deep link → unified page, chip preselected
     ("/outcomes", "Outcomes"),
     ("/prices", "Price guide"),
     ("/model/gpu?Model=RTX+3060+12GB", "price guide"),
@@ -42,7 +42,7 @@ def test_page_renders(client, path, marker):
 def test_root_redirects_to_deals(client):
     resp = client.get("/")
     assert resp.status_code == 302
-    assert "/deals/gpu" in resp.headers["Location"]
+    assert resp.headers["Location"].rstrip("/").endswith("/deals")
 
 
 def test_unknown_category_404s(client):

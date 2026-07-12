@@ -1641,14 +1641,21 @@ PAGE_CATEGORIES = ('gpu', 'cpu', 'hdd', 'ssd', 'ram')
 
 @app.route("/")
 def index():
-    return redirect("/deals/gpu")
+    return redirect("/deals")
+
+
+@app.route("/deals")
+def deals_page_all():
+    # Unified deals page — all categories, filterable by chip + context filters.
+    return render_template("deals.html", preselect="all")
 
 
 @app.route("/deals/<cat>")
 def deals_page(cat):
+    # Deep link kept working: opens the unified page with the chip preselected.
     if cat not in PAGE_CATEGORIES:
         abort(404)
-    return render_template("deals.html", category=cat)
+    return render_template("deals.html", preselect=cat)
 
 
 @app.route("/outcomes")
@@ -1685,9 +1692,9 @@ def health_page():
 
 @app.route("/api/deals")
 def deals():
-    product_type = request.args.get('type', 'gpu').lower()
-    if product_type not in ('gpu', 'cpu', 'hdd', 'ssd', 'ram'):
-        return jsonify({"status": "error", "message": f"Unknown type '{product_type}'. Use gpu, cpu, hdd, ssd, or ram."}), 400
+    product_type = request.args.get('type', 'all').lower()
+    if product_type != 'all' and product_type not in PAGE_CATEGORIES:
+        return jsonify({"status": "error", "message": f"Unknown type '{product_type}'. Use all, gpu, cpu, hdd, ssd, or ram."}), 400
 
     # Parse window parameter (default 2 hours, max 24)
     try:
@@ -1703,35 +1710,44 @@ def deals():
     except (ValueError, TypeError):
         min_discount = 20
 
+    cats = list(PAGE_CATEGORIES) if product_type == 'all' else [product_type]
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
-        cur.execute(get_deals_query(product_type, window_hours, min_discount))
-        rows = cur.fetchall()
+        # One premiums fetch covers every category's prediction annotation.
+        pcur = conn.cursor()
+        pcur.execute(queries.SNIPE_PREMIUM_QUERY)
+        premiums = queries.median_ratios(pcur.fetchall())
 
         # NOTE: deal surfacing (DealOutcomes first-sighting capture) moved to
         # the scheduler (EbayScraper.SurfaceDeals) — this endpoint is now
         # read-only, so page loads no longer have DB write side effects and
         # deals are tracked even when nobody has the dashboard open.
+        deals = []
+        for cat in cats:
+            cur.execute(get_deals_query(cat, window_hours, min_discount))
+            rows = cur.fetchall()
+            # Outcome-calibrated predictions: re-rank on the PREDICTED discount
+            # (contested auctions get bid past their current price) and drop
+            # rows history says will close at/above market — a deal in name
+            # only. Must run before the ISO conversion — the annotator needs
+            # EndTime as a datetime.
+            queries.annotate_predictions(rows, cat, premiums)
+            rows = queries.filter_predicted_deals(rows)
+            for row in rows:
+                row['_cat'] = cat
+                row['_label'] = queries.model_label_for_row(cat, row)
+                for col in ("EndTime", "SurfacedAt"):
+                    if row.get(col):
+                        row[col] = _iso_utc(row[col])
+            deals.extend(rows)
 
-        # Outcome-calibrated predictions: re-rank on the PREDICTED discount
-        # (contested auctions get bid past their current price) and drop
-        # rows history says will close at/above market — a deal in name
-        # only. Must run before the ISO conversion — the annotator needs
-        # EndTime as a datetime.
-        pcur = conn.cursor()
-        pcur.execute(queries.SNIPE_PREMIUM_QUERY)
-        premiums = queries.median_ratios(pcur.fetchall())
-        queries.annotate_predictions(rows, product_type, premiums)
-        rows = queries.filter_predicted_deals(rows)
-
-        for row in rows:
-            for col in ("EndTime", "SurfacedAt"):
-                if row.get(col):
-                    row[col] = _iso_utc(row[col])
-
-        return jsonify({"status": "ok", "deals": rows})
+        # Best predicted discount first, so the all-view leads with the
+        # strongest deals across every category.
+        deals.sort(key=lambda r: float(r.get('PredictedDiscountPct') or r.get('DiscountPct') or 0),
+                   reverse=True)
+        return jsonify({"status": "ok", "deals": deals})
     except Exception as e:
         log.error("deals error: %s", e)
         return jsonify({"status": "error", "message": "internal error"}), 500

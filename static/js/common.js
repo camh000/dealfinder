@@ -50,20 +50,11 @@ $('#theme-btn')?.addEventListener('click', () => {
   localStorage.setItem('pcd-theme', next);
 });
 
-/* ── nav highlight (top pills + mobile tab bar) ── */
+/* ── nav highlight (top links + mobile tab bar) ── */
 (() => {
   const page = document.body.dataset.page;
   $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.nav === page));
-  const CATS = ['gpu', 'cpu', 'hdd', 'ssd', 'ram'];
-  const tab = CATS.includes(page) ? 'deals' : page;
-  $$('#tabbar a').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
-  // Deals tab returns to the category you last browsed, not always GPU
-  if (CATS.includes(page)) localStorage.setItem('pcd-last-cat', page);
-  const last = localStorage.getItem('pcd-last-cat');
-  if (last && CATS.includes(last)) {
-    const dt = $('#tabbar a[data-tab="deals"]');
-    if (dt) dt.href = `/deals/${last}`;
-  }
+  $$('#tabbar a').forEach(a => a.classList.toggle('active', a.dataset.tab === page));
 })();
 
 /* ── nav badges + status line ── */
@@ -73,11 +64,11 @@ async function refreshChrome() {
       fetch('/api/deal-counts?window=2&min_discount=20').then(r => r.json()),
       fetch('/api/stats').then(r => r.json()),
     ]);
-    if (counts.status === 'ok')
-      $$('sup[data-count]').forEach(s => {
-        const n = counts.counts[s.dataset.count];
-        s.textContent = n > 0 ? n : '';
-      });
+    if (counts.status === 'ok') {
+      // One "Deals" badge = total live deals across every category.
+      const total = Object.values(counts.counts).reduce((a, b) => a + b, 0);
+      $$('sup[data-count]').forEach(s => { s.textContent = total > 0 ? total : ''; });
+    }
     const line = $('#status-line'), dot = $('#live-dot');
     if (stats.active_listings != null && line) {
       const total = (stats.active_listings + stats.sold_listings).toLocaleString('en-GB');

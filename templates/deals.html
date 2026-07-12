@@ -1,31 +1,23 @@
 {% extends "base.html" %}
-{% block title %}{{ category | upper }} deals — PC/DEALS{% endblock %}
-{% block page %}{{ category }}{% endblock %}
+{% block title %}Deals — PC/DEALS{% endblock %}
+{% block page %}deals{% endblock %}
 
 {% block content %}
 <div class="page-head">
-  <h1>{{ category | upper }} deals</h1>
+  <h1>Deals</h1>
   <span class="sub" id="deal-count"></span>
   <span class="spacer"></span>
   <button class="btn-ghost" id="watch-btn">🔔 Watch these</button>
   <button class="btn-ghost" id="refresh-btn">Refresh</button>
 </div>
 
-<div class="card" id="watch-card" style="display:none">
-  <h2>Notify me about {{ category | upper }} auction deals</h2>
-  <p class="help">Pushes when a new auction deal for any {{ category | upper }} appears at least
-    this far under market — the same feed as the migrated category default. For a specific
-    model or Buy&nbsp;It&nbsp;Now, use "Alert me" on a model page or "Watch this" on
-    <a href="/bin">Buy&nbsp;It&nbsp;Now</a>.</p>
-  <div class="form-grid">
-    <div class="fg"><label>Min discount (% under market, floors at 20)</label>
-      <input type="number" id="w-disc" min="20" max="90" step="5" value="20"></div>
-  </div>
-  <div class="check-row">
-    <button class="btn" id="w-save">Create feed</button>
-    <a class="btn-ghost" href="/settings" style="text-decoration:none">manage subscriptions</a>
-    <span class="sub" id="w-status"></span>
-  </div>
+<div class="pills" id="cat-pills">
+  <button class="pill active" data-cat="all">All</button>
+  <button class="pill" data-cat="gpu">GPU</button>
+  <button class="pill" data-cat="cpu">CPU</button>
+  <button class="pill" data-cat="hdd">HDD</button>
+  <button class="pill" data-cat="ssd">SSD</button>
+  <button class="pill" data-cat="ram">RAM</button>
 </div>
 
 <div class="toolbar">
@@ -35,9 +27,6 @@
       <option value="6">6 hours</option>
       <option value="24">24 hours</option>
     </select>
-  </label>
-  <label>Brand
-    <select id="f-brand"><option value="">all</option></select>
   </label>
   <label>Min discount
     <input type="number" id="f-disc" min="0" max="95" step="5" value="20" style="width:64px"> %
@@ -56,12 +45,28 @@
   </label>
 </div>
 
+<div class="toolbar" id="ctx-filters" style="display:none;margin-top:-8px"></div>
+
+<div class="card" id="watch-card" style="display:none">
+  <h2 id="watch-title">Notify me about these auction deals</h2>
+  <p class="help" id="watch-summary"></p>
+  <div class="form-grid">
+    <div class="fg"><label>Min discount (% under market, floors at 20)</label>
+      <input type="number" id="w-disc" min="20" max="90" step="5" value="20"></div>
+  </div>
+  <div class="check-row">
+    <button class="btn" id="w-save">Create feed</button>
+    <a class="btn-ghost" href="/settings" style="text-decoration:none">manage subscriptions</a>
+    <span class="sub" id="w-status"></span>
+  </div>
+</div>
+
 <div class="rows" id="rows">
   <div class="state"><span class="loader"></span>loading deals…</div>
 </div>
 {% endblock %}
 
 {% block scripts %}
-<script>window.PAGE_CATEGORY = {{ category | tojson }};</script>
+<script>window.PRESELECT_CAT = {{ preselect | tojson }};</script>
 <script src="/static/js/deals.js"></script>
 {% endblock %}
