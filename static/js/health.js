@@ -18,11 +18,21 @@
       <div class="stat"><b class="num">${o.gave_up}</b><span>gave up</span></div>
       <div class="stat"><b class="num">${data.snapshots.rows.toLocaleString('en-GB')}</b><span>price snapshots (${data.snapshots.deals} deals)</span></div>`;
 
-    $('#cat-tbl tbody').innerHTML = Object.entries(data.categories).map(([c, v]) => `
+    const cats = Object.entries(data.categories);
+    const tot = cats.reduce((a, [, v]) => {
+      a.live += v.live; a.sold_window += v.sold_window; a.sold_total += v.sold_total; return a;
+    }, { live: 0, sold_window: 0, sold_total: 0 });
+    const n = v => v.toLocaleString('en-GB');
+    $('#cat-tbl tbody').innerHTML = cats.map(([c, v]) => `
       <tr><td><a href="/deals/${c}"><span class="chip" style="cursor:pointer">${c.toUpperCase()}</span></a></td>
-        <td class="num">${v.live.toLocaleString('en-GB')}</td>
-        <td class="num">${v.sold_window.toLocaleString('en-GB')}</td>
-        <td class="num dimcell">${v.sold_total.toLocaleString('en-GB')}</td></tr>`).join('');
+        <td class="num">${n(v.live)}</td>
+        <td class="num">${n(v.sold_window)}</td>
+        <td class="num dimcell">${n(v.sold_total)}</td></tr>`).join('') + `
+      <tr style="border-top:2px solid var(--border);font-weight:650">
+        <td><b>Total</b></td>
+        <td class="num"><b>${n(tot.live)}</b></td>
+        <td class="num"><b>${n(tot.sold_window)}</b></td>
+        <td class="num dimcell"><b>${n(tot.sold_total)}</b></td></tr>`;
 
     if (data.last_run) {
       const r = data.last_run;

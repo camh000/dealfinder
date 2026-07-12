@@ -603,6 +603,12 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("Enrichment column migration failed: %s", e)
 
+    # HasBin / HasBestOffer flags (item-page purchase routes → price advisor).
+    try:
+        EbayScraper.EnsureOfferColumns()
+    except Exception as e:
+        log.error("Offer column migration failed: %s", e)
+
     # EndTimeExact flag (exact end refinement from item pages).
     try:
         EbayScraper.EnsureEndTimeExact()

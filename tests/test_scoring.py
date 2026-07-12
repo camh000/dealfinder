@@ -798,6 +798,28 @@ class TestItemEnrichment:
         assert enrich['category_path'].endswith('Graphics/Video Cards')
         assert 'United Kingdom' in enrich['location']
 
+    def test_fixture_is_bid_only_auction(self, enrich):
+        # the captured item page is a plain auction — bid CTA only
+        assert enrich['has_bid'] is True
+        assert enrich['has_bin'] is False
+        assert enrich['has_best_offer'] is False
+
+    def test_purchase_route_detection(self):
+        # label dictionary strings must NOT count — only real CTA panels do
+        dict_only = ('<span>"auction":"Auction","buyItNow":"Buy It Now",'
+                     '"bestOffer":"Best Offer"</span>')
+        e = EbayScraper._extract_enrichment(dict_only)
+        assert e['has_bin'] is False and e['has_best_offer'] is False
+        # auction + Buy-It-Now (the shape of listing 117295271473)
+        both = ('<div data-testid="x-bid-action">bid</div>'
+                '<div data-testid="x-bin-action">bin</div>')
+        e = EbayScraper._extract_enrichment(both)
+        assert e['has_bid'] is True and e['has_bin'] is True
+        assert e['has_best_offer'] is False
+        # Best Offer CTA
+        e = EbayScraper._extract_enrichment('<div id="boBtn_btn">offer</div>')
+        assert e['has_best_offer'] is True
+
     def test_reserve_detection(self):
         assert EbayScraper._extract_enrichment(
             '<div>Reserve not met</div>')['reserve_not_met'] is True

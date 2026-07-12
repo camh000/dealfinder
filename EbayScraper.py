@@ -2366,6 +2366,17 @@ _RESERVE_NOT_MET_RE = re.compile(r'reserve\s+(?:price\s+)?not\s+met', re.IGNOREC
 _LOCATED_IN_RE = re.compile(r'Located in:\s*([^<]{2,80})<')
 _EPID_RE = re.compile(r'"epid"\s*:\s*"?(\d{6,15})')
 
+# Which purchase actions a listing OFFERS — from the item page's call-to-action
+# panels, not eBay's label dictionary (which lists every CTA name regardless of
+# which are shown: "auction","buyItNow","bestOffer" all appear as translation
+# strings even on a bid-only listing). The *-action div / *Btn_btn id is only
+# emitted for a button the listing actually presents. Best-effort like the
+# reserve flag: if the markup drifts, the flag stays false and the deal-page
+# advisor falls back to ListingType.
+_HAS_BID_RE   = re.compile(r'x-bid-action|\bbidBtn_btn\b', re.IGNORECASE)
+_HAS_BIN_RE   = re.compile(r'x-bin-action|\bbinBtn_btn\b', re.IGNORECASE)
+_HAS_OFFER_RE = re.compile(r'x-offer-action|\b(?:oiBtn|boBtn|ofrBtn)_btn\b', re.IGNORECASE)
+
 # eBay leaf-category tokens that legitimise a listing per our category.
 _CAT_OK_TOKENS = {
     'GPU': ('graphics',),
@@ -2430,6 +2441,12 @@ def _extract_enrichment(html: str) -> dict:
         'category_path': path,
         'location': loc.group(1).strip() if loc else None,
         'epid': epid.group(1) if epid else None,
+        # which purchase routes the listing offers — a listing can be several
+        # at once (verified live: an auction with a Buy-It-Now shows both the
+        # bid and BIN action panels).
+        'has_bid': bool(_HAS_BID_RE.search(html)),
+        'has_bin': bool(_HAS_BIN_RE.search(html)),
+        'has_best_offer': bool(_HAS_OFFER_RE.search(html)),
     }
 
 
@@ -2458,6 +2475,25 @@ def EnsureEnrichmentColumns() -> None:
         except mariadb.Error as e:
             if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
                 log.error("EBAY: unexpected error adding ReserveNotMet: %s", e)
+    finally:
+        conn.close()
+
+
+def EnsureOfferColumns() -> None:
+    """EBAY.HasBin / HasBestOffer — item-page purchase-route flags feeding the
+    deal-page price advisor. NULL = not yet enriched (advisor hedges)."""
+    DUP_COLUMN_ERRNO = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        for col in ('HasBin', 'HasBestOffer'):
+            try:
+                cur.execute(f"ALTER TABLE Scraper.EBAY ADD COLUMN {col} TINYINT(1) NULL")
+                conn.commit()
+                log.info("EBAY: added %s column", col)
+            except mariadb.Error as e:
+                if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                    log.error("EBAY: unexpected error adding %s: %s", col, e)
     finally:
         conn.close()
 
@@ -2638,6 +2674,11 @@ def _enrich_and_gate(cur, ebay_id: int, product_type: str):
     if enrich['reserve_not_met']:
         cur.execute("UPDATE Scraper.EBAY SET ReserveNotMet = 1 WHERE ID = %s", (ebay_id,))
         suppress = 'reserve not met'
+    # Purchase-route flags for the deal-page price advisor: a listing can take
+    # bids, a Buy-It-Now and Best Offers all at once.
+    cur.execute("UPDATE Scraper.EBAY SET HasBin = %s, HasBestOffer = %s WHERE ID = %s",
+                (1 if enrich.get('has_bin') else 0,
+                 1 if enrich.get('has_best_offer') else 0, ebay_id))
     cond = enrich['condition'] or ''
     delist = False
     if re.search(r'parts|not\s+working', cond, re.IGNORECASE):

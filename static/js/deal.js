@@ -29,9 +29,10 @@ function statStrip(d) {
     cells.push(`<div class="stat"><b class="countdown num" ${endsAttr(l.EndTime)}></b>
         <span>remaining${l.EndTimeExact ? ' (exact)' : ''}</span></div>`);
   if (l.ListingType === 'bin')
-    cells.push(`<div class="stat"><b class="num">BIN</b><span>fixed price — no bidding</span></div>`);
+    cells.push(`<div class="stat"><b class="num">BIN</b><span>fixed price${l.HasBestOffer === 1 ? ' · offers' : ''}</span></div>`);
   else
-    cells.push(`<div class="stat"><b class="num">${l.Bids || 0}</b><span>bids</span></div>`);
+    cells.push(`<div class="stat"><b class="num">${l.Bids || 0}</b><span>bids${
+      l.HasBin === 1 ? ' · +Buy It Now' : l.HasBestOffer === 1 ? ' · +offers' : ''}</span></div>`);
   if (l.SellerFeedbackPct != null && l.SellerFeedbackCount >= 3)
     cells.push(`<div class="stat"><b class="num">${l.SellerFeedbackPct}%</b>
         <span>seller (${l.SellerFeedbackCount})</span></div>`);
@@ -57,38 +58,88 @@ function bigPosbar(d) {
       pred != null ? ` · pred ~${fmtGBP0(pred)}` : ''}</span><span>${fmtGBP0(s.max)}</span></div>`;
 }
 
-/* Max-bid / offer advisor: what you can pay (before delivery) while the
-   delivery-inclusive per-unit price stays under market by a given margin.
-   Auctions: "bid up to". Buy-It-Now: "offer" — same arithmetic, and if the
-   asking price already clears a margin there's nothing to haggle for. */
+/* Price advisor: what you can pay (before delivery) while the delivery-
+   inclusive per-unit price stays under market by a given margin. A listing
+   can offer several routes at once — bidding, a Buy-It-Now and Best Offers —
+   so the card names and explains whichever apply (from item-page enrichment):
+     auction only ............... "Max-bid advisor"  (bid up to X)
+     auction + Best Offer ....... "Price advisor"    (bid OR offer up to X)
+     Buy-It-Now + Best Offer .... "Offer advisor"    (offer up to X, or buy)
+     fixed price, no offers ..... "Fixed price"      (no negotiation — just buy)
+   HasBin / HasBestOffer are NULL until the listing is enriched; unknown-offer
+   listings hedge rather than hide. */
 function maxBidAdvisor(d) {
   const l = d.listing, s = d.stats;
   const isBin = l.ListingType === 'bin';
+  const isAuction = !isBin;
   const live = !l.SoldDate && (isBin || (l.EndTime && new Date(l.EndTime) > Date.now()));
   if (!live || !s || s.median == null) return;
+
+  const hasOffer = l.HasBestOffer === 1;
+  const offerKnown = l.HasBestOffer != null;
+  const hasBinOption = isBin || l.HasBin === 1;   // a fixed Buy-It-Now price exists
   const qty = Number(l.Quantity) || 1;
   const ship = Number(l.Shipping) || 0;
+  const current = Number(l.ItemPrice) || 0;
   const cap = margin => s.median * qty * (1 - margin) - ship;
+
+  $('#maxbid-card').style.display = '';
+
+  // Pure fixed price with NO offers → no negotiation table, just a verdict.
+  if (isBin && offerKnown && !hasOffer) {
+    const disc = (1 - (current + ship) / (s.median * qty)) * 100;
+    $('#maxbid-title').textContent = 'Fixed price';
+    $('#maxbid-body').innerHTML = `<p class="help" style="font-size:14px;margin:0">
+      This listing is a fixed <b>${fmtGBP(current)}</b> with no offers accepted — the price is the price.
+      That's <b class="${disc > 0 ? 'good' : 'bad'}">${Math.abs(disc).toFixed(1)}% ${disc > 0 ? 'under' : 'over'}</b>
+      the ${fmtGBP(s.median)} market median${qty > 1 ? ` (×${qty})` : ''}${
+      disc >= 15 ? ' — worth buying.' : disc > 0 ? '.' : ' — skip it.'}</p>`;
+    return;
+  }
+
   const rows = [
     { margin: 0.20, note: 'the surfacing bar — a definite deal' },
     { margin: 0.15, note: 'still a comfortable win' },
     { margin: 0.00, note: 'break-even with the market — walk away above this' },
   ].filter(r => cap(r.margin) > 0);
   if (!rows.length) return;
-  const current = Number(l.ItemPrice) || 0;
-  $('#maxbid-card').style.display = '';
-  $('#maxbid-title').textContent = isBin ? 'Offer advisor' : 'Max-bid advisor';
+
+  // Title + column header + closing note vary by which routes exist.
+  let title, colHead, note;
+  if (isAuction && hasOffer) {
+    title = 'Price advisor';
+    colHead = 'Bid / offer up to';
+    note = `This listing takes <b>both bids and Best Offers</b>. Whichever route you use — place a bid, or send an offer — don't go above these figures.`;
+  } else if (isAuction) {
+    title = 'Max-bid advisor';
+    colHead = 'Bid up to';
+    note = hasBinOption
+      ? `This auction also has a <b>Buy It Now</b> — buying instantly is only worth it if that fixed price is below your cap.`
+      : `Bids are what you enter on eBay (delivery excluded); margins compare the delivery-inclusive total against market.`;
+  } else if (hasOffer) {
+    title = 'Offer advisor';
+    colHead = 'Offer';
+    note = `This listing accepts <b>Best Offers</b> — asking is ${fmtGBP(current)}; open below the margin you want.`;
+  } else {   // BIN, offer availability unknown (not yet enriched)
+    title = 'Offer advisor';
+    colHead = 'Offer';
+    note = `Asking is ${fmtGBP(current)}. If this listing accepts Best Offers, open below the margin you want; otherwise just buy at or under these figures.`;
+  }
+
+  // "Dead" row: for bidding, a margin is spent once the bid passes its cap;
+  // for a fixed asking price, it's already cleared once asking is under it.
+  const deadFor = v => isAuction ? current > v : current <= v;
+  const deadNote = isAuction ? 'already past this — ' : 'asking already clears this — just buy — ';
+
+  $('#maxbid-title').textContent = title;
   $('#maxbid-body').innerHTML = `
     <div class="tbl-wrap" style="box-shadow:none;border:none">
       <table class="tbl"><thead>
-        <tr><th>To stay under market by</th><th class="num">${isBin ? 'Offer' : 'Bid up to'}</th><th>Meaning</th></tr>
+        <tr><th>To stay under market by</th><th class="num">${colHead}</th><th>Meaning</th></tr>
       </thead><tbody>
         ${rows.map(r => {
           const v = cap(r.margin);
-          // auctions: a margin is dead once the bidding passes its cap;
-          // BIN: a margin needs no offer once the ASKING price is under it
-          const dead = isBin ? current <= v : current > v;
-          const deadNote = isBin ? 'asking price already clears this — just buy — ' : 'already past this — ';
+          const dead = deadFor(v);
           return `<tr${dead ? ' style="opacity:.45"' : ''}>
             <td>${(r.margin * 100).toFixed(0)}%</td>
             <td class="num"><b>${fmtGBP(v)}</b></td>
@@ -99,9 +150,7 @@ function maxBidAdvisor(d) {
     </div>
     <p class="help" style="margin:8px 0 0">
       Based on the ${fmtGBP(s.median)} market median${qty > 1 ? ` × ${qty} units` : ''}${ship > 0 ? `, minus ${fmtGBP(ship)} delivery` : ''}.
-      ${isBin
-        ? `Asking price is ${fmtGBP(current)} — if the listing takes Best Offers, open below the margin you want; the figures are item-price only (delivery excluded).`
-        : 'Bids are what you enter on eBay (delivery excluded); margins compare the delivery-inclusive total against market.'}
+      ${note} Figures are item-price only (delivery excluded).
     </p>`;
 }
 
@@ -158,7 +207,15 @@ function facts(d) {
   const l = d.listing, o = d.outcome || {};
   const chips = [];
   if (d.category) chips.push(d.category.toUpperCase());
+  // buying routes this listing offers (from item-page enrichment) — a listing
+  // can be several at once, e.g. an auction that also has a Buy It Now.
+  const routes = [];
+  if (l.ListingType !== 'bin') routes.push('bidding');
+  if (l.ListingType === 'bin' || l.HasBin === 1) routes.push('Buy It Now');
+  if (l.HasBestOffer === 1) routes.push('Best Offer');
   $('#facts-tbl tbody').innerHTML = [
+    factRow('Buying options', routes.length > 1 || l.HasBin === 1 || l.HasBestOffer === 1
+      ? routes.join(' · ') : null),
     factRow('Condition', o.ItemCondition && esc(o.ItemCondition)),
     factRow('Location', o.ItemLocation && esc(o.ItemLocation)),
     factRow('eBay category', o.CategoryPath && esc(o.CategoryPath.split(' > ').slice(-2).join(' > '))),

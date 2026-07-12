@@ -408,6 +408,30 @@ def ensure_first_seen_column():
 ensure_first_seen_column()
 
 
+def ensure_offer_columns():
+    """EBAY.HasBin / HasBestOffer — the deal-page advisor reads them; scraper
+    owns the real migration, this guards deploy order."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        for col in ('HasBin', 'HasBestOffer'):
+            try:
+                cur.execute(f"ALTER TABLE Scraper.EBAY ADD COLUMN {col} TINYINT(1) NULL")
+                conn.commit()
+            except mariadb.Error as e:
+                if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                    log.error("EBAY: unexpected error adding %s: %s", col, e)
+    except Exception as e:
+        log.error("Could not ensure offer columns: %s", e)
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_offer_columns()
+
+
 def ensure_scrape_meta():
     conn = None
     try:
@@ -1936,7 +1960,8 @@ def deal_detail(ebay_id):
                    COALESCE(EndTimeExact, 0) AS EndTimeExact, SoldDate, URL,
                    SellerFeedbackPct, SellerFeedbackCount, LastSeenAt,
                    COALESCE(ReserveNotMet, 0) AS ReserveNotMet,
-                   COALESCE(ListingType, 'auction') AS ListingType
+                   COALESCE(ListingType, 'auction') AS ListingType,
+                   HasBin, HasBestOffer
             FROM Scraper.EBAY WHERE ID = %s
         """, (ebay_id,))
         listing = cur.fetchone()
