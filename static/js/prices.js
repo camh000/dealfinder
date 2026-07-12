@@ -5,70 +5,8 @@ let guide = null, cat = 'all';
 let sort = { col: 'AvgPrice', asc: false };
 let basket = JSON.parse(localStorage.getItem('pcd-basket') || '[]');
 
-/* ── context-aware filters: appear under the pills once a type is picked ──
-   Each entry: dropdown options + a row predicate. Options are [value, label]
-   pairs; '' = any. State lives in `ctx` and resets on category switch. */
-const CTX_FILTERS = {
-  gpu: [
-    { key: 'series', label: 'Series',
-      opts: [['RTX', 'RTX'], ['GTX', 'GTX'], ['RX', 'Radeon RX'], ['ARC', 'Intel Arc']],
-      match: (r, v) => (r.Model || '').toUpperCase().startsWith(v) },
-  ],
-  cpu: [
-    { key: 'family', label: 'Family',
-      opts: [['i3', 'Core i3'], ['i5', 'Core i5'], ['i7', 'Core i7'], ['i9', 'Core i9'],
-             ['ryzen 3', 'Ryzen 3'], ['ryzen 5', 'Ryzen 5'], ['ryzen 7', 'Ryzen 7'],
-             ['ryzen 9', 'Ryzen 9'], ['xeon', 'Xeon']],
-      match: (r, v) => (r.Model || '').toLowerCase().includes(v) },
-  ],
-  hdd: [
-    { key: 'iface', label: 'Interface', opts: [['SATA', 'SATA'], ['SAS', 'SAS']],
-      match: (r, v) => (r.Interface || 'SATA') === v },
-    { key: 'type', label: 'Type', opts: [['Internal', 'Internal'], ['External', 'External']],
-      match: (r, v) => (r.DriveType || 'Internal') === v },
-    { key: 'mincap', label: 'Min size',
-      opts: [['1000', '1TB+'], ['4000', '4TB+'], ['8000', '8TB+'], ['12000', '12TB+']],
-      match: (r, v) => Number(r.CapacityGB) >= Number(v) },
-  ],
-  ssd: [
-    { key: 'iface', label: 'Interface', opts: [['NVMe', 'NVMe'], ['SATA', 'SATA'], ['USB', 'USB / portable']],
-      match: (r, v) => (r.Interface || '') === v },
-    { key: 'mincap', label: 'Min size',
-      opts: [['500', '500GB+'], ['1000', '1TB+'], ['2000', '2TB+'], ['4000', '4TB+']],
-      match: (r, v) => Number(r.CapacityGB) >= Number(v) },
-  ],
-  ram: [
-    { key: 'type', label: 'Type', opts: [['DDR3', 'DDR3'], ['DDR4', 'DDR4'], ['DDR5', 'DDR5']],
-      match: (r, v) => (r.Type || '') === v },
-    { key: 'ff', label: 'Form', opts: [['DIMM', 'Desktop (DIMM)'], ['SODIMM', 'Laptop (SODIMM)']],
-      match: (r, v) => (r.FormFactor || 'DIMM') === v },
-    { key: 'kit', label: 'Kit',
-      opts: [['1x', 'single stick'], ['2x', '2-stick kit'], ['4x', '4-stick kit'], ['?', 'unstated']],
-      match: (r, v) => v === '?' ? !r.KitConfig : (r.KitConfig || '').toLowerCase().startsWith(v) },
-    { key: 'mincap', label: 'Min size',
-      opts: [['8', '8GB+'], ['16', '16GB+'], ['32', '32GB+'], ['64', '64GB+']],
-      match: (r, v) => Number(r.CapacityGB) >= Number(v) },
-  ],
-};
+/* context-aware filters (shared engine in common.js); state resets on switch */
 let ctx = {};
-
-function renderCtxFilters() {
-  const defs = CTX_FILTERS[cat];
-  const bar = $('#ctx-filters');
-  if (!defs) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
-  bar.style.display = '';
-  bar.innerHTML = defs.map(f => `
-    <label>${f.label}
-      <select data-ctx="${f.key}">
-        <option value="">any</option>
-        ${f.opts.map(([v, l]) => `<option value="${esc(v)}"${ctx[f.key] === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}
-      </select>
-    </label>`).join('');
-  $$('#ctx-filters select').forEach(sel => sel.addEventListener('change', () => {
-    if (sel.value) ctx[sel.dataset.ctx] = sel.value; else delete ctx[sel.dataset.ctx];
-    render();
-  }));
-}
 
 function rowsFlat() {
   const cats = cat === 'all' ? ['gpu', 'cpu', 'hdd', 'ssd', 'ram'] : [cat];
@@ -80,9 +18,7 @@ function rowsFlat() {
                   MaxPrice: Number(r.MaxPrice) });
   const q = $('#q').value.trim().toLowerCase();
   if (q) rows = rows.filter(r => r._label.toLowerCase().includes(q));
-  const defs = CTX_FILTERS[cat] || [];
-  for (const f of defs)
-    if (ctx[f.key]) rows = rows.filter(r => f.match(r, ctx[f.key]));
+  rows = filterByCtx(rows, cat, ctx);
   return sortRows(rows, sort.col, sort.asc);
 }
 
@@ -155,7 +91,7 @@ $$('#cat-pills .pill').forEach(p => p.addEventListener('click', () => {
   cat = p.dataset.cat;
   ctx = {};                       // filters are per-type — reset on switch
   $$('#cat-pills .pill').forEach(x => x.classList.toggle('active', x === p));
-  renderCtxFilters();
+  renderCtxFilters($('#ctx-filters'), cat, ctx, render);
   render();
 }));
 

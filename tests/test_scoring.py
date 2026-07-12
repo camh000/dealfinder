@@ -161,6 +161,23 @@ class TestQueryBuilders:
         # current BID as the price — bids and unmet reserves are auction tells
         assert "COALESCE(e.Bids, 0) = 0" in sql
         assert "COALESCE(e.ReserveNotMet, 0) = 0" in sql
+        # no time window by default
+        assert "FirstSeenAt >" not in sql
+
+    @pytest.mark.parametrize("ptype", ALL_TYPES)
+    def test_bin_query_added_within_window(self, ptype):
+        """The browsable feed's 'added within N hours' filters on FirstSeenAt
+        (set once on insert, so re-seeing a listing doesn't reset it)."""
+        sql = queries.build_bin_deals_query(ptype, min_discount=10, added_within_hours=6)
+        assert "{" not in sql and "}" not in sql
+        assert "e.FirstSeenAt > NOW() - INTERVAL 6 HOUR" in sql
+        # clamped to a sane ceiling
+        big = queries.build_bin_deals_query(ptype, added_within_hours=99999)
+        assert "INTERVAL 720 HOUR" in big
+        # <1 floored to 1
+        low = queries.build_bin_deals_query(ptype, added_within_hours=0)
+        # 0 is falsy for the caller, but if forced through it floors to 1h
+        assert "INTERVAL 1 HOUR" in low
 
     @pytest.mark.parametrize("ptype", ALL_TYPES)
     def test_auction_feed_excludes_bin_rows(self, ptype):

@@ -372,6 +372,32 @@ def ensure_last_seen_column():
 ensure_last_seen_column()
 
 
+def ensure_first_seen_column():
+    """EBAY.FirstSeenAt — the BIN feed's 'added within' filter reads it; the
+    scraper owns the real backfill, this just guards deploy order."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE Scraper.EBAY ADD COLUMN FirstSeenAt DATETIME NULL")
+            conn.commit()
+            cur.execute("UPDATE Scraper.EBAY SET FirstSeenAt = LastSeenAt WHERE FirstSeenAt IS NULL")
+            conn.commit()
+            log.info("EBAY: added FirstSeenAt column")
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("EBAY: unexpected error adding FirstSeenAt column: %s", e)
+    except Exception as e:
+        log.error("Could not ensure FirstSeenAt column: %s", e)
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_first_seen_column()
+
+
 def ensure_scrape_meta():
     conn = None
     try:
@@ -878,6 +904,16 @@ def api_bin_deals():
         min_discount = max(5.0, min(float(request.args.get('min_discount', 10)), 90.0))
     except ValueError:
         min_discount = 10.0
+    # added_within = hours since first seen; 0/absent = no window (all live BIN)
+    added_within = None
+    raw_hours = request.args.get('added_within')
+    if raw_hours:
+        try:
+            h = int(raw_hours)
+            if h > 0:
+                added_within = max(1, min(h, 720))
+        except ValueError:
+            pass
     cats = list(queries.CATEGORIES) if want == 'all' else [want]
     conn = None
     try:
@@ -885,10 +921,11 @@ def api_bin_deals():
         cur = conn.cursor(dictionary=True)
         rows = []
         for cat in cats:
-            cur.execute(queries.build_bin_deals_query(cat, min_discount))
+            cur.execute(queries.build_bin_deals_query(cat, min_discount, added_within))
             for r in cur.fetchall():
                 r['_cat'] = cat
                 r['_label'] = queries.model_label_for_row(cat, r)
+                r['FirstSeenAt'] = _iso_utc(r.get('FirstSeenAt'))
                 rows.append(r)
         rows.sort(key=lambda r: float(r.get('DiscountPct') or 0), reverse=True)
         return jsonify({"status": "ok", "deals": rows})

@@ -18,10 +18,20 @@
     <button class="pill" data-cat="ram">RAM</button>
   </div>
   <label>min discount <input type="number" id="f-disc" min="5" max="90" step="5" value="10" style="width:64px">%</label>
+  <label>added within
+    <select id="f-added">
+      <option value="0">any time</option>
+      <option value="1">1 hour</option>
+      <option value="6">6 hours</option>
+      <option value="24">24 hours</option>
+      <option value="72">3 days</option>
+      <option value="168">7 days</option>
+    </select></label>
   <span class="sub" id="bin-count"></span>
   <span style="flex:1"></span>
   <button class="btn-ghost" id="refresh-btn">refresh</button>
 </div>
+<div class="toolbar" id="ctx-filters" style="display:none;margin-top:-8px"></div>
 
 <div class="rows" id="rows"><div class="state"><span class="loader"></span>loading…</div></div>
 {% endblock %}

@@ -8,7 +8,7 @@
    sunk to its own section, not hidden. */
 const SCAM_DISCOUNT = 60;
 
-let allDeals = [], cat = 'all';
+let allDeals = [], cat = 'all', ctx = {};
 
 function posbar(d) {
   const qty = Number(d.Quantity) || 1;
@@ -57,7 +57,8 @@ function card(d) {
 }
 
 function render() {
-  const rows = allDeals.filter(d => cat === 'all' || d._cat === cat);
+  let rows = allDeals.filter(d => cat === 'all' || d._cat === cat);
+  rows = filterByCtx(rows, cat, ctx);
   $('#bin-count').textContent = `${rows.length} listing${rows.length === 1 ? '' : 's'}`;
   if (!rows.length) {
     $('#rows').innerHTML = '<div class="state">Nothing under the bar right now — lower the min discount or check back after the next sweep.</div>';
@@ -74,7 +75,8 @@ async function load() {
   $('#refresh-btn').disabled = true;
   try {
     const disc = Math.max(5, Math.min(Number($('#f-disc').value) || 10, 90));
-    const res = await fetch(`/api/bin-deals?type=all&min_discount=${disc}`);
+    const added = Number($('#f-added').value) || 0;   // hours since first seen; 0 = any
+    const res = await fetch(`/api/bin-deals?type=all&min_discount=${disc}&added_within=${added}`);
     const data = await res.json();
     if (data.status !== 'ok') throw new Error(data.message || 'error');
     allDeals = data.deals;
@@ -88,10 +90,13 @@ async function load() {
 
 $$('#cat-pills .pill').forEach(p => p.addEventListener('click', () => {
   cat = p.dataset.cat;
+  ctx = {};                       // filters are per-type — reset on switch
   $$('#cat-pills .pill').forEach(x => x.classList.toggle('active', x === p));
+  renderCtxFilters($('#ctx-filters'), cat, ctx, render);
   render();
 }));
 $('#f-disc').addEventListener('change', load);
+$('#f-added').addEventListener('change', load);
 $('#refresh-btn').addEventListener('click', load);
 setInterval(() => { if (!document.hidden) load(); }, 5 * 60 * 1000);
 load();

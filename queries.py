@@ -226,18 +226,28 @@ ORDER BY DealScore DESC;
 """
 
 
-def build_bin_deals_query(product_type: str, min_discount: float = 25) -> str:
+def build_bin_deals_query(product_type: str, min_discount: float = 25,
+                          added_within_hours: int | None = None) -> str:
     """Buy-It-Now bargains: live fixed-price listings priced under the sold
     median RIGHT NOW. No bidding dynamics — the listed price IS the final
     price — so there's no prediction gate, no bid damping and no urgency
     weighting; the discount is real the moment it's seen. Sorted by discount.
     The default threshold is stricter than the auction feed's 20%: a BIN find
-    pings a phone immediately, so it has to be worth interrupting someone."""
+    pings a phone immediately, so it has to be worth interrupting someone.
+
+    added_within_hours (optional) restricts to listings FIRST SEEN in the last
+    N hours — the browsable feed's time window (FirstSeenAt is set once on
+    insert, so re-seeing a listing every sweep doesn't reset it). NULL = no
+    limit beyond the freshness gate."""
     cfg = CATEGORIES[product_type]
     a = cfg['alias']
     threshold = _clamp_threshold(min_discount)
     ctes = _stats_ctes(cfg, min_sold=5)
     extra = ',\n    '.join(cfg['deal_select'])
+    added_clause = ''
+    if added_within_hours is not None:
+        h = max(1, min(int(added_within_hours), 720))
+        added_clause = f"\n    AND e.FirstSeenAt > NOW() - INTERVAL {h} HOUR"
     return f"""{ctes}
 SELECT
     e.ID,
@@ -254,6 +264,7 @@ SELECT
     ROUND((1 - {EFF_UNIT} / ms.AvgPrice) * 100, 1) AS DiscountPct,
     e.SellerFeedbackPct,
     e.SellerFeedbackCount,
+    e.FirstSeenAt,
     e.URL
 FROM Scraper.EBAY e
 JOIN Scraper.{cfg['table']} {a} ON {a}.ID = e.ID
@@ -265,7 +276,7 @@ WHERE
     AND COALESCE(e.ReserveNotMet, 0) = 0
     AND {EFF_UNIT} < ms.AvgPrice * {threshold}
     AND {FEEDBACK_OK}
-    AND {FRESH_OK}
+    AND {FRESH_OK}{added_clause}
 ORDER BY DiscountPct DESC;
 """
 

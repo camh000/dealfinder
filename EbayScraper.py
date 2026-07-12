@@ -1443,10 +1443,13 @@ def _upload(cur, p: Product, product_type: str, listing_kind: str = 'auction',
     # stored. Authoritative in BOTH directions — auctions that offer a BIN
     # option appear in LH_BIN results and were getting stuck as 'bin',
     # invisible to the auction pipeline.
+    # FirstSeenAt = when we first inserted this listing; set once on INSERT and
+    # never touched on UPDATE, so the BIN feed can offer an "added within" window
+    # (LastSeenAt keeps moving as the 30-min sweep re-sees the same listing).
     cur.execute("""
         INSERT INTO EBAY (ID, Title, Price, Shipping, Quantity, Bids, EndTime, SoldDate, URL,
-                          SellerFeedbackPct, SellerFeedbackCount, ListingType, LastSeenAt)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                          SellerFeedbackPct, SellerFeedbackCount, ListingType, FirstSeenAt, LastSeenAt)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
         ON DUPLICATE KEY UPDATE
             Title = VALUES(Title),
             Price = VALUES(Price),
@@ -2495,6 +2498,28 @@ def EnsureLastSeenColumn() -> None:
         except mariadb.Error as e:
             if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
                 log.error("EBAY: unexpected error adding LastSeenAt column: %s", e)
+    finally:
+        conn.close()
+
+
+def EnsureFirstSeenColumn() -> None:
+    """Add EBAY.FirstSeenAt (when a listing was first inserted). Existing rows
+    are backfilled from LastSeenAt — the best estimate we have for pre-column
+    rows — so the BIN feed's 'added within' window has a value to filter on."""
+    DUP_COLUMN_ERRNO = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE Scraper.EBAY ADD COLUMN FirstSeenAt DATETIME NULL")
+            conn.commit()
+            log.info("EBAY: added FirstSeenAt column")
+            cur.execute("UPDATE Scraper.EBAY SET FirstSeenAt = LastSeenAt WHERE FirstSeenAt IS NULL")
+            conn.commit()
+            log.info("EBAY: backfilled FirstSeenAt on %d existing row(s)", cur.rowcount)
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("EBAY: unexpected error adding FirstSeenAt column: %s", e)
     finally:
         conn.close()
 

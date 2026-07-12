@@ -566,6 +566,12 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("LastSeenAt migration failed: %s", e)
 
+    # FirstSeenAt: first-insert stamp powering the BIN feed's "added within" window.
+    try:
+        EbayScraper.EnsureFirstSeenColumn()
+    except Exception as e:
+        log.error("FirstSeenAt migration failed: %s", e)
+
     # Strip tracking params from stored listing URLs (new rows are
     # canonicalised at parse time).
     try:
