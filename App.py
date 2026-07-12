@@ -1037,17 +1037,29 @@ def subscriptions_create():
     label = (body.get('label') or '')[:150]
     if not label:
         label = queries.subscription_label(cat, f['scope'], json.loads(f['group']))[:150]
+    uid = u["id"] if u else 0
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO Scraper.PriceAlerts
-                (UserID, Category, GroupParams, Label, Kind, ScopeKind, ListingType,
-                 TargetPrice, MinDiscount)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (u["id"] if u else 0, cat, f['group'], label, f['kind'],
-              f['scope'], f['ltype'], f['target'], f['min_disc']))
+        # Whole-category feeds are idempotent: re-"Watch these" retunes the
+        # existing feed (and re-enables it) instead of stacking duplicates.
+        updated = False
+        if f['scope'] == 'all' and f['kind'] == 'discount_pct':
+            cur.execute("""UPDATE Scraper.PriceAlerts
+                           SET MinDiscount = %s, Enabled = 1, Label = %s
+                           WHERE UserID = %s AND Category = %s AND ScopeKind = 'all'
+                             AND Kind = 'discount_pct' AND ListingType = %s""",
+                        (f['min_disc'], label, uid, cat, f['ltype']))
+            updated = cur.rowcount > 0
+        if not updated:
+            cur.execute("""
+                INSERT INTO Scraper.PriceAlerts
+                    (UserID, Category, GroupParams, Label, Kind, ScopeKind, ListingType,
+                     TargetPrice, MinDiscount)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (uid, cat, f['group'], label, f['kind'],
+                  f['scope'], f['ltype'], f['target'], f['min_disc']))
         conn.commit()
         # Nudge if the sub can never fire because the owner has no endpoint.
         cur.execute("""SELECT 1 FROM Scraper.Users WHERE ID = %s

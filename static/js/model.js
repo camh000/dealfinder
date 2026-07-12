@@ -70,27 +70,55 @@ function chart(trend, median, predictions) {
 
 /* ── price alert: pop the form, prefill target from the median ── */
 let groupMedian = null;
+/* Each "Fire when" option maps to a subscription: a %-discount trigger for
+   deal alerts (auction / BIN) or a £-target trigger for price alerts. The form
+   swaps between the % and £ input, and each explains itself. */
+const ALERT_KINDS = {
+  auction_deal: { trigger: 'discount_pct', listing_type: 'auction', field: 'disc',
+    help: 'Pushes once per listing when an auction for this model appears at least this far under its market median — and only when the predicted final still clears the discount, so a 99p-start with days left never counts.' },
+  bin_deal: { trigger: 'discount_pct', listing_type: 'bin', field: 'disc',
+    help: 'Pushes when a fixed-price (Buy It Now) listing for this model appears at least this far under its market median.' },
+  listing_price: { trigger: 'listing_price', listing_type: 'any', field: 'target',
+    help: '"Genuinely available" means a Buy-It-Now at that price, or an auction in its final 2 hours whose predicted final also clears the target — a 99p-start with days left never counts.' },
+  median_price: { trigger: 'median_price', listing_type: 'any', field: 'target',
+    help: 'Pushes when the 120-day sold median for this model itself drops under your target.' },
+};
+
+function syncAlertForm() {
+  const spec = ALERT_KINDS[$('#al-kind').value];
+  $('#al-disc-fg').style.display = spec.field === 'disc' ? '' : 'none';
+  $('#al-target-fg').style.display = spec.field === 'target' ? '' : 'none';
+  $('#al-help').textContent = spec.help;
+  if (spec.field === 'target' && groupMedian != null && !$('#al-target').value)
+    $('#al-target').value = (groupMedian * 0.85).toFixed(2);
+}
+
+$('#al-kind').addEventListener('change', syncAlertForm);
+
 $('#alert-btn').addEventListener('click', () => {
   const card = $('#alert-card');
   if (card.style.display !== 'none') { card.style.display = 'none'; return; }
   card.style.display = '';
-  if (groupMedian != null && !$('#al-target').value)
-    $('#al-target').value = (groupMedian * 0.85).toFixed(2);
+  syncAlertForm();
 });
 
 $('#al-save').addEventListener('click', async () => {
   $('#al-status').textContent = '…';
+  const spec = ALERT_KINDS[$('#al-kind').value];
+  const body = {
+    category: CAT,
+    scope_kind: 'group',
+    group: Object.fromEntries(params),
+    label: groupLabel(CAT, Object.fromEntries(params)),
+    kind: spec.trigger,
+    listing_type: spec.listing_type,
+  };
+  if (spec.field === 'disc') body.min_discount = parseFloat($('#al-disc').value);
+  else body.target_price = parseFloat($('#al-target').value);
   try {
     const res = await fetch('/api/subscriptions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        category: CAT,
-        scope_kind: 'group',
-        group: Object.fromEntries(params),
-        label: groupLabel(CAT, Object.fromEntries(params)),
-        kind: $('#al-kind').value,
-        target_price: parseFloat($('#al-target').value),
-      }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (res.status === 401) { $('#al-status').innerHTML = 'sign in first — <a href="/login">login</a>'; return; }

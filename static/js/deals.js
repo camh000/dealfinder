@@ -165,6 +165,33 @@ async function load() {
   }
 }
 
+/* ── "Watch these": a whole-category auction feed subscription ── */
+$('#watch-btn').addEventListener('click', () => {
+  const card = $('#watch-card');
+  if (card.style.display !== 'none') { card.style.display = 'none'; return; }
+  card.style.display = '';
+  if (!$('#w-disc').value) $('#w-disc').value = Math.max(20, Number($('#f-disc').value) || 20);
+});
+
+$('#w-save').addEventListener('click', async () => {
+  $('#w-status').textContent = '…';
+  try {
+    const res = await fetch('/api/subscriptions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        category: CAT, kind: 'discount_pct', scope_kind: 'all',
+        listing_type: 'auction', min_discount: parseFloat($('#w-disc').value),
+      }),
+    });
+    const data = await res.json();
+    if (res.status === 401) { $('#w-status').innerHTML = 'sign in first — <a href="/login">login</a>'; return; }
+    if (data.status !== 'ok') { $('#w-status').textContent = data.message || 'error'; return; }
+    $('#w-status').innerHTML = data.has_endpoint
+      ? 'feed created ✓ — manage it in <a href="/settings">settings</a>'
+      : 'created ✓ — but set your <a href="/settings">notification endpoint</a> to receive it';
+  } catch { $('#w-status').textContent = 'network error'; }
+});
+
 $('#f-window').addEventListener('change', () => { persist(); load(); });
 $('#f-brand').addEventListener('change', () => { persist(); render(); });
 $('#f-disc').addEventListener('input', () => { persist(); render(); });

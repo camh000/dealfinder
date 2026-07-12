@@ -163,6 +163,19 @@ def test_subscription_fields_discount(app_module):
     assert isinstance(err, tuple) and err[1] == 400
 
 
+def test_subscription_fields_group_discount(app_module):
+    """Model-page 'a new auction deal for this model' — a group-scoped discount
+    subscription of a specific listing type (the gap Cam flagged)."""
+    import json as _j
+    f = app_module._subscription_fields(
+        {'kind': 'discount_pct', 'scope_kind': 'group', 'listing_type': 'auction',
+         'group': {'Model': 'RTX 3060 12GB'}, 'min_discount': 20})
+    assert not isinstance(f, tuple)
+    assert f['scope'] == 'group' and f['ltype'] == 'auction' and f['kind'] == 'discount_pct'
+    assert f['min_disc'] == 20.0 and f['target'] is None
+    assert _j.loads(f['group']) == {'Model': 'RTX 3060 12GB'}
+
+
 def test_subscription_fields_price(app_module):
     f = app_module._subscription_fields(
         {'kind': 'listing_price', 'scope_kind': 'group',
