@@ -589,6 +589,20 @@ _ACCESSORY_RE = re.compile(
     re.IGNORECASE)
 
 
+# Drive-lot sellers head the title with the LOT's total capacity in parens —
+# "(9.6TB) 8x Seagate 1.2TB SAS" — which then (a) becomes the parsed capacity
+# (it's the first TB token) and (b) pushes the "8x" count off the ^ anchor so
+# the lot quantity is missed. Stripping that leading total fixes both: the
+# per-drive "1.2TB" becomes the capacity and "8x" leads the title again.
+_LEADING_TOTAL_RE = re.compile(r'^\s*\(\s*\d+(?:\.\d+)?\s*(?:TB|GB)\s*\)\s*', re.IGNORECASE)
+
+
+def strip_leading_total(title: str) -> str:
+    """Drop a leading "(N TB/GB)" lot-total prefix so per-drive capacity and the
+    quantity-first count parse correctly. No-op for ordinary titles."""
+    return _LEADING_TOTAL_RE.sub('', title or '', count=1)
+
+
 def extract_lot_quantity(title: str) -> int:
     """Number of units in a multi-item listing; 1 when not confidently a lot."""
     t = _MODEL_FAMILY_X_RE.sub(r'\1', title or '')
@@ -795,11 +809,15 @@ def __ParseItems(soup, query, productType):
                 "GAINWARD", "AORUS", "SPARKLE", "ASROCK", "ACER"
             ]
 
-            # Flexible GPU model pattern
+            # Flexible GPU model pattern. The variant MUST end on a word
+            # boundary (\b) and be tried longest-first, or board-name words
+            # get misread as a variant: "AORUS RTX 3090 XTREME" parsed as
+            # "RTX 3090 XT" (XT is an AMD suffix; NVIDIA has no XT card), and
+            # "RTX 4070 Ti SUPER" must beat the bare "Ti".
             model_pattern = re.compile(
                 r'(?P<series>RTX|GTX|TITAN|RX)\s*'      # series
-                r'(?P<number>\d{2,4})\s*'               # number
-                r'(?P<variant>Ti|SUPER|Ti\s*SUPER|XT|XTX)?',  # optional variant
+                r'(?P<number>\d{2,4})'                  # number
+                r'(?:\s*(?P<variant>Ti\s*SUPER|SUPER|XTX|XT|Ti)\b)?',  # optional variant
                 re.IGNORECASE
             )
 
@@ -1060,12 +1078,15 @@ def __ParseItems(soup, query, productType):
                     return int(float(m.group(1)) * 1000)
                 return None
 
+            # A leading "(9.6TB)" lot total would otherwise become the capacity
+            # and hide the "8x" count — strip it so the per-drive size + count win.
+            _tcap = strip_leading_total(title)
             brand       = extract_hdd_brand(title)
             model       = None
             vram        = None
             socket      = None
             cores       = None
-            capacity_gb = extract_capacity_gb(title)
+            capacity_gb = extract_capacity_gb(_tcap) or extract_capacity_gb(title)
             # No real drive is under ~40GB — a small figure means the title's
             # first capacity belongs to something else (an eGPU's "16GB
             # Laptop Graphics Card" once landed here as a 16GB drive).
@@ -1077,7 +1098,7 @@ def __ParseItems(soup, query, productType):
             form_factor = extract_form_factor(title)
             rpm         = extract_rpm(title)
             drive_type  = classify_drive_type(title)
-            quantity    = extract_lot_quantity(title)
+            quantity    = extract_lot_quantity(_tcap)
 
         elif productType == 'SSD':
 
@@ -1112,7 +1133,10 @@ def __ParseItems(soup, query, productType):
                     return int(val * 1000) if unit == 'TB' else int(val)
                 return None
 
-            capacity_gb = extract_ssd_capacity_gb(title)
+            # Strip a leading "(N TB)" lot total (same drive-lot convention as
+            # HDD) so per-drive capacity + the "Nx" count parse correctly.
+            _tcap = strip_leading_total(title)
+            capacity_gb = extract_ssd_capacity_gb(_tcap) or extract_ssd_capacity_gb(title)
             if capacity_gb is None or capacity_gb < 60 or capacity_gb > 8000:
                 continue
 
@@ -1149,7 +1173,7 @@ def __ParseItems(soup, query, productType):
                 # their internal protocol is invisible and irrelevant to price.
                 interface = 'USB'
                 form_factor = 'Ext'
-            quantity = extract_lot_quantity(title)
+            quantity = extract_lot_quantity(_tcap)
 
         elif productType == 'RAM':
 

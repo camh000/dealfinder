@@ -321,6 +321,29 @@ class TestLotQuantity:
         assert EbayScraper.extract_lot_quantity(None) == 1
 
 
+class TestLeadingLotTotal:
+    """Cam: a "(9.6TB) 8x Seagate 1.2TB SAS" lot parsed as a single 9.6TB drive.
+    A leading parenthetical LOT TOTAL both became the capacity and pushed the
+    '8x' count off the ^ anchor. Stripping it fixes both."""
+
+    def test_strip_leading_total(self):
+        assert EbayScraper.strip_leading_total(
+            '(9.6TB) 8x Seagate 1.2TB SAS') == '8x Seagate 1.2TB SAS'
+        # ordinary titles are untouched
+        assert EbayScraper.strip_leading_total('Seagate 4TB SATA') == 'Seagate 4TB SATA'
+
+    @pytest.mark.parametrize("title,cap,qty", [
+        ('(9.6TB) 8x Seagate Dell 1.2TB SAS 6G 2.5" 10K HDD ST1200MM0007', 1200, 8),
+        ('(9.6TB) 8x Lenovo/Seagate Exos 10E2400 1.2TB SAS 12G 2.5" 10K HDD', 1200, 8),
+        ('(24TB) 12x HGST 2TB SATA 3.5" Enterprise HDD', 2000, 12),
+    ])
+    def test_hdd_lot_total_parses_per_drive(self, title, cap, qty):
+        item = _parse_one(title, "HDD")
+        assert item is not None
+        assert item['capacity-gb'] == cap
+        assert item['quantity'] == qty
+
+
 class TestAlertListingRelevance:
     """listing_below second gate: BIN prices are final; auction hits (already
     inside the final window) must have a PREDICTED final under the target."""
@@ -635,6 +658,36 @@ class TestArcGpuParsing:
     def test_arc_does_not_hijack_other_gpus(self):
         assert _parse_one("MSI RTX 4070 Gaming X 12GB", "GPU")['model'] == "RTX 4070"
         assert _parse_one("Sapphire RX 6700 XT 12GB", "GPU")['brand'] == "Sapphire"
+
+
+class TestGpuBoardNameVariants:
+    """Board-name words must not be misread as an AMD XT/XTX or a Ti/SUPER
+    variant — Cam: "RTX 3090 XT isn't a thing, we've found 3". 'XT' was
+    matching the start of Gigabyte AORUS 'XTREME'."""
+
+    @pytest.mark.parametrize("title,model", [
+        ("Gigabyte AORUS GeForce RTX 3090 Xtreme 24GB Graphics Card", "RTX 3090"),
+        ("GIGABYTE AORUS GeForce RTX 5080 XTREME WATERFORCE 16G", "RTX 5080"),
+        ("Gigabyte GeForce GTX 1080 Xtreme Gaming 8gb", "GTX 1080"),
+        ("EVGA GeForce GTX 1070 SC Gaming ACX 3.0 8GB", "GTX 1070"),
+        ("EVGA GeForce GTX 970 SSC 4GB GDDR5", "GTX 970"),
+        ("MSI GeForce RTX 3090 SUPRIM x 24GB GDDR6X", "RTX 3090"),
+        ("MSI GeForce RTX 2080 SEA HAWK X 8GB", "RTX 2080"),
+        ("Palit GeForce RTX 3050 StormX 8GB", "RTX 3050 8GB"),      # 3050 is dual-VRAM
+        ("ZOTAC Gaming GeForce RTX 3050 Solo 8GB GDDR6", "RTX 3050 8GB"),
+    ])
+    def test_board_names_do_not_become_variants(self, title, model):
+        assert _parse_one(title, "GPU")['model'] == model
+
+    @pytest.mark.parametrize("title,model", [
+        ("Sapphire Radeon RX 7900 XT 20GB", "RX 7900 XT 20GB"),   # real AMD XT kept (dual-VRAM)
+        ("XFX Radeon RX 7900 XTX 24GB", "RX 7900 XTX"),           # real XTX kept
+        ("NVIDIA GeForce RTX 4070 Ti SUPER 16GB", "RTX 4070 TI SUPER"),
+        ("MSI GeForce RTX 4070 Ti 12GB", "RTX 4070 TI 12GB"),     # 4070 Ti is dual-VRAM
+        ("Gigabyte GeForce GTX 1660 SUPER OC 6GB", "GTX 1660 SUPER"),
+    ])
+    def test_real_variants_preserved(self, title, model):
+        assert _parse_one(title, "GPU")['model'] == model
 
 
 class TestXeonParsing:
