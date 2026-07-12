@@ -483,19 +483,31 @@ def extract_ram_kit(title: str):
 # Listings of these models WITHOUT a parseable VRAM keep the bare name, which
 # groups them into a thin bucket that never reaches the 5-sold stats floor —
 # safer excluded than mispriced. Keys match extract_model() output exactly.
+# Models that shipped in more than one VRAM size at materially different
+# prices, so the size must be part of the market group. Chosen from the sold
+# data (models actually blended with a >=~20% median gap) + their known
+# same-split siblings — cheap old cards whose 2/4GB variants sell within a few
+# pounds are deliberately left blended (splitting only thins the group).
+# NB some entries (RTX 4070 TI 16GB, RX 7900 XT 24GB) mainly isolate the
+# higher SKU (Ti SUPER / XTX) that mislabelled listings blend in.
 _DUAL_VRAM_MODELS = {
-    'GTX 1060':    (3, 6),
-    'RTX 2060':    (6, 12),
-    'RTX 3050':    (6, 8),
-    'RTX 3060':    (8, 12),
-    'RTX 3080':    (10, 12),
-    'RTX 4060 TI': (8, 16),
-    'RTX 5060 TI': (8, 16),
-    'RX 570':      (4, 8),
-    'RX 580':      (4, 8),
-    'RX 7600':     (8, 16),
-    'RX 9060 XT':  (8, 16),
-    'ARC A770':    (8, 16),
+    'GTX 1060':     (3, 6),
+    'RTX 2060':     (6, 12),
+    'RTX 3050':     (6, 8),
+    'RTX 3060':     (8, 12),
+    'RTX 3080':     (10, 12),
+    'RTX 4060 TI':  (8, 16),
+    'RTX 4070 TI':  (12, 16),
+    'RTX 5060 TI':  (8, 16),
+    'RX 470':       (4, 8),
+    'RX 480':       (4, 8),
+    'RX 570':       (4, 8),
+    'RX 580':       (4, 8),
+    'RX 5500 XT':   (4, 8),
+    'RX 7600':      (8, 16),
+    'RX 7900 XT':   (20, 24),
+    'RX 9060 XT':   (8, 16),
+    'ARC A770':     (8, 16),
 }
 
 

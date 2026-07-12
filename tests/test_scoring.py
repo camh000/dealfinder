@@ -493,6 +493,20 @@ class TestGpuVramSplit:
         assert EbayScraper.qualify_gpu_model("RTX 4090", 24) == "RTX 4090"
         assert EbayScraper.qualify_gpu_model(None, 8) is None
 
+    def test_newly_added_dual_vram_models(self):
+        # found from the sold data: blended across VRAM at a real price gap
+        assert EbayScraper.qualify_gpu_model("RX 480", 4) == "RX 480 4GB"
+        assert EbayScraper.qualify_gpu_model("RX 480", 8) == "RX 480 8GB"
+        assert EbayScraper.qualify_gpu_model("RX 470", 8) == "RX 470 8GB"
+        assert EbayScraper.qualify_gpu_model("RX 5500 XT", 4) == "RX 5500 XT 4GB"
+        assert EbayScraper.qualify_gpu_model("RTX 4070 TI", 16) == "RTX 4070 TI 16GB"
+        assert EbayScraper.qualify_gpu_model("RTX 4070 TI", 12) == "RTX 4070 TI 12GB"
+        assert EbayScraper.qualify_gpu_model("RX 7900 XT", 24) == "RX 7900 XT 24GB"
+        assert EbayScraper.qualify_gpu_model("RX 7900 XT", 20) == "RX 7900 XT 20GB"
+        # the higher SKU stays its own model (Ti Super / XTX parse separately)
+        assert EbayScraper.qualify_gpu_model("RTX 4070 TI SUPER", 16) == "RTX 4070 TI SUPER"
+        assert EbayScraper.qualify_gpu_model("RX 7900 XTX", 24) == "RX 7900 XTX"
+
     def test_parse_integration(self):
         from bs4 import BeautifulSoup
         html = """
