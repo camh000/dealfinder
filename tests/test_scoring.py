@@ -329,19 +329,44 @@ class TestLeadingLotTotal:
     def test_strip_leading_total(self):
         assert EbayScraper.strip_leading_total(
             '(9.6TB) 8x Seagate 1.2TB SAS') == '8x Seagate 1.2TB SAS'
-        # ordinary titles are untouched
+        # bare (non-parenthesised) total followed by a count
+        assert EbayScraper.strip_leading_total(
+            '24TB 6x Toshiba 4TB SAS') == '6x Toshiba 4TB SAS'
+        # ordinary single-drive titles are untouched (no count after the size)
         assert EbayScraper.strip_leading_total('Seagate 4TB SATA') == 'Seagate 4TB SATA'
+        assert EbayScraper.strip_leading_total('4TB WD Red NAS') == '4TB WD Red NAS'
 
     @pytest.mark.parametrize("title,cap,qty", [
         ('(9.6TB) 8x Seagate Dell 1.2TB SAS 6G 2.5" 10K HDD ST1200MM0007', 1200, 8),
         ('(9.6TB) 8x Lenovo/Seagate Exos 10E2400 1.2TB SAS 12G 2.5" 10K HDD', 1200, 8),
         ('(24TB) 12x HGST 2TB SATA 3.5" Enterprise HDD', 2000, 12),
+        ('24TB 6x Toshiba 4TB 7.2k 12Gb/s SAS MG04SCA40EE HDD', 4000, 6),
     ])
     def test_hdd_lot_total_parses_per_drive(self, title, cap, qty):
         item = _parse_one(title, "HDD")
         assert item is not None
         assert item['capacity-gb'] == cap
         assert item['quantity'] == qty
+
+
+class TestGpuLeakGuard:
+    """A drive title never names a GPU — gaming laptops/PCs and bare graphics
+    cards that leaked into HDD/SSD (their "2TB" is the system's drive) are
+    rejected. Cam: 'kaf2 nvidia geforce rtx309024gb' parsed as a 309TB drive."""
+
+    @pytest.mark.parametrize("title", [
+        "kaf2 nvidia geforce rtx309024gb",
+        "NVIDIA Quadro RTX 8000 48GB GDDR6 Graphics GPU",
+        "Edge Gaming Pc RTX 5060Ti Water Cooled 1tb",
+        "Custom Build Gaming Desktop PC NVIDIA GeForce RTX 1TB SSD Windows",
+    ])
+    def test_gpu_titles_rejected_from_drives(self, title):
+        assert _parse_one(title, "HDD") is None
+        assert _parse_one(title, "SSD") is None
+
+    def test_real_drives_still_pass(self):
+        assert _parse_one('Seagate Exos 16TB SATA 3.5" HDD', "HDD") is not None
+        assert _parse_one("Samsung 980 Pro 2TB NVMe M.2 SSD", "SSD") is not None
 
 
 class TestAlertListingRelevance:

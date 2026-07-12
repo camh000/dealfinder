@@ -589,18 +589,31 @@ _ACCESSORY_RE = re.compile(
     re.IGNORECASE)
 
 
-# Drive-lot sellers head the title with the LOT's total capacity in parens —
-# "(9.6TB) 8x Seagate 1.2TB SAS" — which then (a) becomes the parsed capacity
-# (it's the first TB token) and (b) pushes the "8x" count off the ^ anchor so
-# the lot quantity is missed. Stripping that leading total fixes both: the
-# per-drive "1.2TB" becomes the capacity and "8x" leads the title again.
-_LEADING_TOTAL_RE = re.compile(r'^\s*\(\s*\d+(?:\.\d+)?\s*(?:TB|GB)\s*\)\s*', re.IGNORECASE)
+# Drive-lot sellers head the title with the LOT's total capacity — either in
+# parens "(9.6TB) 8x Seagate 1.2TB SAS" or bare "24TB 6x Toshiba 4TB" — which
+# then (a) becomes the parsed capacity (it's the first TB token) and (b) pushes
+# the "8x" count off the ^ anchor so the lot quantity is missed. Stripping that
+# leading total fixes both: the per-drive size becomes the capacity and the
+# count leads the title again. The BARE form only strips when a "Nx" count
+# immediately follows, so a plain single-drive "4TB Seagate…" is untouched.
+_LEADING_TOTAL_RE = re.compile(
+    r'^\s*(?:'
+    r'\(\s*\d+(?:\.\d+)?\s*(?:TB|GB)\s*\)'                    # (9.6TB)
+    r'|\d+(?:\.\d+)?\s*(?:TB|GB)(?=\s*\d{1,2}\s*[x×])'        # 24TB 6x…
+    r')\s*', re.IGNORECASE)
 
 
 def strip_leading_total(title: str) -> str:
-    """Drop a leading "(N TB/GB)" lot-total prefix so per-drive capacity and the
-    quantity-first count parse correctly. No-op for ordinary titles."""
+    """Drop a leading lot-total prefix ("(9.6TB)" or "24TB 6x…") so per-drive
+    capacity and the quantity-first count parse correctly. No-op otherwise."""
     return _LEADING_TOTAL_RE.sub('', title or '', count=1)
+
+
+# A drive title never names a GPU — "geforce"/"radeon"/a bare RTX/GTX/Quadro
+# token means a graphics card or a whole gaming machine leaked into HDD/SSD
+# (its "2TB" is the system's drive, not the product). title_is_system catches
+# most, but a bare GPU listing ("NVIDIA Quadro RTX 8000 48GB") isn't a system.
+_GPU_TELL_RE = re.compile(r'geforce|radeon|\bgtx\b|\bquadro\b|\brtx[\s-]*\d', re.IGNORECASE)
 
 
 def extract_lot_quantity(title: str) -> int:
@@ -1033,8 +1046,8 @@ def __ParseItems(soup, query, productType):
             # here — "laptop hard drive" and "Desktop PC NAS Hard Drive" are
             # real drives describing what they fit. The reliable evidence is
             # a RAM spec or a CPU model: no bare-drive title ever states those.
-            if title_is_system(title, 'hdd') or 'graphics card' in _tl:
-                log.debug("[%s] Skipping system listing in HDD: %s", query, title[:60])
+            if title_is_system(title, 'hdd') or 'graphics card' in _tl or _GPU_TELL_RE.search(title):
+                log.debug("[%s] Skipping system/GPU listing in HDD: %s", query, title[:60])
                 continue
 
             HDD_BRANDS = ['SEAGATE','TOSHIBA','SAMSUNG','HITACHI','HGST','FUJITSU','MAXTOR']
@@ -1120,8 +1133,8 @@ def __ParseItems(soup, query, productType):
             # No bare drive names a CPU, RAM or a graphics card — those tell a
             # whole system (an "HP Pavilion i5 3330 128GB SSD DDR3" tower sat
             # in SSD). Storage size is the product here, so it isn't a tell.
-            if title_is_system(title, 'ssd') or 'graphics card' in _tl:
-                log.debug("[%s] Skipping system listing in SSD: %s", query, title[:60])
+            if title_is_system(title, 'ssd') or 'graphics card' in _tl or _GPU_TELL_RE.search(title):
+                log.debug("[%s] Skipping system/GPU listing in SSD: %s", query, title[:60])
                 continue
 
             ssd_cap_pattern = re.compile(r'(\d+(?:\.\d+)?)\s*(TB|GB)', re.IGNORECASE)
