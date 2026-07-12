@@ -986,6 +986,24 @@ class TestJunkListingGate:
         assert _parse_one(title, "GPU") is None, f"system parsed as a GPU: {title}"
 
     @pytest.mark.parametrize("title", [
+        # gaming PCs the audit found still slipping into GPU (no other tell,
+        # just 'Gaming PC' — a card would say 'graphics card')
+        "NVIDIA RTX 3070 Custom White Gaming PC",
+        "Gaming PC Intel i7 11th Generation Nvidia RTX 3070",
+        "VIBOX GAMING PC WIN11/32GB/1TB/i9 10TH GEN/NVIDIA GEFORCE RTX 4060",
+        "RTX 3080 Desktop PC Ryzen build",
+    ])
+    def test_gaming_pcs_skipped_from_gpu(self, title):
+        assert _parse_one(title, "GPU") is None, f"gaming PC parsed as a GPU: {title}"
+
+    def test_server_ram_skipped(self):
+        """Server chassis + its DDR4 leaked into RAM (audit finding)."""
+        assert _parse_one("OEM Dell R440 10SFF, 1x Xeon Gold 6140, 8GB DDR4, 10x 1.2TB SAS HDD", "RAM") is None
+        assert _parse_one("HP DL380 G10, 2x Xeon Silver 4114, 16GB DDR4, 8x 1.2TB SAS", "RAM") is None
+        # ...but a real server-memory MODULE survives (no chassis code)
+        assert _parse_one("Samsung 32GB DDR4 2666 ECC RDIMM Server Memory", "RAM") is not None
+
+    @pytest.mark.parametrize("title", [
         # real graphics cards that must survive — the tells must not over-reach
         "MSI GeForce RTX 3050 VENTUS 2X XS 8G OC",
         "ASUS Dual GeForce RTX 3050 OC Edition 8GB GDDR6",

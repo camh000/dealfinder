@@ -397,6 +397,14 @@ _SYSTEM_PHRASES = (
     'mid tower', 'full tower', 'midi tower', ' nuc')
 
 
+# Server / workstation CHASSIS model codes — a whole machine, whatever part
+# it's listed under. Model tells only (Dell R450/R660, HP Z/XW, HPE DL/ML) so
+# legit 'Xeon ... for Server' CPU lots and 'server RAM' modules survive.
+_SERVER_CHASSIS_RE = re.compile(
+    r'\bdell\s+r\d{2,3}\b|\br[2-9]\d0\b|\bhp[e]?\s+z\d{3}\b|\bxw\d{3,4}\b|'
+    r'\b[dm]l\d{2,3}\b', re.IGNORECASE)
+
+
 def title_is_system(title: str, category: str) -> bool:
     """True for whole-machine listings (laptops, prebuilts) masquerading as a
     part. Category-aware in three ways:
@@ -414,7 +422,13 @@ def title_is_system(title: str, category: str) -> bool:
             return True
         if _SYSTEM_LINE_RE.search(t):
             return True
-    if _CPU_MENTION_RE.search(t):
+        # 'gaming pc'/'desktop pc' are ambiguous fit-phrases EXCEPT on GPUs: a
+        # real card calls itself a 'graphics card'/'video card', a machine
+        # ('RTX 3070 Custom White Gaming PC') doesn't.
+        if ('graphics card' not in tl and 'video card' not in tl
+                and ('gaming pc' in tl or 'desktop pc' in tl)):
+            return True
+    if _CPU_MENTION_RE.search(t) or _SERVER_CHASSIS_RE.search(t):
         return True
     if category not in ('hdd', 'ssd') and _SYS_STORAGE_RE.search(tl):
         return True
@@ -848,8 +862,7 @@ def __ParseItems(soup, query, productType):
                 # NB model tells only, never bare "workstation"/"for Server" —
                 # a "Xeon W-2145 Workstation CPU" is a CPU, and legit Xeon lots
                 # say "Xeon ... for Server and Networking".
-                or bool(re.search(r'\bdell\s+r\d{2,3}\b|\br[2-9]\d0\b|\bhp[e]?\s+z\d{3}\b|'
-                                  r'\bxw\d{3,4}\b|\b[dm]l\d{2,3}\b', _tl))
+                or bool(_SERVER_CHASSIS_RE.search(title))
                 or (bool(re.search(r'\d+\s*gb\s*(ddr\d?|ram)', _tl))
                     and bool(re.search(r'\d+\s*(tb|gb)\s*(ssd|nvme|hdd|m\.2)', _tl)))
                 or (('motherboard' in _tl or ' mobo' in _tl)
@@ -1137,6 +1150,9 @@ def __ParseItems(soup, query, productType):
                 # a bare RAM kit never states drive storage — "16GB DDR4, 1TB
                 # SSD" is a tower's spec sheet (they were parsing as the RAM)
                 or bool(re.search(r'\d+\s*(?:tb|gb)\s*(?:ssd|nvme|hdd)\b', _tl))
+                # server chassis with its RAM ("Dell R440 ... 8GB DDR4 ...")
+                # — the audit found these polluting the RAM groups
+                or bool(_SERVER_CHASSIS_RE.search(title))
             )
             if _is_system_ram:
                 log.debug("[%s] Skipping system listing: %s", query, title[:60])
