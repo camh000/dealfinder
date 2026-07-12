@@ -85,6 +85,13 @@ SURFACE_NEARMISS_DISCOUNT = float(os.environ.get('SURFACE_NEARMISS_DISCOUNT', '1
 # page (AppConfig) wins, BIN_SCAN_MINUTES / BIN_MIN_DISCOUNT / BIN_ENABLED
 # env vars are the defaults.
 
+# Data-quality audit: re-parse every stored row through the current parser to
+# catch classification/lot pollution + price outliers BEFORE they skew a
+# median, and push an HA alert when findings cross the threshold. Full-table
+# scan, so its own slow cadence. See EbayScraper.audit_data_quality.
+AUDIT_INTERVAL_HOURS = float(os.environ.get('AUDIT_INTERVAL_HOURS', '6'))
+AUDIT_ALERT_THRESHOLD = int(os.environ.get('AUDIT_ALERT_THRESHOLD', '15'))
+
 # Targeted-scrape tiers: (threshold_minutes, interval_minutes)
 # When a tracked deal has <= threshold_minutes remaining, scrape it every interval_minutes.
 # Evaluated in ascending threshold order — first matching tier wins.
@@ -166,6 +173,7 @@ RAM_QUERY_LIST = [
 
 _last_full_scrape: datetime | None = None
 _last_bin_scan: datetime | None = None
+_last_audit: datetime | None = None
 
 # Maps str(ebay_id) → datetime of last targeted scrape for that item.
 _last_targeted: dict = {}
@@ -322,6 +330,51 @@ def run_bin_scan(min_discount: float):
     except Exception as e:
         log.error("BIN surfacing failed: %s", e)
     log.info("BIN scan complete.")
+
+
+def run_data_audit():
+    """Re-parse every stored row through the current parser; alert on pollution
+    (systems in a category, mislabelled lots, GPU 'lots') and price outliers
+    before they skew a median. Read-only — never mutates data."""
+    global _last_audit
+    _last_audit = _utcnow()
+    try:
+        a = EbayScraper.audit_data_quality()
+    except Exception as e:
+        log.error("Data audit failed: %s", e)
+        return
+    rej, mis = len(a['reparse_rejects']), len(a['lot_mismatch'])
+    gl, out = len(a['gpu_lots']), len(a['price_outliers'])
+    log.info("Data audit: %d parser-reject, %d lot-mismatch, %d gpu-lot, %d price-outlier",
+             rej, mis, gl, out)
+    problems = []
+    if gl:
+        problems.append(f"{gl} GPU row(s) wrongly marked as lots")
+    if rej >= AUDIT_ALERT_THRESHOLD:
+        problems.append(f"{rej}+ row(s) the parser would now reject (a gate is leaking)")
+    if mis >= AUDIT_ALERT_THRESHOLD:
+        problems.append(f"{mis}+ mislabelled lot quantities")
+    if out >= AUDIT_ALERT_THRESHOLD:
+        problems.append(f"{out}+ sold rows priced way above their group median")
+    if not problems:
+        return
+    # one example per finding type, so the push is actionable
+    ex = (a['gpu_lots'] or a['reparse_rejects'] or a['price_outliers'] or [{}])[0]
+    body = "; ".join(problems)
+    sample = ex.get('title') or ex.get('label') or ''
+    log.warning("Data audit ALERT: %s | e.g. %s", body, sample)
+    for r in EbayScraper.GetNotifyRecipients():
+        try:
+            requests.post(
+                f"{r['HaUrl'].rstrip('/')}/api/services/notify/{r['NotifyService']}",
+                headers={"Authorization": f"Bearer {r['HaToken']}"},
+                json={"title": "PC/DEALS data audit",
+                      "message": f"{body}. e.g. {sample}"[:230],
+                      "data": {"tag": "dealfinder-audit"}},
+                timeout=10,
+            )
+        except Exception as e:
+            log.warning("Audit alert to %s failed: %s", r.get('Name'), e)
 
 
 def kuma_heartbeat(ok: bool, msg: str) -> None:
@@ -647,6 +700,12 @@ if __name__ == "__main__":
         if _last_full_scrape is None or \
                 (now - _last_full_scrape) >= timedelta(minutes=FULL_SCRAPE_INTERVAL_MINUTES):
             run_full_scrape()
+
+        # Data-quality audit: catch classification/lot pollution before it
+        # skews a median (own slow cadence — full-table re-parse).
+        if _last_audit is None or \
+                (now - _last_audit) >= timedelta(hours=AUDIT_INTERVAL_HOURS):
+            run_data_audit()
 
         # BIN fast lane: sweep newly-listed fixed-price items between full
         # runs. Settings are re-read each tick (60s cache) so the Settings

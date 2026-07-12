@@ -3202,6 +3202,108 @@ def EvaluateAlerts() -> int:
         conn.close()
 
 
+def _audit_card_html(ebay_id, title, price_pence):
+    """One synthetic search-result card for re-parsing a stored row's title."""
+    safe = (title or '').replace('<', '').replace('>', '')
+    return (f'<div class="su-card-container su-card-container--horizontal">'
+            f'<a href="https://www.ebay.co.uk/itm/{ebay_id}">x</a>'
+            f'<a class="su-link su-item-card__title"><span>{safe}</span></a>'
+            f'<span class="su-item-card__price">£{(price_pence or 0) / 100:.2f}</span>'
+            f'</div>')
+
+
+def audit_data_quality(outlier_ratio: float = 2.5, min_group: int = 5,
+                       cap: int = 25) -> dict:
+    """Read-only self-check: catch classification/lot pollution BEFORE it skews
+    a median. Two nets:
+
+    ① Re-parse: every satellite row's title is run back through the CURRENT
+       parser for its category. If the parser now REJECTS it, the row is
+       pollution that slipped in before a gate existed (a laptop in GPU, a
+       server in SSD). If it accepts with a DIFFERENT quantity, the lot is
+       mislabelled. This needs no bespoke rules — it inherits every gate.
+    ② Median outlier: for each market group with >= min_group sold singles,
+       any single priced above outlier_ratio x the group median is flagged —
+       the general 'something's off' detector that catches pollution types
+       no rule covers yet (that's how the RTX-3050 laptops would surface).
+
+    Returns {'reparse_rejects', 'lot_mismatch', 'gpu_lots', 'price_outliers':
+    [...]} — dict lists of findings (each capped to `cap`), plus 'counts'.
+    """
+    from bs4 import BeautifulSoup
+    # name-mangling only happens inside class bodies; at module scope the fn is
+    # stored verbatim as "__ParseItems" (same key the tests use via vars()).
+    parse_items = globals()['__ParseItems']
+
+    findings = {'reparse_rejects': [], 'lot_mismatch': [], 'gpu_lots': [],
+                'price_outliers': [], 'counts': {}}
+    conn = _get_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        for cat, cfg in queries.CATEGORIES.items():
+            tbl = cfg['table']
+            cur.execute(f"""SELECT e.ID, e.Title, e.Price, COALESCE(e.Quantity,1) AS Qty
+                            FROM Scraper.{tbl} t JOIN Scraper.EBAY e ON e.ID=t.ID
+                            WHERE e.Title IS NOT NULL""")
+            rows = cur.fetchall()
+            findings['counts'][cat] = len(rows)
+            for r in rows:
+                if cat == 'gpu' and int(r['Qty']) > 1:
+                    if len(findings['gpu_lots']) < cap:
+                        findings['gpu_lots'].append(
+                            {'id': r['ID'], 'title': r['Title'][:80], 'qty': int(r['Qty'])})
+                soup = BeautifulSoup(_audit_card_html(r['ID'], r['Title'], r['Price']),
+                                     'html.parser')
+                try:
+                    parsed = parse_items(soup, 'audit', cat.upper())
+                except Exception:
+                    parsed = []
+                if not parsed:
+                    if len(findings['reparse_rejects']) < cap:
+                        findings['reparse_rejects'].append(
+                            {'cat': cat, 'id': r['ID'], 'title': r['Title'][:80]})
+                elif int(parsed[0].get('quantity') or 1) != int(r['Qty']):
+                    if len(findings['lot_mismatch']) < cap:
+                        findings['lot_mismatch'].append(
+                            {'cat': cat, 'id': r['ID'], 'title': r['Title'][:80],
+                             'stored': int(r['Qty']), 'parsed': int(parsed[0].get('quantity') or 1)})
+
+        # ② median outliers per group (single-unit sold, recency window)
+        for cat, cfg in queries.CATEGORIES.items():
+            a = cfg['alias']
+            cols = ', '.join(c for c, _ in cfg['group_cols'])
+            cur.execute(f"""
+                WITH {queries._median_ctes(cfg)}
+                SELECT {cols}, MedPrice, SoldCount
+                FROM RawStats WHERE SoldCount >= {min_group}
+            """)
+            groups = cur.fetchall()
+            for g in groups:
+                med = float(g['MedPrice'] or 0)
+                if med <= 0:
+                    continue
+                params = {c: g[c] for c, _ in cfg['group_cols']}
+                cond, vals = queries.model_where(cat, {k: ('' if v is None else v)
+                                                       for k, v in params.items()})
+                cur.execute(f"""
+                    SELECT e.ID, e.Title, ROUND((e.Price+COALESCE(e.Shipping,0))/100,2) AS Eff
+                    FROM Scraper.{cfg['table']} {a} JOIN Scraper.EBAY e ON e.ID={a}.ID
+                    WHERE e.SoldDate IS NOT NULL AND COALESCE(e.Quantity,1)=1
+                      AND e.SoldDate > NOW() - INTERVAL {queries.MARKET_STATS_DAYS} DAY
+                      AND {cond} AND (e.Price+COALESCE(e.Shipping,0))/100 > {med * outlier_ratio}
+                    ORDER BY Eff DESC LIMIT 5
+                """, vals)
+                for o in cur.fetchall():
+                    if len(findings['price_outliers']) < cap:
+                        findings['price_outliers'].append(
+                            {'cat': cat, 'id': o['ID'], 'title': o['Title'][:80],
+                             'price': float(o['Eff']), 'median': round(med, 2),
+                             'label': queries.model_label_for_row(cat, params)})
+        return findings
+    finally:
+        conn.close()
+
+
 def PruneStaleListings(days: int = 14) -> int:
     """Delete zombie ACTIVE listings: never sold, ended more than `days` ago,
     and not referenced by DealOutcomes.
