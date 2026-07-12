@@ -52,11 +52,32 @@
   </div>
 </div>
 
+<div class="card" id="notify-card" style="display:none">
+  <h2>Your notifications</h2>
+  <p class="help">Where your alerts are delivered. Every subscription below pushes to this
+    one Home&nbsp;Assistant endpoint — there's no separate recipient list any more. Changing
+    the URL needs the token re-entered.</p>
+  <div class="form-grid">
+    <div class="fg"><label>Home Assistant URL</label>
+      <input type="text" id="ep-url" placeholder="http://192.168.1.104:8123"></div>
+    <div class="fg"><label>Notify service</label>
+      <input type="text" id="ep-service" placeholder="mobile_app_phone"></div>
+    <div class="fg"><label>HA token</label>
+      <input type="password" id="ep-token" placeholder="long-lived access token"></div>
+  </div>
+  <div class="check-row">
+    <label><input type="checkbox" id="ep-enabled" checked> Notifications on</label>
+    <button class="btn" id="ep-save">Save</button>
+    <span class="sub" id="ep-status"></span>
+  </div>
+</div>
+
 <div class="card" id="alerts-card" style="display:none">
-  <h2>Your alerts &amp; watches</h2>
-  <p class="help">Price alerts from a model page ("Alert me") and BIN watches from the
-    Buy&nbsp;It&nbsp;Now page ("Watch this"), all in one place. Edit the threshold, recipient
-    or on/off inline; each pushes to the Home&nbsp;Assistant recipient you picked.</p>
+  <h2>Your subscriptions</h2>
+  <p class="help">Everything that can notify you, in one place: category deal feeds, BIN
+    watches from the <a href="/bin">Buy&nbsp;It&nbsp;Now</a> page ("Watch this"), and price
+    alerts from a model page ("Alert me"). Edit the threshold or turn one off inline; all
+    deliver to your endpoint above.</p>
   <div id="alerts-list"><div class="state" style="padding:10px">loading…</div></div>
 </div>
 
@@ -77,10 +98,10 @@
 <div class="card" id="bin-card" style="display:none">
   <h2>BIN watcher <span class="sub" style="font-weight:400">(admin)</span></h2>
   <p class="help">The scraper sweeps newly-listed Buy-It-Now items between full scrapes.
-    <b>You choose what gets pushed by creating watches on the
+    <b>You choose what gets pushed by creating BIN subscriptions on the
     <a href="/bin">Buy&nbsp;It&nbsp;Now page</a></b> — browse with the filters you want, hit
-    "Watch this", and matching finds notify your recipient. These admin settings just control
-    the sweep itself (below); changes apply within a minute, no restart.</p>
+    "Watch this", and matching finds notify you. These admin settings just control the
+    sweep itself (below); changes apply within a minute, no restart.</p>
   <div class="form-grid">
     <div class="fg"><label>Scan every (minutes, 5–240)</label>
       <input type="number" id="bin-scan" min="5" max="240" step="5"></div>
@@ -96,17 +117,6 @@
   </div>
 </div>
 
-<div class="card" id="notify-card">
-  <h2>Deal notifications</h2>
-  <p class="help">
-    Push notifications go to each enabled recipient's Home Assistant, filtered to the
-    categories they've ticked. Auction deals are sent once per deal when first spotted —
-    and only when the prediction says the discount survives the bidding. BIN finds are
-    sent the moment they're seen.
-  </p>
-  <div id="recipients"><div class="state"><span class="loader"></span>loading…</div></div>
-  <button class="btn" id="add-recipient" style="margin-top:4px">Add recipient</button>
-</div>
 {% endblock %}
 
 {% block scripts %}

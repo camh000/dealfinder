@@ -70,41 +70,34 @@ function chart(trend, median, predictions) {
 
 /* ── price alert: pop the form, prefill target from the median ── */
 let groupMedian = null;
-$('#alert-btn').addEventListener('click', async () => {
+$('#alert-btn').addEventListener('click', () => {
   const card = $('#alert-card');
   if (card.style.display !== 'none') { card.style.display = 'none'; return; }
   card.style.display = '';
   if (groupMedian != null && !$('#al-target').value)
     $('#al-target').value = (groupMedian * 0.85).toFixed(2);
-  if (!$('#al-recipient').options.length) {
-    try {
-      const data = await fetch('/api/notify-settings').then(r => r.json());
-      const recips = (data.recipients || []).filter(r => r.Enabled !== false);
-      $('#al-recipient').innerHTML = recips.length
-        ? recips.map(r => `<option value="${r.ID}">${esc(r.Name || 'recipient ' + r.ID)}</option>`).join('')
-        : '<option value="">no recipients — add one in settings</option>';
-    } catch { $('#al-recipient').innerHTML = '<option value="">couldn’t load recipients</option>'; }
-  }
 });
 
 $('#al-save').addEventListener('click', async () => {
   $('#al-status').textContent = '…';
   try {
-    const res = await fetch('/api/alerts', {
+    const res = await fetch('/api/subscriptions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         category: CAT,
+        scope_kind: 'group',
         group: Object.fromEntries(params),
         label: groupLabel(CAT, Object.fromEntries(params)),
         kind: $('#al-kind').value,
         target_price: parseFloat($('#al-target').value),
-        recipient_id: $('#al-recipient').value ? Number($('#al-recipient').value) : null,
       }),
     });
     const data = await res.json();
     if (res.status === 401) { $('#al-status').innerHTML = 'sign in first — <a href="/login">login</a>'; return; }
-    $('#al-status').textContent = data.status === 'ok'
-      ? 'alert created ✓ — manage it in settings' : (data.message || 'error');
+    if (data.status !== 'ok') { $('#al-status').textContent = data.message || 'error'; return; }
+    $('#al-status').innerHTML = data.has_endpoint
+      ? 'alert created ✓ — manage it in <a href="/settings">settings</a>'
+      : 'created ✓ — but set your <a href="/settings">notification endpoint</a> to receive it';
   } catch { $('#al-status').textContent = 'network error'; }
 });
 

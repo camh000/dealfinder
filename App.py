@@ -595,11 +595,118 @@ def ensure_auth_tables():
             conn.commit()
         except mariadb.Error as e:
             log.error("PriceAlerts: relax TargetPrice: %s", e)
+
+        # ── Unified notifications (v1) ──────────────────────────────────────
+        # Every notification is now a user-owned SUBSCRIPTION delivered to that
+        # user's own HA endpoint. Users carry the endpoint; PriceAlerts carries
+        # the scope (all/filter/group) and listing type (auction/bin/any). Kind
+        # is repurposed as the TRIGGER: listing_price / median_price /
+        # discount_pct (migration maps the old listing_below/median_below/
+        # bin_new values).
+        def _add_col(sql):
+            try:
+                cur.execute(sql)
+                conn.commit()
+            except mariadb.Error as e:
+                if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                    log.error("column add failed (%s): %s", sql, e)
+        _add_col("ALTER TABLE Scraper.Users ADD COLUMN HaUrl VARCHAR(200) NULL")
+        _add_col("ALTER TABLE Scraper.Users ADD COLUMN HaToken VARCHAR(300) NULL")
+        _add_col("ALTER TABLE Scraper.Users ADD COLUMN NotifyService VARCHAR(100) NULL")
+        _add_col("ALTER TABLE Scraper.Users ADD COLUMN NotifyEnabled TINYINT(1) NOT NULL DEFAULT 1")
+        _add_col("ALTER TABLE Scraper.PriceAlerts ADD COLUMN ScopeKind VARCHAR(8) NOT NULL DEFAULT 'group'")
+        _add_col("ALTER TABLE Scraper.PriceAlerts ADD COLUMN ListingType VARCHAR(8) NOT NULL DEFAULT 'any'")
+        _migrate_notify_unified(cur, conn)
     except Exception as e:
         log.error("Could not ensure auth tables: %s", e)
     finally:
         if conn:
             conn.close()
+
+
+# This deployment's recipient→user mapping for the one-time unification. The
+# recipient names ('Cam'/'Dad') don't match the usernames ('cameron'/'spencer'),
+# and Cam confirmed the pairing; a recipient already referenced by a user's
+# alert (RecipientID) is mapped by that link first, this covers the rest.
+_RECIPIENT_USER_ALIASES = {'cam': 'cameron', 'dad': 'spencer'}
+
+# Old alert-kind → (new trigger Kind, ScopeKind, ListingType).
+_KIND_UPGRADE = {
+    'listing_below': ('listing_price', 'group', 'any'),
+    'median_below':  ('median_price',  'group', 'any'),
+    'bin_new':       ('discount_pct',  'filter', 'bin'),
+}
+
+# The old auction feed surfaced at this discount for everyone with the category
+# ticked; the migrated default subscriptions reproduce that exactly.
+_DEFAULT_FEED_DISCOUNT = float(os.environ.get('SURFACE_MIN_DISCOUNT', '20'))
+
+
+def _migrate_notify_unified(cur, conn):
+    """One-time: fold NotifyRecipients into per-user endpoints, turn each
+    recipient's category ticks into default auction subscriptions, and upgrade
+    existing alert kinds to the trigger/scope/listing-type model. Idempotent
+    via an AppConfig marker."""
+    cur.execute("SELECT V FROM Scraper.AppConfig WHERE K = 'notify_unified_v1'")
+    if cur.fetchone():
+        return
+    try:
+        # Upgrade existing alert rows first (kind → trigger + scope + type).
+        for old, (kind, scope, ltype) in _KIND_UPGRADE.items():
+            cur.execute("""UPDATE Scraper.PriceAlerts
+                           SET Kind=%s, ScopeKind=%s, ListingType=%s WHERE Kind=%s""",
+                        (kind, scope, ltype, old))
+
+        # Copy recipient endpoints into their matching users + default subs.
+        try:
+            cur.execute("""SELECT ID, Name, HaUrl, HaToken, NotifyService, Categories, Enabled
+                           FROM Scraper.NotifyRecipients""")
+            recipients = cur.fetchall()
+        except mariadb.Error:
+            recipients = []          # no legacy recipients (fresh install)
+        cur.execute("SELECT ID, Username FROM Scraper.Users")
+        users = cur.fetchall()
+        by_name = {u[1].lower(): u[0] for u in users}
+        # recipient ID → user ID via an existing alert link (authoritative).
+        cur.execute("""SELECT DISTINCT RecipientID, UserID FROM Scraper.PriceAlerts
+                       WHERE RecipientID IS NOT NULL""")
+        by_alert = {r: u for r, u in cur.fetchall()}
+
+        for rid, name, url, token, service, cats, enabled in recipients:
+            uid = (by_alert.get(rid)
+                   or by_name.get((name or '').lower())
+                   or by_name.get(_RECIPIENT_USER_ALIASES.get((name or '').lower(), '')))
+            if not uid:
+                log.warning("notify migration: recipient %r has no matching user — skipped", name)
+                continue
+            # Endpoint: don't clobber an endpoint a user already set.
+            cur.execute("""UPDATE Scraper.Users
+                           SET HaUrl=%s, HaToken=%s, NotifyService=%s, NotifyEnabled=%s
+                           WHERE ID=%s AND (HaUrl IS NULL OR HaUrl='')""",
+                        (url, token, service, 1 if enabled else 1, uid))
+            # Ticked categories → default auction discount subscriptions.
+            for c in [x.strip().lower() for x in (cats or '').split(',') if x.strip()]:
+                if c not in queries.CATEGORIES:
+                    continue
+                cur.execute("""SELECT 1 FROM Scraper.PriceAlerts
+                               WHERE UserID=%s AND Category=%s AND ScopeKind='all'
+                                 AND ListingType='auction' AND Kind='discount_pct' LIMIT 1""",
+                            (uid, c))
+                if cur.fetchone():
+                    continue
+                cur.execute("""INSERT INTO Scraper.PriceAlerts
+                        (UserID, Category, GroupParams, Label, Kind, ScopeKind,
+                         ListingType, TargetPrice, MinDiscount, Enabled)
+                        VALUES (%s,%s,'{}',%s,'discount_pct','all','auction',NULL,%s,1)""",
+                            (uid, c, f"{c.upper()} auctions", _DEFAULT_FEED_DISCOUNT))
+
+        cur.execute("INSERT INTO Scraper.AppConfig (K, V) VALUES ('notify_unified_v1','1')")
+        conn.commit()
+        log.info("notify migration: unified %d recipient(s) into user endpoints + default subs",
+                 len(recipients))
+    except Exception as e:
+        conn.rollback()
+        log.error("notify unification migration failed: %s", e)
 
 
 ensure_auth_tables()
@@ -657,8 +764,8 @@ _AUTH_EXEMPT = ('/login', '/sw.js', '/api/login')
 # settings APIs (recipients expose HA URLs; users/alerts/passwords/bin config
 # are private) require a session. This is the shape that makes exposing the
 # app publicly tolerable: the anonymous surface is read-only market data.
-_GUEST_BLOCKED_PREFIXES = ('/api/notify-settings', '/api/bin-settings',
-                           '/api/users', '/api/alerts', '/api/password')
+_GUEST_BLOCKED_PREFIXES = ('/api/my-endpoint', '/api/bin-settings',
+                           '/api/users', '/api/subscriptions', '/api/password')
 
 
 @app.before_request
@@ -844,8 +951,15 @@ def password_change():
             conn.close()
 
 
-@app.route('/api/alerts', methods=['GET'])
-def alerts_list():
+# A subscription's TRIGGER (repurposed Kind column). Price triggers carry a
+# £ TargetPrice; the discount trigger carries a % MinDiscount.
+_TRIGGER_KINDS = ('listing_price', 'median_price', 'discount_pct')
+_SCOPE_KINDS = ('all', 'filter', 'group')
+_LISTING_TYPES = ('auction', 'bin', 'any')
+
+
+@app.route('/api/subscriptions', methods=['GET'])
+def subscriptions_list():
     u = _current_user()
     if not u and _users_exist():
         return jsonify({"status": "error", "message": "login required"}), 401
@@ -854,59 +968,62 @@ def alerts_list():
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT a.ID, a.Category, a.GroupParams, a.Label, a.Kind,
-                   ROUND(a.TargetPrice / 100, 2) AS TargetPrice, a.MinDiscount, a.Enabled,
-                   a.LastFiredAt, a.RecipientID, r.Name AS RecipientName
-            FROM Scraper.PriceAlerts a
-            LEFT JOIN Scraper.NotifyRecipients r ON r.ID = a.RecipientID
-            WHERE a.UserID = %s ORDER BY a.ID DESC
+            SELECT ID, Category, GroupParams, Label, Kind, ScopeKind, ListingType,
+                   ROUND(TargetPrice / 100, 2) AS TargetPrice, MinDiscount, Enabled,
+                   LastFiredAt
+            FROM Scraper.PriceAlerts
+            WHERE UserID = %s ORDER BY ID DESC
         """, (u["id"] if u else 0,))
         rows = cur.fetchall()
         for r in rows:
             r['Enabled'] = bool(r['Enabled'])
             r['GroupParams'] = json.loads(r['GroupParams'] or '{}')
             r['LastFiredAt'] = _iso_utc(r['LastFiredAt'])
-        return jsonify({"status": "ok", "alerts": rows})
+        return jsonify({"status": "ok", "subscriptions": rows})
     except Exception as e:
-        log.error("alerts_list error: %s", e)
+        log.error("subscriptions_list error: %s", e)
         return jsonify({"status": "error", "message": "internal error"}), 500
     finally:
         if conn:
             conn.close()
 
 
-_ALERT_KINDS = ('listing_below', 'median_below', 'bin_new')
-
-
-def _alert_fields(body):
-    """Validate an alert create/edit body → (kind, group_json, target, min_disc,
-    error_response|None). Model alerts (listing/median) carry a target price;
-    BIN watches (bin_new) carry a min-discount % and a /bin filter set."""
-    kind = body.get('kind') if body.get('kind') in _ALERT_KINDS else 'listing_below'
-    if kind == 'bin_new':
-        filters = body.get('filters') or body.get('group') or {}
-        if not isinstance(filters, dict):
-            return None, None, None, None, ("filters must be an object", 400)
+def _subscription_fields(body):
+    """Validate a subscription create body → dict of columns or an
+    (error, status) tuple. A subscription is (scope, listing_type, trigger):
+      trigger discount_pct → a % MinDiscount + a scope (all/filter/group);
+      trigger listing_price/median_price → a £ TargetPrice + a group scope."""
+    kind = body.get('kind') if body.get('kind') in _TRIGGER_KINDS else 'listing_price'
+    scope = body.get('scope_kind') if body.get('scope_kind') in _SCOPE_KINDS else None
+    ltype = body.get('listing_type') if body.get('listing_type') in _LISTING_TYPES else None
+    params = body.get('filters') if body.get('filters') is not None else body.get('group')
+    params = params or {}
+    if not isinstance(params, dict):
+        return ("scope params must be an object", 400)
+    if kind == 'discount_pct':
+        scope = scope or ('all' if not params else 'filter')
+        ltype = ltype or 'bin'
         try:
             md = float(body.get('min_discount'))
             if not 1 <= md <= 90:
                 raise ValueError
         except (TypeError, ValueError):
-            return None, None, None, None, ("min_discount must be 1–90", 400)
-        return kind, json.dumps(filters), None, md, None
-    # model-page price alert
-    group = body.get('group') or {}
+            return ("min_discount must be 1–90", 400)
+        return dict(kind=kind, scope=scope, ltype=ltype,
+                    group=json.dumps(params), target=None, min_disc=md)
+    # price trigger — always an exact market group, either listing type
     try:
         target = int(round(float(body.get('target_price')) * 100))
         if target <= 0:
             raise ValueError
     except (TypeError, ValueError):
-        return None, None, None, None, ("target_price must be a positive number", 400)
-    return kind, json.dumps(group), target, None, None
+        return ("target_price must be a positive number", 400)
+    return dict(kind=kind, scope='group', ltype=ltype or 'any',
+                group=json.dumps(params), target=target, min_disc=None)
 
 
-@app.route('/api/alerts', methods=['POST'])
-def alerts_create():
+@app.route('/api/subscriptions', methods=['POST'])
+def subscriptions_create():
     u = _current_user()
     if not u and _users_exist():
         return jsonify({"status": "error", "message": "login required"}), 401
@@ -914,37 +1031,44 @@ def alerts_create():
     cat = (body.get('category') or '').lower()
     if cat not in queries.CATEGORIES:
         return jsonify({"status": "error", "message": "unknown category"}), 400
-    kind, group_json, target, min_disc, err = _alert_fields(body)
-    if err:
-        return jsonify({"status": "error", "message": err[0]}), err[1]
+    f = _subscription_fields(body)
+    if isinstance(f, tuple):
+        return jsonify({"status": "error", "message": f[0]}), f[1]
     label = (body.get('label') or '')[:150]
-    if kind == 'bin_new' and not label:
-        label = queries.bin_watch_label(cat, json.loads(group_json))[:150]
+    if not label:
+        label = queries.subscription_label(cat, f['scope'], json.loads(f['group']))[:150]
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO Scraper.PriceAlerts
-                (UserID, Category, GroupParams, Label, Kind, TargetPrice, MinDiscount, RecipientID)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, (u["id"] if u else 0, cat, group_json,
-              label, kind, target, min_disc,
-              body.get('recipient_id') or None))
+                (UserID, Category, GroupParams, Label, Kind, ScopeKind, ListingType,
+                 TargetPrice, MinDiscount)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (u["id"] if u else 0, cat, f['group'], label, f['kind'],
+              f['scope'], f['ltype'], f['target'], f['min_disc']))
         conn.commit()
-        return jsonify({"status": "ok"})
+        # Nudge if the sub can never fire because the owner has no endpoint.
+        cur.execute("""SELECT 1 FROM Scraper.Users WHERE ID = %s
+                       AND HaUrl IS NOT NULL AND HaUrl <> ''
+                       AND HaToken IS NOT NULL AND HaToken <> ''
+                       AND NotifyService IS NOT NULL AND NotifyService <> ''""",
+                    (u["id"] if u else 0,))
+        has_endpoint = cur.fetchone() is not None
+        return jsonify({"status": "ok", "has_endpoint": has_endpoint})
     except Exception as e:
-        log.error("alerts_create error: %s", e)
+        log.error("subscriptions_create error: %s", e)
         return jsonify({"status": "error", "message": "internal error"}), 500
     finally:
         if conn:
             conn.close()
 
 
-@app.route('/api/alerts/<int:aid>', methods=['PATCH'])
-def alerts_edit(aid):
-    """Edit an existing alert (any kind): recipient, enabled, and the threshold
-    (target price or min discount, by kind). Owner-scoped."""
+@app.route('/api/subscriptions/<int:aid>', methods=['PATCH'])
+def subscriptions_edit(aid):
+    """Edit a subscription: enabled + the threshold (target price or min
+    discount, by trigger kind). Owner-scoped."""
     u = _current_user()
     if not u and _users_exist():
         return jsonify({"status": "error", "message": "login required"}), 401
@@ -961,9 +1085,7 @@ def alerts_edit(aid):
         sets, vals = [], []
         if 'enabled' in body:
             sets.append("Enabled = %s"); vals.append(1 if body['enabled'] else 0)
-        if 'recipient_id' in body:
-            sets.append("RecipientID = %s"); vals.append(body['recipient_id'] or None)
-        if row['Kind'] == 'bin_new' and body.get('min_discount') is not None:
+        if row['Kind'] == 'discount_pct' and body.get('min_discount') is not None:
             try:
                 md = float(body['min_discount'])
                 if not 1 <= md <= 90:
@@ -971,7 +1093,7 @@ def alerts_edit(aid):
             except (TypeError, ValueError):
                 return jsonify({"status": "error", "message": "min_discount must be 1–90"}), 400
             sets.append("MinDiscount = %s"); vals.append(md)
-        if row['Kind'] != 'bin_new' and body.get('target_price') is not None:
+        if row['Kind'] != 'discount_pct' and body.get('target_price') is not None:
             try:
                 tp = int(round(float(body['target_price']) * 100))
                 if tp <= 0:
@@ -987,15 +1109,15 @@ def alerts_edit(aid):
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
-        log.error("alerts_edit error: %s", e)
+        log.error("subscriptions_edit error: %s", e)
         return jsonify({"status": "error", "message": "internal error"}), 500
     finally:
         if conn:
             conn.close()
 
 
-@app.route('/api/alerts/<int:aid>', methods=['DELETE'])
-def alerts_delete(aid):
+@app.route('/api/subscriptions/<int:aid>', methods=['DELETE'])
+def subscriptions_delete(aid):
     u = _current_user()
     if not u and _users_exist():
         return jsonify({"status": "error", "message": "login required"}), 401
@@ -1008,7 +1130,85 @@ def alerts_delete(aid):
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
-        log.error("alerts_delete error: %s", e)
+        log.error("subscriptions_delete error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/my-endpoint', methods=['GET'])
+def my_endpoint_get():
+    """The signed-in user's own Home Assistant notification endpoint. This is
+    where ALL of their subscriptions deliver — there is no separate recipient."""
+    u = _current_user()
+    if not u and _users_exist():
+        return jsonify({"status": "error", "message": "login required"}), 401
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""SELECT HaUrl, NotifyService, COALESCE(NotifyEnabled,1) AS NotifyEnabled,
+                              (HaToken IS NOT NULL AND HaToken <> '') AS TokenSet
+                       FROM Scraper.Users WHERE ID = %s""", (u["id"] if u else 0,))
+        row = cur.fetchone() or {}
+        return jsonify({"status": "ok", "endpoint": {
+            "HaUrl": row.get('HaUrl') or '',
+            "NotifyService": row.get('NotifyService') or '',
+            "NotifyEnabled": bool(row.get('NotifyEnabled', 1)),
+            "TokenSet": bool(row.get('TokenSet')),
+        }})
+    except Exception as e:
+        log.error("my_endpoint_get error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/my-endpoint', methods=['POST'])
+def my_endpoint_save():
+    """Save the signed-in user's endpoint. Blank token on update keeps the
+    stored one — but changing the HA URL requires re-entering the token, so a
+    hijacked session can't repoint the stored bearer token at another server."""
+    u = _current_user()
+    if not u and _users_exist():
+        return jsonify({"status": "error", "message": "login required"}), 401
+    body = request.get_json(silent=True) or {}
+    ha_url = (body.get('ha_url') or '').strip().rstrip('/')[:200]
+    service = (body.get('notify_service') or '').strip()[:100]
+    token = (body.get('ha_token') or '').strip()[:300]
+    enabled = 1 if body.get('enabled', True) else 0
+    uid = u["id"] if u else 0
+    if not (ha_url and service):
+        return jsonify({"status": "error", "message": "ha_url and notify_service are required"}), 400
+    if not ha_url.startswith(('http://', 'https://')):
+        return jsonify({"status": "error", "message": "ha_url must start with http:// or https://"}), 400
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT HaUrl, HaToken FROM Scraper.Users WHERE ID = %s", (uid,))
+        cur_row = cur.fetchone() or {}
+        if not token:
+            if not (cur_row.get('HaToken') or ''):
+                return jsonify({"status": "error", "message": "ha_token is required"}), 400
+            if (cur_row.get('HaUrl') or '').rstrip('/') != ha_url:
+                return jsonify({"status": "error",
+                                "message": "HA URL changed — re-enter the token to confirm"}), 400
+        wcur = conn.cursor()
+        if token:
+            wcur.execute("""UPDATE Scraper.Users
+                            SET HaUrl=%s, HaToken=%s, NotifyService=%s, NotifyEnabled=%s
+                            WHERE ID=%s""", (ha_url, token, service, enabled, uid))
+        else:
+            wcur.execute("""UPDATE Scraper.Users
+                            SET HaUrl=%s, NotifyService=%s, NotifyEnabled=%s
+                            WHERE ID=%s""", (ha_url, service, enabled, uid))
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        log.error("my_endpoint_save error: %s", e)
         return jsonify({"status": "error", "message": "internal error"}), 500
     finally:
         if conn:
@@ -1739,113 +1939,6 @@ def ensure_notify_recipients_table():
 
 
 ensure_notify_recipients_table()
-
-
-@app.route("/api/notify-settings", methods=["GET"])
-def notify_settings_list():
-    conn = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor(dictionary=True)
-        cur.execute("""
-            SELECT ID, Name, HaUrl, NotifyService, Categories, Enabled,
-                   (HaToken IS NOT NULL AND HaToken != '') AS TokenSet
-            FROM Scraper.NotifyRecipients ORDER BY ID
-        """)
-        rows = cur.fetchall()
-        for r in rows:
-            r['Categories'] = [c for c in (r['Categories'] or '').split(',') if c]
-            r['Enabled'] = bool(r['Enabled'])
-            r['TokenSet'] = bool(r['TokenSet'])
-        return jsonify({"status": "ok", "recipients": rows})
-    except Exception as e:
-        log.error("notify_settings_list error: %s", e)
-        return jsonify({"status": "error", "message": "internal error"}), 500
-    finally:
-        if conn:
-            conn.close()
-
-
-@app.route("/api/notify-settings", methods=["POST"])
-def notify_settings_save():
-    """Create or update a recipient. Blank token on update keeps the stored one."""
-    body = request.get_json(silent=True) or {}
-    name = (body.get('name') or '').strip()[:50]
-    ha_url = (body.get('ha_url') or '').strip().rstrip('/')[:200]
-    service = (body.get('notify_service') or '').strip()[:100]
-    token = (body.get('ha_token') or '').strip()[:300]
-    enabled = 1 if body.get('enabled', True) else 0
-    cats = [c.upper() for c in (body.get('categories') or []) if c.upper() in VALID_CATEGORIES]
-    rid = body.get('id')
-
-    if not (name and ha_url and service):
-        return jsonify({"status": "error", "message": "name, ha_url and notify_service are required"}), 400
-    if not ha_url.startswith(('http://', 'https://')):
-        return jsonify({"status": "error", "message": "ha_url must start with http:// or https://"}), 400
-    if not cats:
-        return jsonify({"status": "error", "message": "select at least one category"}), 400
-
-    conn = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        if rid:
-            if not token:
-                # SECURITY: without this, anyone who can reach the API could
-                # repoint an existing recipient's URL at their own server and
-                # the scheduler would POST the STORED bearer token to it.
-                # A destination change therefore requires re-entering the token.
-                cur.execute("SELECT HaUrl FROM Scraper.NotifyRecipients WHERE ID=%s", (int(rid),))
-                row = cur.fetchone()
-                if row is None:
-                    return jsonify({"status": "error", "message": "recipient not found"}), 404
-                if row[0].rstrip('/') != ha_url:
-                    return jsonify({"status": "error",
-                                    "message": "HA URL changed — re-enter the token to confirm"}), 400
-            if token:
-                cur.execute("""
-                    UPDATE Scraper.NotifyRecipients
-                    SET Name=%s, HaUrl=%s, HaToken=%s, NotifyService=%s, Categories=%s, Enabled=%s
-                    WHERE ID=%s
-                """, (name, ha_url, token, service, ','.join(cats), enabled, int(rid)))
-            else:
-                cur.execute("""
-                    UPDATE Scraper.NotifyRecipients
-                    SET Name=%s, HaUrl=%s, NotifyService=%s, Categories=%s, Enabled=%s
-                    WHERE ID=%s
-                """, (name, ha_url, service, ','.join(cats), enabled, int(rid)))
-        else:
-            if not token:
-                return jsonify({"status": "error", "message": "ha_token is required for a new recipient"}), 400
-            cur.execute("""
-                INSERT INTO Scraper.NotifyRecipients (Name, HaUrl, HaToken, NotifyService, Categories, Enabled)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (name, ha_url, token, service, ','.join(cats), enabled))
-        conn.commit()
-        return jsonify({"status": "ok"})
-    except Exception as e:
-        log.error("notify_settings_save error: %s", e)
-        return jsonify({"status": "error", "message": "internal error"}), 500
-    finally:
-        if conn:
-            conn.close()
-
-
-@app.route("/api/notify-settings/<int:rid>", methods=["DELETE"])
-def notify_settings_delete(rid):
-    conn = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM Scraper.NotifyRecipients WHERE ID=%s", (rid,))
-        conn.commit()
-        return jsonify({"status": "ok"})
-    except Exception as e:
-        log.error("notify_settings_delete error: %s", e)
-        return jsonify({"status": "error", "message": "internal error"}), 500
-    finally:
-        if conn:
-            conn.close()
 
 
 def _guide_extras(cur, cat):

@@ -2906,49 +2906,74 @@ def EnsureNotifyRecipients() -> None:
         conn.close()
 
 
-def GetNotifyRecipients() -> list[dict]:
-    """Return enabled notification recipients. [] on any error."""
+# Every notification in the app is a SUBSCRIPTION: a user-owned rule (category
+# + scope + listing type + trigger) delivered to that user's own Home Assistant
+# endpoint. This one query is the source of truth for every push — the auction
+# feed, BIN finds and model price alerts are all just subscriptions with
+# different trigger kinds. The endpoint is joined from the owning Users row, so
+# a user with notifications off or no endpoint configured simply gets no rows.
+_SUB_ENDPOINT_JOIN = """
+        FROM Scraper.PriceAlerts a
+        JOIN Scraper.Users u ON u.ID = a.UserID
+        WHERE a.Enabled = 1 AND COALESCE(u.NotifyEnabled, 1) = 1
+          AND u.HaUrl IS NOT NULL AND u.HaUrl <> ''
+          AND u.HaToken IS NOT NULL AND u.HaToken <> ''
+          AND u.NotifyService IS NOT NULL AND u.NotifyService <> ''
+"""
+
+
+def GetSubscriptions(trigger_kinds: tuple | None = None) -> list[dict]:
+    """Active subscriptions with their owner's HA endpoint joined in.
+
+    Each row carries UserID + endpoint (HaUrl/HaToken/NotifyService) so a push
+    goes straight to the owner — no separate recipient concept. Optionally
+    filter to given trigger kinds ('discount_pct' | 'listing_price' |
+    'median_price'). [] on any error (PriceAlerts/Users columns may not exist
+    on the scraper's first boot — the web container creates them)."""
     try:
         conn = _get_connection()
         try:
             cur = conn.cursor(dictionary=True)
-            cur.execute("""
-                SELECT ID, Name, HaUrl, HaToken, NotifyService, Categories
-                FROM Scraper.NotifyRecipients
-                WHERE Enabled = 1
+            cur.execute(f"""
+                SELECT a.ID, a.UserID, a.Category, a.ScopeKind, a.GroupParams,
+                       a.ListingType, a.Kind, a.TargetPrice, a.MinDiscount,
+                       a.Label, a.LastFiredAt,
+                       u.HaUrl, u.HaToken, u.NotifyService
+                {_SUB_ENDPOINT_JOIN}
             """)
-            return cur.fetchall()
+            rows = cur.fetchall()
+        except mariadb.Error:
+            return []
         finally:
             conn.close()
+        if trigger_kinds is not None:
+            rows = [r for r in rows if r['Kind'] in trigger_kinds]
+        return rows
     except Exception as e:
-        log.error("GetNotifyRecipients failed: %s", e)
+        log.error("GetSubscriptions failed: %s", e)
         return []
 
 
-def GetBinWatches() -> list[dict]:
-    """Active BIN-watch alerts (kind='bin_new') with their recipient's HA
-    config joined in. A watch = a saved /bin search (category + filter set +
-    min discount) that pushes matching new fixed-price finds to one recipient.
-    INNER JOIN on the recipient drops watches whose recipient was deleted or
-    disabled. [] on any error (never breaks the sweep)."""
+def GetAdminEndpoints() -> list[dict]:
+    """Endpoints of admin users with notifications on — the audience for system
+    notices (the data-quality audit), which aren't tied to a subscription."""
     try:
         conn = _get_connection()
         try:
             cur = conn.cursor(dictionary=True)
             cur.execute("""
-                SELECT a.ID, a.Category, a.GroupParams, a.MinDiscount,
-                       r.Name AS RName, r.HaUrl, r.HaToken, r.NotifyService
-                FROM Scraper.PriceAlerts a
-                JOIN Scraper.NotifyRecipients r ON r.ID = a.RecipientID
-                WHERE a.Kind = 'bin_new' AND a.Enabled = 1 AND r.Enabled = 1
+                SELECT Username AS Name, HaUrl, HaToken, NotifyService
+                FROM Scraper.Users
+                WHERE IsAdmin = 1 AND COALESCE(NotifyEnabled, 1) = 1
+                  AND HaUrl <> '' AND HaToken <> '' AND NotifyService <> ''
             """)
             return cur.fetchall()
         except mariadb.Error:
-            return []   # PriceAlerts may not exist on the scraper's first boot
+            return []
         finally:
             conn.close()
     except Exception as e:
-        log.error("GetBinWatches failed: %s", e)
+        log.error("GetAdminEndpoints failed: %s", e)
         return []
 
 
@@ -3117,7 +3142,7 @@ def deal_page_url(ebay_id, fallback: str | None = None) -> str | None:
 
 # Alert cooldowns: a listing sitting under the target must not ping every
 # scrape cycle, and medians move slowly — repeat pushes are noise, not news.
-_ALERT_COOLDOWN_HOURS = {'listing_below': 6, 'median_below': 24}
+_ALERT_COOLDOWN_HOURS = {'listing_price': 6, 'median_price': 24}
 
 
 def alert_listing_relevant(hit: dict, target_pounds: float, premiums: dict,
@@ -3143,9 +3168,11 @@ def alert_listing_relevant(hit: dict, target_pounds: float, premiums: dict,
     return predicted < target_pounds, predicted
 
 
-def _ha_push(recipient: dict, title: str, message: str, url: str | None = None,
-             tag: str | None = None) -> bool:
-    """One Home Assistant notification to one NotifyRecipients row."""
+def push_notification(endpoint: dict, title: str, message: str,
+                      url: str | None = None, tag: str | None = None) -> bool:
+    """One Home Assistant notification to one endpoint (a dict carrying HaUrl /
+    HaToken / NotifyService — a subscription row or an admin-endpoint row).
+    The single push primitive every notification path funnels through."""
     try:
         data = {}
         if url:
@@ -3153,63 +3180,54 @@ def _ha_push(recipient: dict, title: str, message: str, url: str | None = None,
         if tag:
             data['tag'] = tag
         requests.post(
-            f"{recipient['HaUrl'].rstrip('/')}/api/services/notify/{recipient['NotifyService']}",
-            headers={"Authorization": f"Bearer {recipient['HaToken']}"},
+            f"{endpoint['HaUrl'].rstrip('/')}/api/services/notify/{endpoint['NotifyService']}",
+            headers={"Authorization": f"Bearer {endpoint['HaToken']}"},
             json={"title": title, "message": message, "data": data},
             timeout=10,
         )
         return True
     except Exception as e:
-        log.warning("HA push to %s failed: %s", recipient.get('Name'), e)
+        log.warning("HA push to %s failed: %s", endpoint.get('Name') or endpoint.get('Label'), e)
         return False
 
 
-def EvaluateAlerts() -> int:
-    """Check user price alerts (created on model pages) against current data.
+def EvaluateSubscriptions() -> int:
+    """Evaluate the £-target subscriptions (model-page 'Alert me') against
+    current data. The discount-% subscriptions (auction feed + BIN watches)
+    fire event-driven at surfacing time (scheduler.notify_new_deals /
+    notify_bin_finds); these two need a poll because they trip on state, not a
+    new listing:
 
-    listing_below — a listing in the alert's market group GENUINELY available
-    under the target (deal-feed trust gates apply): Buy-It-Now at that price,
-    or an auction in its final window whose predicted final also clears the
-    target — a low-start auction with days left is never a hit.
-    median_below — the group's 120-day sold median itself has dropped under
-    the target.
+    listing_price — a listing in the subscription's market group GENUINELY
+    available under the target (deal-feed trust gates apply): Buy-It-Now at that
+    price, or an auction in its final window whose predicted final also clears
+    the target — a low-start auction with days left is never a hit.
+    median_price — the group's 120-day sold median itself dropped under target.
 
-    Each alert pushes to its chosen recipient, or to every enabled recipient
-    when none was picked, then stamps LastFiredAt for the cooldown. Returns
-    the number of alerts fired. Tolerates the PriceAlerts table not existing
-    yet — the web container creates it on its first boot.
-    """
+    Each subscription pushes to its owner's endpoint, then stamps LastFiredAt
+    for the cooldown. Returns the number fired. These are scope='group'
+    subscriptions; scope is irrelevant to the SQL (the group columns come
+    straight from GroupParams)."""
+    subs = GetSubscriptions(trigger_kinds=('listing_price', 'median_price'))
+    if not subs:
+        return 0
     conn = _get_connection()
     try:
         cur = conn.cursor(dictionary=True)
-        try:
-            cur.execute("""
-                SELECT ID, Category, GroupParams, Label, Kind, TargetPrice,
-                       RecipientID, LastFiredAt
-                FROM Scraper.PriceAlerts WHERE Enabled = 1
-            """)
-            alerts = cur.fetchall()
-        except mariadb.Error:
-            return 0
-        if not alerts:
-            return 0
-        recipients = GetNotifyRecipients()
-        if not recipients:
-            return 0
         import json
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         fired = 0
         upd = conn.cursor()
         # Premiums confirm auction hits (predicted final vs target); one
-        # fetch covers every alert this run.
+        # fetch covers every subscription this run.
         premiums = (GetSnipePremiums()
-                    if any(x['Kind'] != 'median_below' for x in alerts) else {})
-        for a in alerts:
+                    if any(s['Kind'] != 'median_price' for s in subs) else {})
+        for a in subs:
             cooldown = _ALERT_COOLDOWN_HOURS.get(a['Kind'], 6)
             if a['LastFiredAt'] and (now - a['LastFiredAt']) < timedelta(hours=cooldown):
                 continue
             cat = (a['Category'] or '').lower()
-            if cat not in queries.CATEGORIES:
+            if cat not in queries.CATEGORIES or a['TargetPrice'] is None:
                 continue
             try:
                 group = json.loads(a['GroupParams'] or '{}')
@@ -3219,7 +3237,7 @@ def EvaluateAlerts() -> int:
             label = a['Label'] or cat.upper()
             title = message = url = None
             try:
-                if a['Kind'] == 'median_below':
+                if a['Kind'] == 'median_price':
                     sql, binds = queries.group_median_query(cat, group)
                     cur.execute(sql, binds)
                     row = cur.fetchone()
@@ -3227,7 +3245,7 @@ def EvaluateAlerts() -> int:
                         title = f"Price alert: {label}"
                         message = (f"120-day median now £{float(row['MedPrice']):.2f} "
                                    f"(target £{target_pounds:.2f}, {row['N']} sales)")
-                else:  # listing_below
+                else:  # listing_price
                     sql, binds = queries.group_live_below_query(cat, group, target_pounds)
                     cur.execute(sql, binds)
                     hits = []
@@ -3253,24 +3271,22 @@ def EvaluateAlerts() -> int:
                             message += f" (+{len(hits) - 1} more)"
                         url = deal_page_url(h['ID'], h['URL'])
             except mariadb.Error as e:
-                log.error("EvaluateAlerts: alert %s query failed: %s", a['ID'], e)
+                log.error("EvaluateSubscriptions: sub %s query failed: %s", a['ID'], e)
                 continue
             if not title:
                 continue
-            targets = [r for r in recipients
-                       if not a['RecipientID'] or r['ID'] == a['RecipientID']]
-            sent = any([_ha_push(r, title, message, url=url,
-                                 tag=f"dealfinder-alert-{a['ID']}") for r in targets])
+            sent = push_notification(a, title, message, url=url,
+                                     tag=f"dealfinder-alert-{a['ID']}")
             if sent:
                 upd.execute("UPDATE Scraper.PriceAlerts SET LastFiredAt = NOW() WHERE ID = %s",
                             (a['ID'],))
                 conn.commit()
                 fired += 1
         if fired:
-            log.info("EvaluateAlerts: %d alert(s) fired", fired)
+            log.info("EvaluateSubscriptions: %d price alert(s) fired", fired)
         return fired
     except Exception as e:
-        log.error("EvaluateAlerts error: %s", e)
+        log.error("EvaluateSubscriptions error: %s", e)
         return 0
     finally:
         conn.close()

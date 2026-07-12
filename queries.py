@@ -560,8 +560,61 @@ def ctx_filter_match(product_type: str, filters: dict, row: dict) -> bool:
     return True
 
 
+def _norm_group_val(v):
+    """Normalise a group-column value for equality: numbers compare numerically,
+    everything else case-insensitively as text. None/'' collapse to ''."""
+    if v in (None, ''):
+        return ''
+    n = _num(v)
+    if n is not None:
+        return n
+    return str(v).strip().lower()
+
+
+def group_match(product_type: str, params: dict, row: dict) -> bool:
+    """Does a surfaced row belong to the EXACT market group a subscription names?
+    Compares the category's group columns; an unspecified column is a wildcard,
+    so a partial group (e.g. just Interface) matches every capacity within it."""
+    cfg = CATEGORIES.get((product_type or '').lower())
+    if not cfg:
+        return False
+    for col, _ in cfg['group_cols']:
+        want = (params or {}).get(col)
+        if want in (None, ''):
+            continue
+        if _norm_group_val(row.get(col)) != _norm_group_val(want):
+            return False
+    return True
+
+
+def subscription_scope_match(scope_kind: str, product_type: str,
+                             params: dict, row: dict) -> bool:
+    """Unified scope test for a subscription against a live/surfaced row (the
+    category is assumed already matched by the caller):
+      all    — the whole category (params ignored)
+      filter — the shared /bin context filters (ctx_filter_match)
+      group  — one exact market group from a model page (group_match)"""
+    if scope_kind == 'all':
+        return True
+    if scope_kind == 'group':
+        return group_match(product_type, params, row)
+    return ctx_filter_match(product_type, params, row)   # 'filter' (default)
+
+
+def subscription_label(product_type: str, scope_kind: str, params: dict) -> str:
+    """Human label for a subscription's scope, for the Settings list."""
+    if scope_kind == 'all':
+        return f"{product_type.upper()} (all)"
+    if scope_kind == 'group':
+        p = dict(params or {})
+        if 'CapacityGB' in p:      # arrives as a string from a URL query
+            p['CapacityGB'] = _num(p['CapacityGB'])
+        return _base_label(product_type, p) or product_type.upper()
+    return bin_watch_label(product_type, params)   # 'filter'
+
+
 def bin_watch_label(product_type: str, filters: dict) -> str:
-    """Short human summary of a BIN-watch's filter set for the alerts list."""
+    """Short human summary of a filter-scope subscription for the Settings list."""
     parts = [product_type.upper()]
     labels = {
         'series': lambda v: v, 'family': lambda v: v,

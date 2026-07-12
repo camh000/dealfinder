@@ -193,22 +193,76 @@ _oneshot_fired: dict = {}
 
 # ── Scrape functions ───────────────────────────────────────────────────────────
 
-def notify_new_deals(deals: list) -> None:
-    """Push Home Assistant notifications for newly surfaced deals.
+def _notify_discount_subs(finds: list, listing_types: tuple, tag_prefix: str,
+                          build_msg) -> None:
+    """Shared event-driven matcher for the two discount-% notification lanes
+    (auction feed + BIN finds). A discount-% subscription of a matching listing
+    type fires when a fresh find is in its category, clears its min-discount and
+    satisfies its scope (all / filter / exact group). One push per owning user
+    per find — build_msg(row) supplies the (title, message)."""
+    subs = [s for s in EbayScraper.GetSubscriptions(('discount_pct',))
+            if s['ListingType'] in listing_types]
+    if not subs:
+        return
+    for row in finds:
+        cat = (row.get('_category') or '').lower()
+        disc = float(row.get('DiscountPct') or 0)
+        pushed = set()   # (user, service) — one push per owner per find
+        for s in subs:
+            if (s['Category'] or '').lower() != cat:
+                continue
+            if disc < float(s['MinDiscount'] or 0):
+                continue
+            try:
+                params = json.loads(s['GroupParams'] or '{}')
+            except ValueError:
+                continue
+            if not queries.subscription_scope_match(s['ScopeKind'], cat, params, row):
+                continue
+            key = (s['UserID'], s['NotifyService'])
+            if key in pushed:
+                continue
+            pushed.add(key)
+            try:
+                title, message = build_msg(row)
+                EbayScraper.push_notification(
+                    s, title, message,
+                    url=EbayScraper.deal_page_url(row.get('ID'), row.get('URL')),
+                    tag=f"{tag_prefix}-{row.get('ID')}")
+            except Exception as e:
+                log.warning("%s notification to user %s failed for %s: %s",
+                            tag_prefix, s.get('UserID'), row.get('ID'), e)
 
-    Recipients + per-recipient category filters live in the NotifyRecipients
-    table (managed from the dashboard's SETTINGS tab). Each enabled recipient
-    gets one notification per new deal in a category they've opted into.
-    """
+
+def _auction_deal_msg(row: dict) -> tuple:
+    label = row.get('_label') or 'deal'
+    price = float(row.get('CurrentPrice'))
+    avg = float(row.get('AvgMarketPrice'))
+    disc = float(row.get('DiscountPct'))
+    bids = row.get('Bids') or 0
+    end = row.get('EndTime')
+    if hasattr(end, 'strftime'):     # stored UTC-naive; show local wall time
+        end_txt = end.replace(tzinfo=timezone.utc).astimezone(_LOCAL_TZ).strftime('%H:%M')
+    else:
+        end_txt = str(end)
+    message = f"Market avg £{avg:.2f} · {bids} bid(s) · ends {end_txt}"
+    if row.get('PremiumSamples'):
+        message += (f" · predicted final ~£{row['PredictedFinalPrice']:.0f}"
+                    f" (n={row['PremiumSamples']})")
+    return f"Deal: {label} £{price:.2f} ({disc:.0f}% off)", message
+
+
+def notify_new_deals(deals: list) -> None:
+    """Push newly surfaced AUCTION deals to the subscriptions that want them.
+    A deal reaches a user via a discount-% subscription (auction/any) whose
+    scope + min-discount it satisfies — the per-category defaults migrated from
+    the old recipient ticks are exactly such subscriptions, so nothing changes
+    for existing users. The prediction gate still suppresses deals history says
+    get bid past their value (still recorded in DealOutcomes either way)."""
     if not deals:
         return
-    recipients = EbayScraper.GetNotifyRecipients()
-    if not recipients:
-        return
+    survivors = []
     for row in deals:
-        category = (row.get('_category') or '').upper()
-        # Prediction gate: history says this one gets bid past its value —
-        # don't wake anyone up for it. (Still recorded in DealOutcomes.)
         pred_disc = row.get('PredictedDiscountPct')
         if (row.get('PremiumSamples') and pred_disc is not None
                 and pred_disc < SURFACE_MIN_PREDICTED_DISCOUNT):
@@ -219,40 +273,8 @@ def notify_new_deals(deals: list) -> None:
                 row.get('DiscountPct') or 0, row.get('PredictedFinalPrice') or 0,
             )
             continue
-        for r in recipients:
-            cats = [c.strip().upper() for c in (r.get('Categories') or '').split(',') if c.strip()]
-            if category not in cats:
-                continue
-            try:
-                label = row.get('_label') or 'deal'
-                price = float(row.get('CurrentPrice'))
-                avg = float(row.get('AvgMarketPrice'))
-                disc = float(row.get('DiscountPct'))
-                bids = row.get('Bids') or 0
-                end = row.get('EndTime')
-                if hasattr(end, 'strftime'):
-                    # Stored UTC-naive; show the recipient local wall time.
-                    end_txt = end.replace(tzinfo=timezone.utc).astimezone(_LOCAL_TZ).strftime('%H:%M')
-                else:
-                    end_txt = str(end)
-                message = f"Market avg £{avg:.2f} · {bids} bid(s) · ends {end_txt}"
-                if row.get('PremiumSamples'):
-                    message += (f" · predicted final ~£{row['PredictedFinalPrice']:.0f}"
-                                f" (n={row['PremiumSamples']})")
-                requests.post(
-                    f"{r['HaUrl'].rstrip('/')}/api/services/notify/{r['NotifyService']}",
-                    headers={"Authorization": f"Bearer {r['HaToken']}"},
-                    json={
-                        "title": f"Deal: {label} £{price:.2f} ({disc:.0f}% off)",
-                        "message": message,
-                        "data": {"url": EbayScraper.deal_page_url(row.get('ID'), row.get('URL')),
-                                 "tag": f"dealfinder-{row.get('ID')}"},
-                    },
-                    timeout=10,
-                )
-            except Exception as e:
-                log.warning("Deal notification to %s failed for %s: %s",
-                            r.get('Name'), row.get('ID'), e)
+        survivors.append(row)
+    _notify_discount_subs(survivors, ('auction', 'any'), 'dealfinder', _auction_deal_msg)
 
 
 # A fixed price this far under market is almost never real — hijacked-account
@@ -261,59 +283,26 @@ def notify_new_deals(deals: list) -> None:
 BIN_SCAM_DISCOUNT = float(os.environ.get('BIN_SCAM_DISCOUNT', '60'))
 
 
+def _bin_find_msg(row: dict) -> tuple:
+    label = row.get('_label') or 'find'
+    price = float(row.get('CurrentPrice'))
+    avg = float(row.get('AvgMarketPrice'))
+    disc = float(row.get('DiscountPct') or 0)
+    qty = int(row.get('Quantity') or 1)
+    message = f"Market avg £{avg:.2f}" + (f" × {qty} units" if qty > 1 else '')
+    message += " · fixed price — first to buy wins"
+    return f"BIN: {label} £{price:.2f} ({disc:.0f}% off)", message
+
+
 def notify_bin_finds(finds: list) -> None:
-    """Push new Buy-It-Now bargains to the BIN WATCHES that want them. A watch
-    (a 'bin_new' alert saved from the /bin page) is a category + filter set +
-    min-discount + recipient; a find notifies each watch it matches, once per
-    recipient. No watches → no BIN pushes (browse /bin instead)."""
+    """Push new Buy-It-Now bargains to the subscriptions that want them. A BIN
+    subscription is a discount-% subscription of listing type bin/any (saved via
+    'Watch this' on /bin); a find notifies each one it matches, once per owner.
+    No matching subscriptions → no BIN pushes (browse /bin instead)."""
     if not finds:
         return
     finds = [f for f in finds if float(f.get('DiscountPct') or 0) < BIN_SCAM_DISCOUNT]
-    if not finds:
-        return
-    watches = EbayScraper.GetBinWatches()
-    if not watches:
-        return
-    for row in finds:
-        cat = (row.get('_category') or '').lower()
-        disc = float(row.get('DiscountPct') or 0)
-        pushed_to = set()   # dedupe: one push per recipient per find
-        for w in watches:
-            if (w['Category'] or '').lower() != cat:
-                continue
-            if disc < float(w['MinDiscount'] or 0):
-                continue
-            try:
-                filters = json.loads(w['GroupParams'] or '{}')
-            except ValueError:
-                continue
-            if not queries.ctx_filter_match(cat, filters, row):
-                continue
-            svc = w['NotifyService']
-            if svc in pushed_to:
-                continue
-            pushed_to.add(svc)
-            try:
-                label = row.get('_label') or 'find'
-                price = float(row.get('CurrentPrice'))
-                avg = float(row.get('AvgMarketPrice'))
-                qty = int(row.get('Quantity') or 1)
-                message = f"Market avg £{avg:.2f}" + (f" × {qty} units" if qty > 1 else '')
-                message += " · fixed price — first to buy wins"
-                requests.post(
-                    f"{w['HaUrl'].rstrip('/')}/api/services/notify/{svc}",
-                    headers={"Authorization": f"Bearer {w['HaToken']}"},
-                    json={
-                        "title": f"BIN: {label} £{price:.2f} ({disc:.0f}% off)",
-                        "message": message,
-                        "data": {"url": EbayScraper.deal_page_url(row.get('ID'), row.get('URL')),
-                                 "tag": f"dealfinder-bin-{row.get('ID')}"},
-                    },
-                    timeout=10,
-                )
-            except Exception as e:
-                log.warning("BIN notification to %s failed for %s: %s",
-                            w.get('RName'), row.get('ID'), e)
+    _notify_discount_subs(finds, ('bin', 'any'), 'dealfinder-bin', _bin_find_msg)
 
 
 def run_bin_scan(min_discount: float):
@@ -372,18 +361,10 @@ def run_data_audit():
     body = "; ".join(problems)
     sample = ex.get('title') or ex.get('label') or ''
     log.warning("Data audit ALERT: %s | e.g. %s", body, sample)
-    for r in EbayScraper.GetNotifyRecipients():
-        try:
-            requests.post(
-                f"{r['HaUrl'].rstrip('/')}/api/services/notify/{r['NotifyService']}",
-                headers={"Authorization": f"Bearer {r['HaToken']}"},
-                json={"title": "PC/DEALS data audit",
-                      "message": f"{body}. e.g. {sample}"[:230],
-                      "data": {"tag": "dealfinder-audit"}},
-                timeout=10,
-            )
-        except Exception as e:
-            log.warning("Audit alert to %s failed: %s", r.get('Name'), e)
+    for ep in EbayScraper.GetAdminEndpoints():
+        EbayScraper.push_notification(
+            ep, "PC/DEALS data audit", f"{body}. e.g. {sample}"[:230],
+            tag="dealfinder-audit")
 
 
 def kuma_heartbeat(ok: bool, msg: str) -> None:
@@ -442,12 +423,13 @@ def run_full_scrape():
     except Exception as e:
         log.error("Deal surfacing failed: %s", e)
 
-    # User price alerts (created on model pages) — checked once per full
-    # scrape, when the data they watch has just been refreshed.
+    # £-target subscriptions (model-page price alerts) — checked once per full
+    # scrape, when the data they watch has just been refreshed. The discount-%
+    # subscriptions fire event-driven above (notify_new_deals / notify_bin_finds).
     try:
-        EbayScraper.EvaluateAlerts()
+        EbayScraper.EvaluateSubscriptions()
     except Exception as e:
-        log.error("Alert evaluation failed: %s", e)
+        log.error("Subscription evaluation failed: %s", e)
 
     # Housekeeping: drop zombie active listings (ended >14d, never resolved,
     # not deal-tracked). Sold rows are never pruned — they're the price history.

@@ -81,13 +81,13 @@ def test_guest_mode_reads_open_writes_gated(app_module, monkeypatch):
     assert client.get("/login").status_code == 200
     assert client.get("/sw.js").status_code == 200
     # settings APIs blocked even as reads
-    for path in ("/api/notify-settings", "/api/bin-settings",
-                 "/api/users", "/api/alerts"):
+    for path in ("/api/my-endpoint", "/api/bin-settings",
+                 "/api/users", "/api/subscriptions"):
         assert client.get(path).status_code == 401, path
     # mutations blocked (page POSTs redirect to login, API POSTs 401)
-    assert client.post("/api/notify-settings", json={}).status_code == 401
+    assert client.post("/api/my-endpoint", json={}).status_code == 401
     assert client.post("/api/bin-settings", json={}).status_code == 401
-    assert client.post("/api/alerts", json={}).status_code == 401
+    assert client.post("/api/subscriptions", json={}).status_code == 401
     assert client.delete("/api/users/1").status_code == 401
 
 
@@ -105,7 +105,7 @@ def test_login_flow(app_module, monkeypatch):
     assert me["user"]["admin"] is True
     client.post("/api/logout")
     # back to guest: reads open, private APIs gated again
-    assert client.get("/api/alerts").status_code == 401
+    assert client.get("/api/subscriptions").status_code == 401
 
 
 def test_admin_apis_reject_plain_users(app_module, monkeypatch):
@@ -143,28 +143,36 @@ def test_bin_settings_post_requires_admin(app_module, monkeypatch):
     assert resp.status_code == 403
 
 
-def test_alert_fields_bin_new(app_module):
-    """A BIN watch carries a filter set + min-discount %, not a price."""
-    kind, group, target, md, err = app_module._alert_fields(
-        {'kind': 'bin_new', 'filters': {'series': 'RTX'}, 'min_discount': 25})
-    assert err is None and kind == 'bin_new'
-    assert target is None and md == 25.0
+def test_subscription_fields_discount(app_module):
+    """A discount-% subscription carries a scope + listing type + min-%, no £."""
     import json as _j
-    assert _j.loads(group) == {'series': 'RTX'}
+    f = app_module._subscription_fields(
+        {'kind': 'discount_pct', 'scope_kind': 'filter', 'listing_type': 'bin',
+         'filters': {'series': 'RTX'}, 'min_discount': 25})
+    assert not isinstance(f, tuple)
+    assert f['kind'] == 'discount_pct' and f['scope'] == 'filter' and f['ltype'] == 'bin'
+    assert f['target'] is None and f['min_disc'] == 25.0
+    assert _j.loads(f['group']) == {'series': 'RTX'}
+    # empty filters default to whole-category scope
+    f2 = app_module._subscription_fields(
+        {'kind': 'discount_pct', 'listing_type': 'auction', 'min_discount': 20})
+    assert f2['scope'] == 'all' and f2['ltype'] == 'auction'
     # out-of-range discount rejected
-    _, _, _, _, err = app_module._alert_fields(
-        {'kind': 'bin_new', 'filters': {}, 'min_discount': 200})
-    assert err and err[1] == 400
+    err = app_module._subscription_fields(
+        {'kind': 'discount_pct', 'filters': {}, 'min_discount': 200})
+    assert isinstance(err, tuple) and err[1] == 400
 
 
-def test_alert_fields_price_alert(app_module):
-    kind, group, target, md, err = app_module._alert_fields(
-        {'kind': 'listing_below', 'group': {'Model': 'RTX 3060 12GB'}, 'target_price': 180})
-    assert err is None and kind == 'listing_below'
-    assert target == 18000 and md is None
-    _, _, _, _, err = app_module._alert_fields(
-        {'kind': 'listing_below', 'group': {}, 'target_price': -5})
-    assert err and err[1] == 400
+def test_subscription_fields_price(app_module):
+    f = app_module._subscription_fields(
+        {'kind': 'listing_price', 'scope_kind': 'group',
+         'group': {'Model': 'RTX 3060 12GB'}, 'target_price': 180})
+    assert not isinstance(f, tuple)
+    assert f['kind'] == 'listing_price' and f['scope'] == 'group'
+    assert f['target'] == 18000 and f['min_disc'] is None
+    err = app_module._subscription_fields(
+        {'kind': 'listing_price', 'group': {}, 'target_price': -5})
+    assert isinstance(err, tuple) and err[1] == 400
 
 
 def test_bin_settings_post_validates_ranges(app_module):

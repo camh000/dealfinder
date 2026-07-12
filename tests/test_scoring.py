@@ -392,6 +392,45 @@ class TestCtxFilterMatch:
         assert queries.bin_watch_label('cpu', {}) == 'CPU (all)'
 
 
+class TestSubscriptionScope:
+    """Unified scope matcher over the three scope kinds a subscription can have.
+    'all' ignores params; 'filter' delegates to the /bin context filters;
+    'group' is exact market-group equality (from a model page)."""
+
+    def test_scope_all_matches_any_row(self):
+        assert queries.subscription_scope_match('all', 'gpu', {}, {'Model': 'GTX 1650'})
+        assert queries.subscription_scope_match('all', 'gpu', {'series': 'RTX'},
+                                                {'Model': 'GTX 1650'})  # params ignored
+
+    def test_scope_filter_uses_ctx(self):
+        row = {'Model': 'RTX 3060 12GB'}
+        assert queries.subscription_scope_match('filter', 'gpu', {'series': 'RTX'}, row)
+        assert not queries.subscription_scope_match('filter', 'gpu', {'series': 'GTX'}, row)
+
+    def test_scope_group_exact_match(self):
+        # exact model group: only the same Model matches
+        assert queries.group_match('gpu', {'Model': 'RTX 3060 12GB'},
+                                   {'Model': 'RTX 3060 12GB'})
+        assert not queries.group_match('gpu', {'Model': 'RTX 3060 12GB'},
+                                       {'Model': 'RTX 3060 8GB'})
+        # numeric group cols compare numerically (str param vs int row)
+        assert queries.group_match('hdd', {'CapacityGB': '2000', 'Interface': 'SAS'},
+                                   {'CapacityGB': 2000, 'Interface': 'SAS'})
+        # an unspecified group column is a wildcard
+        assert queries.group_match('hdd', {'Interface': 'SAS'},
+                                   {'CapacityGB': 8000, 'Interface': 'SAS'})
+        assert queries.subscription_scope_match('group', 'gpu', {'Model': 'RTX 3060 12GB'},
+                                                {'Model': 'RTX 3060 12GB'})
+
+    def test_subscription_label(self):
+        assert queries.subscription_label('gpu', 'all', {}) == 'GPU (all)'
+        assert queries.subscription_label('gpu', 'group', {'Model': 'RTX 3060 12GB'}) \
+            == 'RTX 3060 12GB'
+        assert queries.subscription_label('hdd', 'group', {'CapacityGB': '8000', 'Interface': 'SAS'}) \
+            == '8TB SAS'
+        assert 'RTX' in queries.subscription_label('gpu', 'filter', {'series': 'RTX'})
+
+
 class TestBinFindFilters:
     """BIN watcher model filters: comma-separated terms per category,
     matched case-insensitively against the find's model label."""

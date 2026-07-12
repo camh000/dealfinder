@@ -100,7 +100,7 @@ $('#f-added').addEventListener('change', load);
 $('#refresh-btn').addEventListener('click', load);
 
 /* ── "Watch this": save the current category + filters + min-discount as a
-      BIN-watch alert (a 'bin_new' PriceAlert), managed in Settings ── */
+      BIN subscription (discount_pct / listing type bin), managed in Settings ── */
 function ctxSummary() {
   const defs = (typeof CTX_FILTERS !== 'undefined' && CTX_FILTERS[cat]) || [];
   const bits = [];
@@ -111,7 +111,7 @@ function ctxSummary() {
   return bits.length ? bits.join(' · ') : 'any model';
 }
 
-$('#watch-btn').addEventListener('click', async () => {
+$('#watch-btn').addEventListener('click', () => {
   const card = $('#watch-card');
   if (card.style.display !== 'none') { card.style.display = 'none'; return; }
   if (cat === 'all') {
@@ -120,34 +120,29 @@ $('#watch-btn').addEventListener('click', async () => {
   }
   card.style.display = '';
   $('#watch-summary').innerHTML =
-    `Watching <b>${cat.toUpperCase()}</b> — ${esc(ctxSummary())}. New Buy-It-Now finds matching this push to your recipient.`;
+    `Watching <b>${cat.toUpperCase()}</b> — ${esc(ctxSummary())}. New Buy-It-Now finds matching this push to your notification endpoint.`;
   if (!$('#w-disc').value) $('#w-disc').value = $('#f-disc').value || 20;
-  if (!$('#w-recipient').options.length) {
-    try {
-      const data = await fetch('/api/notify-settings').then(r => r.json());
-      const recips = (data.recipients || []).filter(r => r.Enabled !== false);
-      $('#w-recipient').innerHTML = recips.length
-        ? recips.map(r => `<option value="${r.ID}">${esc(r.Name || 'recipient ' + r.ID)}</option>`).join('')
-        : '<option value="">no recipients — add one in settings</option>';
-    } catch { $('#w-recipient').innerHTML = '<option value="">couldn’t load recipients</option>'; }
-  }
 });
 
 $('#w-save').addEventListener('click', async () => {
   $('#w-status').textContent = '…';
   try {
-    const res = await fetch('/api/alerts', {
+    const hasFilters = Object.keys(ctx).length > 0;
+    const res = await fetch('/api/subscriptions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        category: cat, kind: 'bin_new', filters: ctx,
+        category: cat, kind: 'discount_pct',
+        scope_kind: hasFilters ? 'filter' : 'all',
+        listing_type: 'bin', filters: ctx,
         min_discount: parseFloat($('#w-disc').value),
-        recipient_id: $('#w-recipient').value ? Number($('#w-recipient').value) : null,
       }),
     });
     const data = await res.json();
     if (res.status === 401) { $('#w-status').innerHTML = 'sign in first — <a href="/login">login</a>'; return; }
-    $('#w-status').textContent = data.status === 'ok'
-      ? 'watch created ✓ — manage it in settings' : (data.message || 'error');
+    if (data.status !== 'ok') { $('#w-status').textContent = data.message || 'error'; return; }
+    $('#w-status').innerHTML = data.has_endpoint
+      ? 'watch created ✓ — manage it in <a href="/settings">settings</a>'
+      : 'created ✓ — but set your <a href="/settings">notification endpoint</a> to receive it';
   } catch { $('#w-status').textContent = 'network error'; }
 });
 
