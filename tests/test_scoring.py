@@ -573,6 +573,22 @@ class TestXeonParsing:
         assert item['quantity'] == 2
         assert item['model'] == "Xeon E5-2690 V4"
 
+    @pytest.mark.parametrize("title,qty,model", [
+        # Cam: "15x/10x Xeon" lots counted as single sales, polluting the median
+        ("15x Intel Xeon Gold 6132 SR3J3 CPU Hardware for Server and Networking", 15, "Xeon Gold 6132"),
+        ("10x Intel Xeon Gold 6132 SR3J3 CPU Hardware", 10, "Xeon Gold 6132"),
+        ("Joblot x8 Processors CPU Intel Core i5-4590 3.20GHz LGA 1150", 8, "i5-4590"),
+        ("Bundle of 3 Intel Core i7-6700 CPU Processor", 3, "i7-6700"),
+    ])
+    def test_cpu_job_lots_are_quantified(self, title, qty, model):
+        item = _parse_one(title, "CPU")
+        assert item is not None, f"lot dropped: {title}"
+        assert item['quantity'] == qty
+        assert item['model'] == model
+
+    def test_single_cpu_is_not_a_lot(self):
+        assert _parse_one("Intel Xeon Gold 6132 SR3J3 CPU", "CPU")['quantity'] == 1
+
     def test_untested_pair_skipped(self):
         assert _parse_one("2x Intel Xeon Gold 6132 untested spares", "CPU") is None
 
@@ -938,9 +954,30 @@ class TestJunkListingGate:
         "Fast Gaming PC, i5-7400, 16GB, GTX 1650 EX Plus, 256GB SSD & 1TB HD, WiFi",
         "Mini PC - GTX 1060 6GB, 16GB RAM, 1.5TB M.2 SSD, i5-9400f 9th gen",
         "HP Z VR G2 I7-9850H 16GB DDR4 1TB SSD RTX2080 (8GB) Gaming Compact PC",
+        # second round (Cam: "still stuff in the RTX 3050s") — no 'laptop'/'PC'
+        # word, caught by CPU name / storage / laptop product line
+        "Lenovo IdeaPad 5 PRO with nvidia rtx 3050",
+        "HP Victus 15L Gaming Desktop - AMD Ryzen 5, RTX 3050, 512 GB SSD",
+        "ASUS TUF Gaming A15 FA506ICB Ryzen 5 4600H, RTX 3050, 512GB SSD",
+        "ASUS Z13 Flow Intel Core i9 Nvidia RTX 3050 16GB 1TB SSD",
+        "Dell G15 5520 RTX 3050 gaming",
+        "Acer Nitro 5 RTX 3050 Ti",
     ])
     def test_systems_skipped_from_gpu(self, title):
         assert _parse_one(title, "GPU") is None, f"system parsed as a GPU: {title}"
+
+    @pytest.mark.parametrize("title", [
+        # real graphics cards that must survive — the tells must not over-reach
+        "MSI GeForce RTX 3050 VENTUS 2X XS 8G OC",
+        "ASUS Dual GeForce RTX 3050 OC Edition 8GB GDDR6",
+        "ASUS TUF Gaming GeForce RTX 3070 OC 8GB GDDR6",     # TUF is a GPU line too
+        "Gigabyte AORUS RTX 3080 Master 10GB",
+        "ASUS ROG Strix GeForce RTX 4090 OC 24GB",           # ROG Strix GPU, not G-series laptop
+        "ASUS GT 710 2GB DDR3 Graphics Card Low Profile",    # DDR3 VRAM, not system RAM
+        "PNY GeForce RTX 3050 8GB XLR8 Gaming",
+    ])
+    def test_real_gpus_survive_system_gate(self, title):
+        assert _parse_one(title, "GPU") is not None, f"real card wrongly skipped: {title}"
 
     @pytest.mark.parametrize("title", [
         "Dell G3 Gaming Laptop i7 16GB RAM 1TB HDD GTX 1660",

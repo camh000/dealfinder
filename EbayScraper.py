@@ -359,6 +359,73 @@ def title_is_memory_module(title: str) -> bool:
     return bool(_MEMORY_MODULE_RE.search(title or ''))
 
 
+# A component listing that names a CPU, a storage drive, or a laptop/prebuilt
+# product line is a whole SYSTEM, not the part. These are the strong signals
+# that catch systems whose titles carry no "laptop"/"PC" word at all — the
+# RTX 3050 median was polluted by "Lenovo IdeaPad 5 PRO with RTX 3050" (£313,
+# no keyword) and "ASUS TUF Gaming A15 Ryzen 5 512GB SSD" (£277). A bare
+# graphics card / drive / RAM stick never names any of these.
+_CPU_MENTION_RE = re.compile(
+    r'\b(?:intel\s+)?core\s*i[3579]\b|\bi[3579][\s\-]\d{3,5}[a-z]{0,2}\b|'
+    r'\bryzen\b|\bxeon\b|\bcore\s+ultra\b|\bceleron\b|\bpentium\b|'
+    r'\bcore\s*2\s+(?:duo|quad)\b|\bathlon\b', re.IGNORECASE)
+# storage inside a NON-storage listing = a system's spec sheet. Requires an
+# ssd/hdd/nvme/emmc noun so a GPU's "8GB GDDR6" VRAM never trips it.
+_SYS_STORAGE_RE = re.compile(r'\d+\s*(?:tb|gb)\s*(?:ssd|nvme|hdd|emmc)\b', re.IGNORECASE)
+# Laptop / prebuilt PRODUCT LINES that never name a bare component. Curated to
+# dodge GPU-brand collisions: no 'TUF'/'Aorus'/'ProArt'/'Ventus'/'Gaming'.
+_SYSTEM_LINE_RE = re.compile(
+    r'\b(?:ideapad|thinkpad|thinkbook|legion|yoga|'                 # Lenovo
+    r'victus|omen|elitebook|probook|spectre|envy|zbook|'            # HP
+    r'inspiron|latitude|alienware|precision\s*\d|xps\s*\d{2}|'      # Dell
+    r'dell\s+g\d{1,2}|'                                             # Dell G-series gaming
+    r'zephyrus|vivobook|zenbook|expertbook|rog\s+(?:strix\s+)?g\d|' # Asus
+    r'predator|aspire|nitro\s*\d|'                                  # Acer
+    r'katana|\bstealth\s+gs\d|\braider\s+ge\d|'                     # MSI laptops
+    r'macbook|surface\s+(?:laptop|book|pro))\b', re.IGNORECASE)
+
+
+# ONLY unambiguous whole-machine nouns. Deliberately NOT "desktop pc" /
+# "gaming pc" / "desktop computer" — a real component describes what it fits
+# ("Hard Drive for Desktop PC", "GT 710 Graphics Card for Desktop PC"). A
+# genuine system carrying one of those phrases also carries a CPU/RAM/storage
+# spec, which the standalone tells below already catch.
+_SYSTEM_PHRASES = (
+    'gaming rig', 'gaming setup', 'pre-built', 'prebuilt', 'pc bundle',
+    'pc build', 'all-in-one', 'barebones', 'complete pc', 'full pc',
+    'custom pc', 'compact pc', 'tower pc', 'desktop tower', 'gaming tower',
+    'mid tower', 'full tower', 'midi tower', ' nuc')
+
+
+def title_is_system(title: str, category: str) -> bool:
+    """True for whole-machine listings (laptops, prebuilts) masquerading as a
+    part. Category-aware in three ways:
+      • bare 'laptop'/'notebook' and laptop PRODUCT LINES are tells only for
+        GPU — a desktop card never names a laptop, but a "laptop hard drive",
+        "laptop SODIMM" or an SSD-for-a-Dell is a legitimate replacement part;
+      • storage size is the product for the HDD/SSD branches, so it isn't a
+        tell there;
+      • for GPUs a "2GB DDR3" is VRAM, so the RAM tell needs the word 'ram'.
+    A CPU name is always a tell — no bare component names a processor."""
+    t = title or ''
+    tl = t.lower()
+    if category == 'gpu':
+        if 'laptop' in tl or 'notebook' in tl:
+            return True
+        if _SYSTEM_LINE_RE.search(t):
+            return True
+    if _CPU_MENTION_RE.search(t):
+        return True
+    if category not in ('hdd', 'ssd') and _SYS_STORAGE_RE.search(tl):
+        return True
+    ram_pat = r'\d+\s*gb\s+ram\b' if category == 'gpu' else r'\d+\s*gb\s*(?:ddr\d|ram)\b'
+    if re.search(ram_pat, tl):
+        return True
+    if any(k in tl for k in _SYSTEM_PHRASES):
+        return True
+    return False
+
+
 _RAM_SODIMM_RE = re.compile(
     r'so.?dimm|small\s*outline|\blaptop\b|\bnotebook\b', re.IGNORECASE)
 
@@ -747,42 +814,11 @@ def __ParseItems(soup, query, productType):
                 return "NVIDIA"
 
             # Whole systems (gaming laptops, prebuilts) mention their card and
-            # were parsing AS the card — an Alienware selling for £463 is not
-            # a GTX 1080 sale. Bare "laptop"/"notebook" is safe to match: real
-            # card listings never say it, and MXM laptop GPU modules are a
-            # different market that must not blend in either. The PC phrases
-            # only count as a system alongside spec-sheet evidence (a CPU
-            # model, RAM or storage) — "GTX 1650 Graphics Card for Desktop
-            # PC" is a real card describing what it fits.
-            _tl = title.lower()
-            # System evidence for the PC phrases must not confuse VRAM specs
-            # ("GT 710 2GB DDR3") with system RAM — hence 'ram' word, storage,
-            # or a CPU mention (incl. suffixed mobile chips like i5-1240P).
-            _spec_evidence = bool(
-                re.search(r'\d+\s*gb\s+ram\b', _tl)
-                or re.search(r'\d+\s*(?:tb|gb)\s*(?:ssd|nvme|hdd|m\.2)', _tl)
-                or re.search(r'\b(?:intel\s+)?core\s*i[3579]\b|\bi[3579][\s\-]\d{3,5}[a-z]{0,2}\b|'
-                             r'\bryzen\b|\bxeon\b|\bcore\s+ultra\b|\bceleron\b|\bpentium\b', _tl))
-            # Standalone spec-sheet tell needs BOTH memory-ish and storage —
-            # "Dell G3 3590 i7 16GB RAM 512GB SSD GTX 1660" carries no PC
-            # phrase at all, while "2GB DDR3" alone is just an old card.
-            _ram_and_storage = bool(
-                re.search(r'\d+\s*gb\s*(?:ddr\d?|ram)\b', _tl)
-                and re.search(r'\d+\s*(?:tb|gb)\s*(?:ssd|nvme|hdd|m\.2)', _tl))
-            _is_system_gpu = (
-                'laptop' in _tl or 'notebook' in _tl
-                # tower phrasing is unambiguous even with no spec sheet —
-                # no card title calls itself a tower
-                or any(k in _tl for k in ['tower pc', 'desktop tower', 'gaming tower',
-                                           'mid tower', 'full tower', 'midi tower'])
-                or _ram_and_storage
-                or (_spec_evidence
-                    and any(k in _tl for k in ['gaming pc', 'desktop pc', 'mini pc', 'mini-pc',
-                                                'all-in-one', 'complete pc', 'pc bundle',
-                                                'custom pc', 'full pc', 'gaming computer',
-                                                'gaming rig', 'gaming setup', 'pre-built',
-                                                'prebuilt', 'desktop computer', 'compact pc'])))
-            if _is_system_gpu:
+            # parse AS the card — an Alienware selling for £463 is not a GTX
+            # 1080 sale. The shared detector catches them via laptop/prebuilt
+            # product lines, a CPU name, or a storage drive — none of which a
+            # bare graphics card ever states (its "8GB GDDR6" is VRAM, safe).
+            if title_is_system(title, 'gpu'):
                 log.debug("[%s] Skipping system listing in GPU: %s", query, title[:60])
                 continue
             if title_is_memory_module(title):
@@ -815,11 +851,16 @@ def __ParseItems(soup, query, productType):
                 log.debug("[%s] Skipping system listing: %s", query, title[:60])
                 continue
 
-            # Matched pairs/quads ("2x Xeon E5-2690" for dual-socket boards)
-            # are multi-unit listings — same per-unit treatment as HDD lots.
-            pair_m = re.search(r'\b(\d)\s*[x×]\s*(?:intel\s+)?xeon\b', _tl)
-            if pair_m and 2 <= int(pair_m.group(1)) <= 8:
-                quantity = int(pair_m.group(1))
+            # CPU job lots ("10x Intel Xeon Gold 6132", "Joblot x8 i5-4590")
+            # are multi-unit — same per-unit treatment as HDD lots, so they're
+            # marked ×N, priced per unit, and kept OUT of the single-unit
+            # median (Cam: lot totals were counting as single Xeon sales).
+            quantity = extract_lot_quantity(title)
+            if quantity == 1:
+                # dual-socket matched pairs mid-title ("Dell R720 2x Xeon E5")
+                pair_m = re.search(r'\b(\d)\s*[x×]\s*(?:intel\s+)?xeon\b', _tl)
+                if pair_m and 2 <= int(pair_m.group(1)) <= 8:
+                    quantity = int(pair_m.group(1))
 
             def extract_cpu_brand(title: str):
                 t = title.upper()
@@ -932,14 +973,7 @@ def __ParseItems(soup, query, productType):
             # here — "laptop hard drive" and "Desktop PC NAS Hard Drive" are
             # real drives describing what they fit. The reliable evidence is
             # a RAM spec or a CPU model: no bare-drive title ever states those.
-            _is_system_hdd = (
-                bool(re.search(r'\d+\s*gb\s*(?:ddr\d|ram)\b', _tl))
-                or bool(re.search(r'\b(?:intel\s+)?core\s*i[3579]\b|\bi[3579][\s\-]\d{3,5}[a-z]{0,2}\b|'
-                                  r'\bryzen\b|\bxeon\b|\bcore\s+ultra\b', _tl))
-                or 'gaming laptop' in _tl
-                or 'graphics card' in _tl
-            )
-            if _is_system_hdd:
+            if title_is_system(title, 'hdd') or 'graphics card' in _tl:
                 log.debug("[%s] Skipping system listing in HDD: %s", query, title[:60])
                 continue
 
@@ -1020,21 +1054,11 @@ def __ParseItems(soup, query, productType):
             if title_has_memory_token(title):
                 log.debug("[%s] Skipping memory module in SSD: %s", query, title[:60])
                 continue
-            # Same system tells as HDD: no bare-drive title names a CPU model
-            # (an "HP Pavilion i5 3330 128GB SSD DDR3" tower sat in SSD).
-            if re.search(r'\b(?:intel\s+)?core\s*i[3579]\b|\bi[3579][\s\-]\d{3,5}[a-z]{0,2}\b|'
-                         r'\bryzen\b|\bxeon\b|\bcore\s+ultra\b', _tl) \
-                    or 'graphics card' in _tl:
+            # No bare drive names a CPU, RAM or a graphics card — those tell a
+            # whole system (an "HP Pavilion i5 3330 128GB SSD DDR3" tower sat
+            # in SSD). Storage size is the product here, so it isn't a tell.
+            if title_is_system(title, 'ssd') or 'graphics card' in _tl:
                 log.debug("[%s] Skipping system listing in SSD: %s", query, title[:60])
-                continue
-            _is_system_ssd = (
-                any(k in _tl for k in ['gaming pc', 'desktop pc', 'mini pc',
-                                        'all-in-one', 'complete pc', 'pc bundle'])
-                or (('laptop' in _tl or 'notebook' in _tl)
-                    and bool(re.search(r'\d+\s*gb\s*(ddr\d?|ram)', _tl)))
-            )
-            if _is_system_ssd:
-                log.debug("[%s] Skipping system listing: %s", query, title[:60])
                 continue
 
             ssd_cap_pattern = re.compile(r'(\d+(?:\.\d+)?)\s*(TB|GB)', re.IGNORECASE)
