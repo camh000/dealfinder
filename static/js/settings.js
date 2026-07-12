@@ -53,7 +53,8 @@ async function loadMe() {
   if (bootstrap || (me && me.admin)) loadBinSettings();
 }
 
-/* ── BIN watcher (admin) ── */
+/* ── BIN watcher sweep settings (admin) — the per-user targeting lives in
+      watches (bin_new alerts), created on /bin and listed above ── */
 async function loadBinSettings() {
   try {
     const cfg = await fetch('/api/bin-settings').then(r => r.json());
@@ -61,9 +62,6 @@ async function loadBinSettings() {
     $('#bin-scan').value = cfg.scan_minutes;
     $('#bin-disc').value = cfg.min_discount;
     $('#bin-enabled').checked = cfg.enabled;
-    $$('#bin-filters [data-bin-filter]').forEach(inp => {
-      inp.value = (cfg.filters || {})[inp.dataset.binFilter] || '';
-    });
   } catch { /* card just keeps its placeholders */ }
 }
 
@@ -76,8 +74,6 @@ $('#bin-save')?.addEventListener('click', async () => {
         scan_minutes: Number($('#bin-scan').value),
         min_discount: Number($('#bin-disc').value),
         enabled: $('#bin-enabled').checked,
-        filters: Object.fromEntries($$('#bin-filters [data-bin-filter]')
-          .map(inp => [inp.dataset.binFilter, inp.value])),
       }),
     });
     const data = await res.json();
@@ -143,30 +139,71 @@ $('#nu-create')?.addEventListener('click', async () => {
   if (data.status === 'ok') { $('#nu-name').value = ''; $('#nu-pass').value = ''; loadUsers(); }
 });
 
-/* ── price alerts ── */
+/* ── alerts & watches (unified: model price alerts + BIN watches) ── */
+let alertRecipients = [];
+
+function alertTrigger(a) {
+  if (a.Kind === 'bin_new') return `new BIN ≥ ${a.MinDiscount}% off`;
+  return a.Kind === 'median_below' ? 'median drops below' : 'listing available below';
+}
+function alertThreshold(a) {
+  return a.Kind === 'bin_new' ? `${a.MinDiscount}% off` : fmtGBP(a.TargetPrice);
+}
+function alertLink(a) {
+  const label = esc(a.Label || a.Category.toUpperCase());
+  if (a.Kind === 'bin_new') return `<span title="BIN watch">🔔 ${label}</span>`;
+  return `<a href="/model/${a.Category}?${new URLSearchParams(a.GroupParams)}">${label}</a>`;
+}
+
 async function loadAlerts() {
-  const data = await fetch('/api/alerts').then(r => r.json());
+  const [data, recips] = await Promise.all([
+    fetch('/api/alerts').then(r => r.json()),
+    fetch('/api/notify-settings').then(r => r.json()).catch(() => ({})),
+  ]);
+  alertRecipients = (recips.recipients || []).filter(r => r.Enabled !== false);
   const box = $('#alerts-list');
   if (data.status !== 'ok') { box.innerHTML = '<p class="help">Couldn’t load alerts.</p>'; return; }
   if (!data.alerts.length) {
-    box.innerHTML = '<p class="help">No alerts yet — open a model page and hit “Alert me”.</p>';
+    box.innerHTML = '<p class="help">No alerts yet — hit “Alert me” on a model page, or “Watch this” on the <a href="/bin">Buy It Now</a> page.</p>';
     return;
   }
+  const recOpts = (sel) => alertRecipients.map(r =>
+    `<option value="${r.ID}"${r.ID === sel ? ' selected' : ''}>${esc(r.Name || 'recipient ' + r.ID)}</option>`).join('')
+    || '<option value="">—</option>';
   box.innerHTML = `<div class="tbl-wrap" style="box-shadow:none;border:none">
-    <table class="tbl"><thead><tr><th>Model</th><th class="m-hide">Trigger</th><th class="num">Target</th>
-      <th class="m-hide">Notifies</th><th>Last fired</th><th></th></tr></thead>
+    <table class="tbl"><thead><tr><th>What</th><th class="m-hide">Trigger</th><th class="num">Threshold</th>
+      <th class="m-hide">Notifies</th><th>Last</th><th>On</th><th></th></tr></thead>
     <tbody>${data.alerts.map(a => `
-      <tr>
-        <td><a href="/model/${a.Category}?${new URLSearchParams(a.GroupParams)}">${esc(a.Label || a.Category.toUpperCase())}</a></td>
-        <td class="dimcell m-hide">${a.Kind === 'median_below' ? 'median drops below' : 'genuinely available below'}</td>
-        <td class="num">${fmtGBP(a.TargetPrice)}</td>
-        <td class="dimcell m-hide">${esc(a.RecipientName || '—')}</td>
+      <tr data-aid="${a.ID}" data-kind="${a.Kind}">
+        <td>${alertLink(a)}</td>
+        <td class="dimcell m-hide">${alertTrigger(a)}</td>
+        <td class="num"><input class="al-thr" type="number" min="1" step="${a.Kind === 'bin_new' ? '5' : '1'}"
+            value="${a.Kind === 'bin_new' ? a.MinDiscount : a.TargetPrice}" style="width:74px">${a.Kind === 'bin_new' ? '%' : ''}</td>
+        <td class="dimcell m-hide"><select class="al-rec">${recOpts(a.RecipientID)}</select></td>
         <td class="dimcell">${a.LastFiredAt ? timeAgo(a.LastFiredAt) : 'never'}</td>
-        <td><button class="btn-ghost btn-danger" data-del-alert="${a.ID}" style="padding:2px 10px;font-size:12px">delete</button></td>
-      </tr>`).join('')}</tbody></table></div>`;
-  $$('#alerts-list [data-del-alert]').forEach(b => b.onclick = async () => {
-    await fetch(`/api/alerts/${b.dataset.delAlert}`, { method: 'DELETE' });
-    loadAlerts();
+        <td><input class="al-en" type="checkbox"${a.Enabled ? ' checked' : ''}></td>
+        <td><button class="btn-ghost al-save" style="padding:2px 8px;font-size:12px">save</button>
+            <button class="btn-ghost btn-danger al-del" style="padding:2px 8px;font-size:12px">×</button></td>
+      </tr>`).join('')}</tbody></table></div>
+    <span class="sub" id="al-edit-status"></span>`;
+  $$('#alerts-list tr[data-aid]').forEach(tr => {
+    const aid = tr.dataset.aid, kind = tr.dataset.kind;
+    $('.al-save', tr).onclick = async () => {
+      const body = { enabled: $('.al-en', tr).checked,
+                     recipient_id: $('.al-rec', tr).value ? Number($('.al-rec', tr).value) : null };
+      const thr = parseFloat($('.al-thr', tr).value);
+      if (kind === 'bin_new') body.min_discount = thr; else body.target_price = thr;
+      const res = await fetch(`/api/alerts/${aid}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body) });
+      const d = await res.json();
+      $('#al-edit-status').textContent = d.status === 'ok' ? 'saved ✓' : (d.message || 'error');
+    };
+    $('.al-del', tr).onclick = async () => {
+      if (!confirm('Delete this alert?')) return;
+      await fetch(`/api/alerts/${aid}`, { method: 'DELETE' });
+      loadAlerts();
+    };
   });
 }
 

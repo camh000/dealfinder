@@ -581,6 +581,20 @@ def ensure_auth_tables():
             )
         """)
         conn.commit()
+        # BIN-watch alerts (kind='bin_new') carry a min-discount %, not a price,
+        # and store their /bin filter set in GroupParams — so TargetPrice must
+        # allow NULL and a MinDiscount column is added.
+        try:
+            cur.execute("ALTER TABLE Scraper.PriceAlerts ADD COLUMN MinDiscount FLOAT NULL")
+            conn.commit()
+        except mariadb.Error as e:
+            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                log.error("PriceAlerts: MinDiscount column: %s", e)
+        try:
+            cur.execute("ALTER TABLE Scraper.PriceAlerts MODIFY TargetPrice INT NULL")
+            conn.commit()
+        except mariadb.Error as e:
+            log.error("PriceAlerts: relax TargetPrice: %s", e)
     except Exception as e:
         log.error("Could not ensure auth tables: %s", e)
     finally:
@@ -841,7 +855,7 @@ def alerts_list():
         cur = conn.cursor(dictionary=True)
         cur.execute("""
             SELECT a.ID, a.Category, a.GroupParams, a.Label, a.Kind,
-                   ROUND(a.TargetPrice / 100, 2) AS TargetPrice, a.Enabled,
+                   ROUND(a.TargetPrice / 100, 2) AS TargetPrice, a.MinDiscount, a.Enabled,
                    a.LastFiredAt, a.RecipientID, r.Name AS RecipientName
             FROM Scraper.PriceAlerts a
             LEFT JOIN Scraper.NotifyRecipients r ON r.ID = a.RecipientID
@@ -861,6 +875,36 @@ def alerts_list():
             conn.close()
 
 
+_ALERT_KINDS = ('listing_below', 'median_below', 'bin_new')
+
+
+def _alert_fields(body):
+    """Validate an alert create/edit body → (kind, group_json, target, min_disc,
+    error_response|None). Model alerts (listing/median) carry a target price;
+    BIN watches (bin_new) carry a min-discount % and a /bin filter set."""
+    kind = body.get('kind') if body.get('kind') in _ALERT_KINDS else 'listing_below'
+    if kind == 'bin_new':
+        filters = body.get('filters') or body.get('group') or {}
+        if not isinstance(filters, dict):
+            return None, None, None, None, ("filters must be an object", 400)
+        try:
+            md = float(body.get('min_discount'))
+            if not 1 <= md <= 90:
+                raise ValueError
+        except (TypeError, ValueError):
+            return None, None, None, None, ("min_discount must be 1–90", 400)
+        return kind, json.dumps(filters), None, md, None
+    # model-page price alert
+    group = body.get('group') or {}
+    try:
+        target = int(round(float(body.get('target_price')) * 100))
+        if target <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return None, None, None, None, ("target_price must be a positive number", 400)
+    return kind, json.dumps(group), target, None, None
+
+
 @app.route('/api/alerts', methods=['POST'])
 def alerts_create():
     u = _current_user()
@@ -870,28 +914,80 @@ def alerts_create():
     cat = (body.get('category') or '').lower()
     if cat not in queries.CATEGORIES:
         return jsonify({"status": "error", "message": "unknown category"}), 400
-    group = body.get('group') or {}
-    kind = body.get('kind') if body.get('kind') in ('listing_below', 'median_below') else 'listing_below'
-    try:
-        target = int(round(float(body.get('target_price')) * 100))
-        if target <= 0:
-            raise ValueError
-    except (TypeError, ValueError):
-        return jsonify({"status": "error", "message": "target_price must be a positive number"}), 400
+    kind, group_json, target, min_disc, err = _alert_fields(body)
+    if err:
+        return jsonify({"status": "error", "message": err[0]}), err[1]
+    label = (body.get('label') or '')[:150]
+    if kind == 'bin_new' and not label:
+        label = queries.bin_watch_label(cat, json.loads(group_json))[:150]
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO Scraper.PriceAlerts (UserID, Category, GroupParams, Label, Kind, TargetPrice, RecipientID)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (u["id"] if u else 0, cat, json.dumps(group),
-              (body.get('label') or '')[:150], kind, target,
+            INSERT INTO Scraper.PriceAlerts
+                (UserID, Category, GroupParams, Label, Kind, TargetPrice, MinDiscount, RecipientID)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (u["id"] if u else 0, cat, group_json,
+              label, kind, target, min_disc,
               body.get('recipient_id') or None))
         conn.commit()
         return jsonify({"status": "ok"})
     except Exception as e:
         log.error("alerts_create error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/alerts/<int:aid>', methods=['PATCH'])
+def alerts_edit(aid):
+    """Edit an existing alert (any kind): recipient, enabled, and the threshold
+    (target price or min discount, by kind). Owner-scoped."""
+    u = _current_user()
+    if not u and _users_exist():
+        return jsonify({"status": "error", "message": "login required"}), 401
+    body = request.get_json(silent=True) or {}
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT Kind FROM Scraper.PriceAlerts WHERE ID = %s AND UserID = %s",
+                    (aid, u["id"] if u else 0))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"status": "error", "message": "not found"}), 404
+        sets, vals = [], []
+        if 'enabled' in body:
+            sets.append("Enabled = %s"); vals.append(1 if body['enabled'] else 0)
+        if 'recipient_id' in body:
+            sets.append("RecipientID = %s"); vals.append(body['recipient_id'] or None)
+        if row['Kind'] == 'bin_new' and body.get('min_discount') is not None:
+            try:
+                md = float(body['min_discount'])
+                if not 1 <= md <= 90:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return jsonify({"status": "error", "message": "min_discount must be 1–90"}), 400
+            sets.append("MinDiscount = %s"); vals.append(md)
+        if row['Kind'] != 'bin_new' and body.get('target_price') is not None:
+            try:
+                tp = int(round(float(body['target_price']) * 100))
+                if tp <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return jsonify({"status": "error", "message": "target_price must be positive"}), 400
+            sets.append("TargetPrice = %s"); vals.append(tp)
+        if not sets:
+            return jsonify({"status": "ok"})   # nothing to change
+        wcur = conn.cursor()
+        wcur.execute(f"UPDATE Scraper.PriceAlerts SET {', '.join(sets)} WHERE ID = %s AND UserID = %s",
+                     (*vals, aid, u["id"] if u else 0))
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        log.error("alerts_edit error: %s", e)
         return jsonify({"status": "error", "message": "internal error"}), 500
     finally:
         if conn:

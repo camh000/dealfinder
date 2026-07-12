@@ -509,6 +509,76 @@ def filter_predicted_deals(rows: list) -> list:
             if r.get('PredictedDiscountPct') is None or r['PredictedDiscountPct'] > 0]
 
 
+# ── /bin context filters (shared by the browse page + BIN-watch alerts) ──
+# The canonical Python mirror of CTX_FILTERS in common.js. A "BIN watch" alert
+# stores one of these filter sets; the scraper matches new BIN finds against it
+# to decide who to notify. Keep the two in sync when adding a filter.
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+_CTX_FILTER_MATCHERS = {
+    'gpu': {
+        'series': lambda r, v: str(r.get('Model') or '').upper().startswith(str(v).upper()),
+    },
+    'cpu': {
+        'family': lambda r, v: str(v).lower() in str(r.get('Model') or '').lower(),
+    },
+    'hdd': {
+        'iface': lambda r, v: (r.get('Interface') or 'SATA') == v,
+        'type': lambda r, v: (r.get('DriveType') or 'Internal') == v,
+        'mincap': lambda r, v: (_num(r.get('CapacityGB')) or 0) >= (_num(v) or 0),
+    },
+    'ssd': {
+        'iface': lambda r, v: (r.get('Interface') or '') == v,
+        'mincap': lambda r, v: (_num(r.get('CapacityGB')) or 0) >= (_num(v) or 0),
+    },
+    'ram': {
+        'type': lambda r, v: (r.get('Type') or '') == v,
+        'ff': lambda r, v: (r.get('FormFactor') or 'DIMM') == v,
+        'kit': lambda r, v: (not r.get('KitConfig')) if v == '?'
+        else str(r.get('KitConfig') or '').lower().startswith(str(v).lower()),
+        'mincap': lambda r, v: (_num(r.get('CapacityGB')) or 0) >= (_num(v) or 0),
+    },
+}
+
+
+def ctx_filter_match(product_type: str, filters: dict, row: dict) -> bool:
+    """Does a BIN find (row with the category's attribute columns) satisfy a
+    saved /bin filter set? Empty/absent filter values are 'any'."""
+    matchers = _CTX_FILTER_MATCHERS.get((product_type or '').lower(), {})
+    for key, val in (filters or {}).items():
+        if val in (None, ''):
+            continue
+        fn = matchers.get(key)
+        if fn and not fn(row, val):
+            return False
+    return True
+
+
+def bin_watch_label(product_type: str, filters: dict) -> str:
+    """Short human summary of a BIN-watch's filter set for the alerts list."""
+    parts = [product_type.upper()]
+    labels = {
+        'series': lambda v: v, 'family': lambda v: v,
+        'iface': lambda v: v, 'type': lambda v: v,
+        'ff': lambda v: v, 'type_ram': lambda v: v,
+        'kit': lambda v: 'single' if v == '1x' else 'unstated' if v == '?' else f'{v} kit',
+        'mincap': lambda v: (f"{int(_num(v) / 1000)}TB+" if (_num(v) or 0) >= 1000
+                             else f"{int(_num(v) or 0)}GB+"),
+    }
+    for k, v in (filters or {}).items():
+        if v in (None, ''):
+            continue
+        fn = labels.get(k)
+        parts.append(fn(v) if fn else str(v))
+    return ' · '.join(parts) if len(parts) > 1 else f"{product_type.upper()} (all)"
+
+
 def model_label_for_row(product_type: str, row: dict) -> str:
     """Human label stored in DealOutcomes.Model for a surfaced deal row.
     Multi-unit lots get a ×N suffix (e.g. '4TB SAS ×5')."""

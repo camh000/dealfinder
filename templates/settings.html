@@ -53,9 +53,10 @@
 </div>
 
 <div class="card" id="alerts-card" style="display:none">
-  <h2>Your price alerts</h2>
-  <p class="help">Created from any model page ("Alert me"). Checked after every scrape;
-    each alert fires at most once per cooldown, to the Home Assistant recipient you picked.</p>
+  <h2>Your alerts &amp; watches</h2>
+  <p class="help">Price alerts from a model page ("Alert me") and BIN watches from the
+    Buy&nbsp;It&nbsp;Now page ("Watch this"), all in one place. Edit the threshold, recipient
+    or on/off inline; each pushes to the Home&nbsp;Assistant recipient you picked.</p>
   <div id="alerts-list"><div class="state" style="padding:10px">loading…</div></div>
 </div>
 
@@ -75,26 +76,19 @@
 
 <div class="card" id="bin-card" style="display:none">
   <h2>BIN watcher <span class="sub" style="font-weight:400">(admin)</span></h2>
-  <p class="help">Sweeps newly-listed Buy-It-Now items between full scrapes and pushes finds
-    immediately — no prediction gate, since a fixed price can't be bid up. Changes apply
-    within a minute, no restart needed. <b>Which hardware types each person gets is set per
-    recipient</b> — the category ticks in Deal notifications below apply to BIN finds too.</p>
+  <p class="help">The scraper sweeps newly-listed Buy-It-Now items between full scrapes.
+    <b>You choose what gets pushed by creating watches on the
+    <a href="/bin">Buy&nbsp;It&nbsp;Now page</a></b> — browse with the filters you want, hit
+    "Watch this", and matching finds notify your recipient. These admin settings just control
+    the sweep itself (below); changes apply within a minute, no restart.</p>
   <div class="form-grid">
     <div class="fg"><label>Scan every (minutes, 5–240)</label>
       <input type="number" id="bin-scan" min="5" max="240" step="5"></div>
-    <div class="fg"><label>Min discount to notify (%, 5–90)</label>
+    <div class="fg"><label>Surface finds from (% under market, 5–90)</label>
       <input type="number" id="bin-disc" min="5" max="90" step="1"></div>
   </div>
-  <p class="help" style="margin-top:12px">Model filters — narrow WITHIN a type: a find only
-    pushes when its model contains one of these comma-separated terms (applies to everyone,
-    on top of the per-recipient category ticks). Blank = everything in that type.</p>
-  <div class="form-grid" id="bin-filters">
-    <div class="fg"><label>GPU</label><input type="text" data-bin-filter="gpu" placeholder="e.g. RTX 30, RTX 40, Arc"></div>
-    <div class="fg"><label>CPU</label><input type="text" data-bin-filter="cpu" placeholder="e.g. i7, Ryzen 7, Xeon"></div>
-    <div class="fg"><label>HDD</label><input type="text" data-bin-filter="hdd" placeholder="e.g. 6TB, 8TB, 10TB"></div>
-    <div class="fg"><label>SSD</label><input type="text" data-bin-filter="ssd" placeholder="e.g. 1TB NVMe, 2TB"></div>
-    <div class="fg"><label>RAM</label><input type="text" data-bin-filter="ram" placeholder="e.g. DDR4, 32GB DDR5"></div>
-  </div>
+  <p class="help" style="margin-top:6px">The discovery floor: the sweep only looks at finds
+    this far under market, so a watch's threshold can't go below it.</p>
   <div class="check-row">
     <label><input type="checkbox" id="bin-enabled"> Enabled</label>
     <button class="btn" id="bin-save">Save</button>

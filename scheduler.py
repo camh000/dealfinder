@@ -21,7 +21,9 @@ _LOCAL_TZ = ZoneInfo(os.environ.get('TZ', 'Europe/London'))
 
 # Add parent dir to path so EbayScraper is importable
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import json
 import EbayScraper
+import queries
 
 logging.basicConfig(
     level=logging.INFO,
@@ -260,41 +262,47 @@ BIN_SCAM_DISCOUNT = float(os.environ.get('BIN_SCAM_DISCOUNT', '60'))
 
 
 def notify_bin_finds(finds: list) -> None:
-    """Push notifications for new Buy-It-Now bargains — immediately and
-    ungated: no bidding means no prediction, the listed price is final and
-    the first person to click buy wins."""
+    """Push new Buy-It-Now bargains to the BIN WATCHES that want them. A watch
+    (a 'bin_new' alert saved from the /bin page) is a category + filter set +
+    min-discount + recipient; a find notifies each watch it matches, once per
+    recipient. No watches → no BIN pushes (browse /bin instead)."""
     if not finds:
         return
     finds = [f for f in finds if float(f.get('DiscountPct') or 0) < BIN_SCAM_DISCOUNT]
     if not finds:
         return
-    recipients = EbayScraper.GetNotifyRecipients()
-    if not recipients:
+    watches = EbayScraper.GetBinWatches()
+    if not watches:
         return
-    filters = EbayScraper.GetBinConfig().get('filters') or {}
     for row in finds:
-        category = (row.get('_category') or '').upper()
-        # Model filter from the BIN watcher settings — e.g. HDD "6TB, 8TB,
-        # 10TB" silences every other capacity. Finds are still recorded in
-        # BinNotified either way (a filter change must not replay old finds).
-        if not EbayScraper.bin_find_passes_filters(row.get('_label'), category, filters):
-            log.info("BIN find %s (%s) silenced by model filter", row.get('ID'), row.get('_label'))
-            continue
-        for r in recipients:
-            cats = [c.strip().upper() for c in (r.get('Categories') or '').split(',') if c.strip()]
-            if category not in cats:
+        cat = (row.get('_category') or '').lower()
+        disc = float(row.get('DiscountPct') or 0)
+        pushed_to = set()   # dedupe: one push per recipient per find
+        for w in watches:
+            if (w['Category'] or '').lower() != cat:
                 continue
+            if disc < float(w['MinDiscount'] or 0):
+                continue
+            try:
+                filters = json.loads(w['GroupParams'] or '{}')
+            except ValueError:
+                continue
+            if not queries.ctx_filter_match(cat, filters, row):
+                continue
+            svc = w['NotifyService']
+            if svc in pushed_to:
+                continue
+            pushed_to.add(svc)
             try:
                 label = row.get('_label') or 'find'
                 price = float(row.get('CurrentPrice'))
                 avg = float(row.get('AvgMarketPrice'))
-                disc = float(row.get('DiscountPct'))
                 qty = int(row.get('Quantity') or 1)
                 message = f"Market avg £{avg:.2f}" + (f" × {qty} units" if qty > 1 else '')
                 message += " · fixed price — first to buy wins"
                 requests.post(
-                    f"{r['HaUrl'].rstrip('/')}/api/services/notify/{r['NotifyService']}",
-                    headers={"Authorization": f"Bearer {r['HaToken']}"},
+                    f"{w['HaUrl'].rstrip('/')}/api/services/notify/{svc}",
+                    headers={"Authorization": f"Bearer {w['HaToken']}"},
                     json={
                         "title": f"BIN: {label} £{price:.2f} ({disc:.0f}% off)",
                         "message": message,
@@ -305,7 +313,7 @@ def notify_bin_finds(finds: list) -> None:
                 )
             except Exception as e:
                 log.warning("BIN notification to %s failed for %s: %s",
-                            r.get('Name'), row.get('ID'), e)
+                            w.get('RName'), row.get('ID'), e)
 
 
 def run_bin_scan(min_discount: float):

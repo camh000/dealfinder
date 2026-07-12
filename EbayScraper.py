@@ -2925,6 +2925,33 @@ def GetNotifyRecipients() -> list[dict]:
         return []
 
 
+def GetBinWatches() -> list[dict]:
+    """Active BIN-watch alerts (kind='bin_new') with their recipient's HA
+    config joined in. A watch = a saved /bin search (category + filter set +
+    min discount) that pushes matching new fixed-price finds to one recipient.
+    INNER JOIN on the recipient drops watches whose recipient was deleted or
+    disabled. [] on any error (never breaks the sweep)."""
+    try:
+        conn = _get_connection()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("""
+                SELECT a.ID, a.Category, a.GroupParams, a.MinDiscount,
+                       r.Name AS RName, r.HaUrl, r.HaToken, r.NotifyService
+                FROM Scraper.PriceAlerts a
+                JOIN Scraper.NotifyRecipients r ON r.ID = a.RecipientID
+                WHERE a.Kind = 'bin_new' AND a.Enabled = 1 AND r.Enabled = 1
+            """)
+            return cur.fetchall()
+        except mariadb.Error:
+            return []   # PriceAlerts may not exist on the scraper's first boot
+        finally:
+            conn.close()
+    except Exception as e:
+        log.error("GetBinWatches failed: %s", e)
+        return []
+
+
 def EnsureListingType() -> None:
     """EBAY.ListingType ('auction' | 'bin'). The BIN watcher needs fixed-price
     rows scoreable separately: no bids, usually no end time, and the listed

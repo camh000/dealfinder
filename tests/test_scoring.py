@@ -353,6 +353,45 @@ class TestAlertListingRelevance:
         assert ok and predicted == 44.0
 
 
+class TestCtxFilterMatch:
+    """The /bin context filters, matched in Python for BIN-watch alerts —
+    must agree with CTX_FILTERS in common.js (browse) so a watch fires on
+    exactly the finds the user saw when they clicked 'Watch this'."""
+
+    def test_gpu_series(self):
+        row = {'Model': 'RTX 3060 12GB'}
+        assert queries.ctx_filter_match('gpu', {'series': 'RTX'}, row)
+        assert not queries.ctx_filter_match('gpu', {'series': 'GTX'}, row)
+
+    def test_hdd_iface_type_mincap(self):
+        row = {'Interface': 'SAS', 'DriveType': 'Internal', 'CapacityGB': 8000}
+        assert queries.ctx_filter_match('hdd', {'iface': 'SAS', 'mincap': '4000'}, row)
+        assert not queries.ctx_filter_match('hdd', {'iface': 'SATA'}, row)
+        assert not queries.ctx_filter_match('hdd', {'mincap': '12000'}, row)
+        # defaults: a NULL interface reads as SATA, NULL drivetype as Internal
+        assert queries.ctx_filter_match('hdd', {'iface': 'SATA', 'type': 'Internal'},
+                                        {'Interface': None, 'DriveType': None, 'CapacityGB': 2000})
+
+    def test_ram_type_kit_mincap(self):
+        row = {'Type': 'DDR5', 'FormFactor': 'DIMM', 'KitConfig': '2x16GB', 'CapacityGB': 32}
+        assert queries.ctx_filter_match('ram', {'type': 'DDR5', 'kit': '2x', 'mincap': '32'}, row)
+        assert not queries.ctx_filter_match('ram', {'type': 'DDR4'}, row)
+        assert not queries.ctx_filter_match('ram', {'kit': '4x'}, row)
+        # '?' matches unstated kit only
+        assert queries.ctx_filter_match('ram', {'kit': '?'}, {'KitConfig': None})
+        assert not queries.ctx_filter_match('ram', {'kit': '?'}, {'KitConfig': '2x8GB'})
+
+    def test_empty_filter_matches_all(self):
+        assert queries.ctx_filter_match('gpu', {}, {'Model': 'GTX 1650'})
+        assert queries.ctx_filter_match('gpu', {'series': ''}, {'Model': 'GTX 1650'})
+
+    def test_watch_label_summary(self):
+        assert 'GPU' in queries.bin_watch_label('gpu', {'series': 'RTX'})
+        lbl = queries.bin_watch_label('hdd', {'iface': 'SAS', 'mincap': '8000'})
+        assert 'SAS' in lbl and '8TB+' in lbl
+        assert queries.bin_watch_label('cpu', {}) == 'CPU (all)'
+
+
 class TestBinFindFilters:
     """BIN watcher model filters: comma-separated terms per category,
     matched case-insensitively against the find's model label."""

@@ -143,6 +143,30 @@ def test_bin_settings_post_requires_admin(app_module, monkeypatch):
     assert resp.status_code == 403
 
 
+def test_alert_fields_bin_new(app_module):
+    """A BIN watch carries a filter set + min-discount %, not a price."""
+    kind, group, target, md, err = app_module._alert_fields(
+        {'kind': 'bin_new', 'filters': {'series': 'RTX'}, 'min_discount': 25})
+    assert err is None and kind == 'bin_new'
+    assert target is None and md == 25.0
+    import json as _j
+    assert _j.loads(group) == {'series': 'RTX'}
+    # out-of-range discount rejected
+    _, _, _, _, err = app_module._alert_fields(
+        {'kind': 'bin_new', 'filters': {}, 'min_discount': 200})
+    assert err and err[1] == 400
+
+
+def test_alert_fields_price_alert(app_module):
+    kind, group, target, md, err = app_module._alert_fields(
+        {'kind': 'listing_below', 'group': {'Model': 'RTX 3060 12GB'}, 'target_price': 180})
+    assert err is None and kind == 'listing_below'
+    assert target == 18000 and md is None
+    _, _, _, _, err = app_module._alert_fields(
+        {'kind': 'listing_below', 'group': {}, 'target_price': -5})
+    assert err and err[1] == 400
+
+
 def test_bin_settings_post_validates_ranges(app_module):
     client = app_module.app.test_client()   # bootstrap: admin check open
     for body in ({"scan_minutes": 2, "min_discount": 30, "enabled": True},
