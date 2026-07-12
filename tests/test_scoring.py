@@ -596,6 +596,25 @@ class TestXeonParsing:
         assert _parse_one("Dell PowerEdge R730 2x Xeon E5-2680 V4 64GB Server", "CPU") is None
         assert _parse_one("HP ProLiant DL380 Gen9 Xeon E5-2650", "CPU") is None
 
+    @pytest.mark.parametrize("title", [
+        # server/workstation chassis the audit found leaking into CPU as Xeons
+        "Dell R450 2x Xeon Silver 4314 2.4GHz 128GB RAM 8SFF Bay H755 RAID",
+        "Server Dell R660 8x2.5\" 2x Gold 5416S 64GB H355 4x7.68TB",
+        "Fujitsu Primergy RX2540 M1 2x Xeon E5-2600v3 24x DDR4 2U CTO Server",
+        "HP XW6600 Workstation - 2x Xeon E5430 16GB 480GB SSD Quadro 2000",
+        "DELL Server VxRail E560 2x Xeon Silver 4110 32GB DDR4",
+        "HPE DL360 Gen10 2x Xeon Gold 6130",
+    ])
+    def test_server_chassis_skipped_from_cpu(self, title):
+        assert _parse_one(title, "CPU") is None, f"server parsed as a CPU: {title}"
+
+    def test_xeon_for_server_lots_survive(self):
+        """'...for Server and Networking' is how legit Xeon lots describe
+        themselves — the chassis-model tell must not catch them."""
+        item = _parse_one("15x Intel Xeon Gold 6132 SR3J3 CPU Hardware for Server and Networking", "CPU")
+        assert item is not None and item['quantity'] == 15
+        assert item['model'] == "Xeon Gold 6132"
+
     def test_cpu_motherboard_ram_combo_skipped(self):
         assert _parse_one("Intel Xeon E5-2680 V4 + X99 Motherboard + 32GB DDR4 RAM Combo", "CPU") is None
 

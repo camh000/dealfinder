@@ -841,7 +841,15 @@ def __ParseItems(soup, query, productType):
                                         'compact pc', 'prebuilt', 'pre-built',
                                         'desktop computer', 'gaming rig', 'gaming setup',
                                         'poweredge', 'proliant', 'supermicro', 'thinkserver',
-                                        'rack server', 'tower server', 'server bundle'])
+                                        'thinksystem', 'primergy', 'vxrail',
+                                        'idrac', 'rack server', 'tower server', 'server bundle'])
+                # server/workstation CHASSIS models (Dell R450/R660, HP Z/XW,
+                # HPE DL/ML) — the audit found these leaking in as their Xeon.
+                # NB model tells only, never bare "workstation"/"for Server" —
+                # a "Xeon W-2145 Workstation CPU" is a CPU, and legit Xeon lots
+                # say "Xeon ... for Server and Networking".
+                or bool(re.search(r'\bdell\s+r\d{2,3}\b|\br[2-9]\d0\b|\bhp[e]?\s+z\d{3}\b|'
+                                  r'\bxw\d{3,4}\b|\b[dm]l\d{2,3}\b', _tl))
                 or (bool(re.search(r'\d+\s*gb\s*(ddr\d?|ram)', _tl))
                     and bool(re.search(r'\d+\s*(tb|gb)\s*(ssd|nvme|hdd|m\.2)', _tl)))
                 or (('motherboard' in _tl or ' mobo' in _tl)
@@ -3213,7 +3221,7 @@ def _audit_card_html(ebay_id, title, price_pence):
 
 
 def audit_data_quality(outlier_ratio: float = 2.5, min_group: int = 5,
-                       cap: int = 25) -> dict:
+                       min_median: float = 10.0, cap: int = 25) -> dict:
     """Read-only self-check: catch classification/lot pollution BEFORE it skews
     a median. Two nets:
 
@@ -3280,7 +3288,10 @@ def audit_data_quality(outlier_ratio: float = 2.5, min_group: int = 5,
             groups = cur.fetchall()
             for g in groups:
                 med = float(g['MedPrice'] or 0)
-                if med <= 0:
+                # a broken-LOW median (pennies from cheap junk) makes every
+                # real item look like a high outlier — skip those groups so
+                # the net only fires on genuine high pollution in a sane group
+                if med < min_median:
                     continue
                 params = {c: g[c] for c, _ in cfg['group_cols']}
                 cond, vals = queries.model_where(cat, {k: ('' if v is None else v)
