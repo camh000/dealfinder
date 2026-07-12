@@ -608,6 +608,20 @@ class TestXeonParsing:
     def test_server_chassis_skipped_from_cpu(self, title):
         assert _parse_one(title, "CPU") is None, f"server parsed as a CPU: {title}"
 
+    @pytest.mark.parametrize("title", [
+        # prebuilts naming a discrete GPU, found in CPU by the audit
+        "Acer Nitro N50-640 PC Intel Core I5-12400F, 32 GB RAM NVIDIA GeForce RTX 3060",
+        "Intel Core i5-8400 NVIDIA GeForce GTX 1060 16GB / 240GB PC",
+        "Custom PC Ryzen 5 5600 RX 6600 16GB",
+    ])
+    def test_cpu_prebuilts_with_gpu_skipped(self, title):
+        assert _parse_one(title, "CPU") is None, f"prebuilt parsed as a CPU: {title}"
+
+    def test_apu_cpus_survive(self):
+        """An APU's integrated 'Radeon Vega' graphics is NOT a discrete card."""
+        assert _parse_one("AMD Ryzen 5 5600G with Radeon Vega Graphics CPU", "CPU") is not None
+        assert _parse_one("Intel Core i5-12400 6-Core LGA1700 CPU", "CPU") is not None
+
     def test_xeon_for_server_lots_survive(self):
         """'...for Server and Networking' is how legit Xeon lots describe
         themselves — the chassis-model tell must not catch them."""

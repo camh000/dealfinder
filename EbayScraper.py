@@ -866,6 +866,12 @@ def __ParseItems(soup, query, productType):
                 # a "Xeon W-2145 Workstation CPU" is a CPU, and legit Xeon lots
                 # say "Xeon ... for Server and Networking".
                 or bool(_SERVER_CHASSIS_RE.search(title))
+                # a bare CPU never names a DISCRETE graphics card — an
+                # "i5-12400F ... RTX 3060 PC" is a prebuilt (the audit found
+                # these). RTX/GTX/GeForce/Quadro/RX-4-digit only, so an APU's
+                # "Radeon Vega Graphics" stays a legit CPU.
+                or bool(re.search(r'\brtx\b|\bgtx\b|\bgeforce\b|\bquadro\b|'
+                                  r'\brx\s?[5-9]\d00\b', _tl))
                 or (bool(re.search(r'\d+\s*gb\s*(ddr\d?|ram)', _tl))
                     and bool(re.search(r'\d+\s*(tb|gb)\s*(ssd|nvme|hdd|m\.2)', _tl)))
                 or (('motherboard' in _tl or ' mobo' in _tl)
