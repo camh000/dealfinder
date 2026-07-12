@@ -1447,11 +1447,21 @@ def api_insights_nearmiss():
             }
 
         nm_rows = [r for r in raw if r['NearMiss']]
-        main_rows = [r for r in raw if not r['NearMiss']]
+        # Like-for-like baseline: the near-miss cohort only exists from when the
+        # experiment started, so the main feed must be measured over the SAME
+        # window. The all-time average predates recent model improvements, reads
+        # ~6 points below the recent main feed (disagreeing with the Outcomes
+        # scoreboard), and understates the gap enough to flip the verdict.
+        nm_start = min((r['SurfacedAt'] for r in nm_rows if r['SurfacedAt']), default=None)
+
+        def in_window(r):
+            return nm_start is None or (r['SurfacedAt'] and r['SurfacedAt'] >= nm_start)
+
+        main_rows = [r for r in raw if not r['NearMiss'] and in_window(r)]
 
         bands = []
         for lo, hi in _NM_BANDS:
-            in_band = [r for r in raw if r['DiscountPct'] is not None
+            in_band = [r for r in raw if in_window(r) and r['DiscountPct'] is not None
                        and lo <= float(r['DiscountPct']) < hi]
             done = [(r, resolved_win(r)) for r in in_band]
             done = [(r, w) for r, w in done if w is not None]
@@ -1486,6 +1496,7 @@ def api_insights_nearmiss():
             "main": cohort(main_rows),
             "bands": bands,
             "target_n": _NM_TARGET_N,
+            "window_start": _iso_utc(nm_start),
             "rows": recent,
         })
     except Exception as e:

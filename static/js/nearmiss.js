@@ -55,7 +55,7 @@ function verdictText(nm, main, target) {
   }
   return `<p class="help" style="font-size:14px;margin:0">
     Near-misses win <b>${nm.win_rate}%</b> of the time (95% CI ${nm.wr_ci[0]}–${nm.wr_ci[1]}%, n=${nm.resolved})
-    against the main feed's <b>${main.win_rate}%</b> (CI ${main.wr_ci[0]}–${main.wr_ci[1]}%, n=${main.resolved})${
+    against the main feed <b>over the same period</b>'s <b>${main.win_rate}%</b> (CI ${main.wr_ci[0]}–${main.wr_ci[1]}%, n=${main.resolved})${
     gap != null ? ` — a ${gap}-point gap` : ''}.<br><br>${call}</p>`;
 }
 
@@ -73,8 +73,8 @@ function verdictText(nm, main, target) {
       cell(nm.resolved, 'resolved'),
       nm.win_rate != null ? cell(`${nm.win_rate}%`, 'near-miss win rate', '',
         `95% CI ${nm.wr_ci[0]}–${nm.wr_ci[1]}%`) : '',
-      main.win_rate != null ? cell(`${main.win_rate}%`, 'main feed win rate', 'good',
-        `95% CI ${main.wr_ci[0]}–${main.wr_ci[1]}% (n=${main.resolved})`) : '',
+      main.win_rate != null ? cell(`${main.win_rate}%`, 'main feed WR (same period)', 'good',
+        `Main feed measured over the same window as the near-misses, for a like-for-like comparison. 95% CI ${main.wr_ci[0]}–${main.wr_ci[1]}% (n=${main.resolved})`) : '',
       cell(nm.pending, 'pending'),
       nm.median_actual_discount != null
         ? cell(`${nm.median_actual_discount}%`, 'median close vs market', '',
