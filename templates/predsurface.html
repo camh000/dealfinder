@@ -13,11 +13,12 @@
 <div class="card">
   <p class="help" style="margin:0">
     Today a listing is surfaced when its <b>current price</b> is ≥20% under median. This experiment
-    asks the other question: among the deals below that bar, the model flags the ones it
-    <b>predicts will still close ≥10% under median</b> (using the outcome-calibrated snipe premium,
-    not the current price). Those are recorded but never notified. If they win about as often as the
-    live feed — and beat the sub-threshold deals the model <em>didn't</em> flag — then the prediction
-    model discriminates well enough to surface deals on predicted margin.
+    asks the other question: forget the current discount — the model flags every deal it
+    <b>predicts will close ≥10% under median</b> (using the outcome-calibrated snipe premium, not the
+    current price). Those are recorded but never notified. If they win clearly more often than the
+    deals the model predicts <em>below</em> that margin — the set this rule would skip — then the
+    prediction discriminates winners from losers well enough to surface deals on predicted margin
+    alone. The live feed over the same window is shown for reference.
   </p>
 </div>
 

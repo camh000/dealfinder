@@ -1587,19 +1587,20 @@ def insights_predsurface_page():
 
 @app.route('/api/insights/predsurface')
 def api_insights_predsurface():
-    """Prediction-surfacing experiment: could we surface deals on PREDICTED
-    margin instead of current discount? PredMargin rows are sub-threshold deals
-    (not in the live feed) the model predicted would still close >=10% under
-    median. We compare their resolved win rate to the live feed AND to the
-    sub-threshold deals the model did NOT flag (the ones we'd leave behind) —
-    over the same window. If PredMargin ~ the feed and beats the skipped set,
-    the model discriminates well enough to drive surfacing."""
+    """Prediction-surfacing experiment: could we surface purely on PREDICTED
+    margin? PredMargin rows are deals (any current discount) the model — with
+    real premium history — predicts will close >= PRED_SURFACE_MARGIN under
+    median: the set the rule "surface predicted >= X% under median" would
+    surface. We compare their resolved win rate to the deals the model DID
+    predict but at < that margin (the set the rule would skip) — if the flagged
+    set wins clearly more, the prediction separates winners from losers well
+    enough to drive surfacing. The live feed is shown for reference."""
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
         cur.execute("""
-            SELECT d.NearMiss, d.PredMargin, d.EndedUnsold, d.GaveUp,
+            SELECT d.NearMiss, d.PredMargin, d.PredictedFinal, d.EndedUnsold, d.GaveUp,
                    ROUND(COALESCE(d.FinalPrice, e.Price) / 100, 2) AS FinalPrice,
                    ROUND(d.AvgMarketPrice / 100, 2)                AS AvgMarketPrice,
                    d.Category, d.Model, d.DiscountPct,
@@ -1635,8 +1636,11 @@ def api_insights_predsurface():
         # Same-window comparison (the cohort only exists from when it started).
         start = min((r['SurfacedAt'] for r in pred_rows if r['SurfacedAt']), default=None)
         in_win = lambda r: start is None or (r['SurfacedAt'] and r['SurfacedAt'] >= start)
+        # The rule would SKIP these: the model made a prediction (PredictedFinal
+        # set) but below the margin. The direct control for the flagged set.
+        skipped_rows = [r for r in raw if r['PredictedFinal'] is not None
+                        and not r['PredMargin'] and in_win(r)]
         main_rows = [r for r in raw if not r['NearMiss'] and in_win(r)]
-        skipped_rows = [r for r in raw if r['NearMiss'] and not r['PredMargin'] and in_win(r)]
 
         recent = []
         for r in pred_rows[:100]:
@@ -1651,9 +1655,9 @@ def api_insights_predsurface():
 
         return jsonify({
             "status": "ok",
-            "pred": cohort(pred_rows),          # model-flagged sub-threshold deals
-            "main": cohort(main_rows),          # the live feed (same window)
-            "skipped": cohort(skipped_rows),    # sub-threshold deals the model didn't flag
+            "pred": cohort(pred_rows),          # predicted >= margin under median (rule surfaces)
+            "main": cohort(main_rows),          # the live feed, same window (reference)
+            "skipped": cohort(skipped_rows),    # predicted below margin (rule skips)
             "margin": _PRED_SURFACE_MARGIN,
             "target_n": _NM_TARGET_N,
             "window_start": _iso_utc(start),

@@ -1,38 +1,36 @@
-/* Prediction-surfacing experiment: do the sub-threshold deals the model
-   predicts will close >= margin under median actually win — like the live
-   feed, and better than the deals the model passed over? */
+/* Prediction-surfacing experiment: do the deals the model predicts will close
+   >= margin under median actually win clearly more than the deals it predicts
+   below that margin? If so, predicted margin alone can drive surfacing. */
 
 const overlaps = (a, b) => a.wr_ci[0] <= b.wr_ci[1] && b.wr_ci[0] <= a.wr_ci[1];
 
-function verdictText(pred, main, skipped, target, margin) {
-  if (!pred.resolved) return 'No model-flagged deals have resolved yet — nothing to judge.';
-  const line = (c, n) => c.win_rate != null
+function verdictText(pred, skipped, main, target, margin) {
+  if (!pred.resolved) return `No deals predicted ≥${margin}% under median have resolved yet — nothing to judge.`;
+  const line = c => c.win_rate != null
     ? `<b>${c.win_rate}%</b> (95% CI ${c.wr_ci[0]}–${c.wr_ci[1]}%, n=${c.resolved})`
     : `— (n=${c.resolved})`;
   let call;
   if (pred.resolved < target) {
-    call = `<b>Too early to call.</b> Judgement day is ~${target} resolved model-flagged deals
+    call = `<b>Too early to call.</b> Judgement day is ~${target} resolved predicted-margin deals
       (${target - pred.resolved} to go).`;
   } else {
-    const likeFeed = main.win_rate == null || overlaps(pred, main) || pred.win_rate >= main.win_rate;
-    const beatsSkipped = skipped.win_rate == null || skipped.resolved < 10
+    const beats = skipped.win_rate == null || skipped.resolved < 10
       || (!overlaps(pred, skipped) && pred.win_rate > skipped.win_rate);
-    if (likeFeed && beatsSkipped) {
-      call = `<b>The model can surface these.</b> Its flagged sub-threshold deals win about as often
-        as the live feed and clearly beat the ones it passed over — predicted margin is a usable
-        surfacing signal. Consider lowering the current-discount floor and gating on predicted margin.`;
-    } else if (!likeFeed) {
-      call = `<b>Not yet.</b> Model-flagged deals win meaningfully less than the live feed, so
-        surfacing on predicted margin would lower quality at this threshold.`;
+    if (beats) {
+      call = `<b>The prediction separates winners from losers.</b> Deals predicted ≥${margin}% under
+        median win clearly more than the ones the model predicted <em>below</em> that — so
+        "surface anything predicted ≥${margin}% under median" is a usable rule. Consider dropping the
+        current-discount floor to a low recording level and gating the feed on predicted margin.`;
     } else {
-      call = `<b>The model isn't discriminating.</b> Flagged and passed-over sub-threshold deals win
-        about the same, so the ≥${margin}% predicted-margin flag isn't adding signal yet.`;
+      call = `<b>Not discriminating yet.</b> Deals predicted ≥${margin}% under median win about the
+        same as the ones predicted below it, so the predicted-margin flag isn't adding signal — the
+        model can't yet be trusted as the surfacing rule.`;
     }
   }
   return `<p class="help" style="font-size:14px;margin:0">
-    Model-flagged (predicted ≥${margin}% under median): ${line(pred)}.<br>
-    Live feed, same window: ${line(main)}.<br>
-    Sub-threshold deals the model <em>passed over</em>: ${line(skipped)}.<br><br>${call}</p>`;
+    Predicted ≥${margin}% under median (the rule surfaces): ${line(pred)}.<br>
+    Predicted below that (the rule skips): ${line(skipped)}.<br>
+    Live feed, same window (reference): ${line(main)}.<br><br>${call}</p>`;
 }
 
 (async () => {
@@ -44,20 +42,20 @@ function verdictText(pred, main, skipped, target, margin) {
     const cell = (v, label, cls = '', title = '') =>
       `<div class="stat" ${title ? `title="${esc(title)}"` : ''}><b class="num ${cls}">${v}</b><span>${label}</span></div>`;
     $('#stats').innerHTML = [
-      cell(pred.tracked, 'model-flagged tracked'),
+      cell(pred.tracked, `predicted ≥${margin}% tracked`),
       cell(pred.resolved, 'resolved'),
-      pred.win_rate != null ? cell(`${pred.win_rate}%`, `flagged win rate`, '',
+      pred.win_rate != null ? cell(`${pred.win_rate}%`, `predicted ≥${margin}% WR`, 'good',
         `95% CI ${pred.wr_ci[0]}–${pred.wr_ci[1]}%`) : '',
-      main.win_rate != null ? cell(`${main.win_rate}%`, 'live feed WR (same period)', 'good',
-        `The current feed over the same window (n=${main.resolved})`) : '',
-      skipped.win_rate != null ? cell(`${skipped.win_rate}%`, 'passed-over WR', 'warn',
-        `Sub-threshold deals the model did NOT flag (n=${skipped.resolved})`) : '',
+      skipped.win_rate != null ? cell(`${skipped.win_rate}%`, `predicted <${margin}% WR`, 'warn',
+        `Deals the model predicted below the margin — the set the rule skips (n=${skipped.resolved})`) : '',
+      main.win_rate != null ? cell(`${main.win_rate}%`, 'live feed WR (same period)', '',
+        `The current feed over the same window, for reference (n=${main.resolved})`) : '',
       pred.median_actual_discount != null
         ? cell(`${pred.median_actual_discount}%`, 'median close vs market') : '',
     ].join('');
 
     $('#verdict-card').style.display = '';
-    $('#verdict').innerHTML = verdictText(pred, main, skipped, target_n, margin);
+    $('#verdict').innerHTML = verdictText(pred, skipped, main, target_n, margin);
     const pct = Math.min(100, pred.resolved / target_n * 100);
     $('#progress').innerHTML = `
       <div class="posbar" style="height:10px"><div class="track" style="top:4px"></div>

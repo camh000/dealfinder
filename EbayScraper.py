@@ -3087,11 +3087,14 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
                                  row.get('Bids'), row.get('EndTime'))
                 label = queries.model_label_for_row(product_type, row)
                 near_miss = 1 if float(row['DiscountPct']) < min_discount else 0
-                # Prediction-surfacing cohort: a sub-threshold deal the model
-                # (with real premium history) predicts still closes >= the margin
-                # under median. Needs PremiumSamples so it's a model call, not
-                # the identity prediction of a no-history row.
-                pred_margin = 1 if (near_miss and row.get('PremiumSamples')
+                # Prediction-surfacing cohort: ANY deal the model (with real
+                # premium history) predicts will close >= the margin under median
+                # — regardless of its current discount, since the proposed rule
+                # is purely "predicted final >= X% under median". Needs
+                # PremiumSamples so it's a model call, not the identity
+                # prediction of a no-history row. The complement (has a
+                # prediction but < the margin) is the set the rule would skip.
+                pred_margin = 1 if (row.get('PremiumSamples')
                                     and (row.get('PredictedDiscountPct') or 0) >= PRED_SURFACE_MARGIN) else 0
                 # SurfacedPrice is the whole-lot price, so the stored market
                 # value must be whole-lot too (median × quantity) — outcome
