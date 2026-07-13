@@ -84,6 +84,16 @@ def _iso_utc(dt):
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.isoformat()
 
+
+def _hours_left(endtime):
+    """Hours from now until a naive-UTC EndTime (floored at 0); None if unknown.
+    Feeds the time-aware snipe premium (queries.premium_for)."""
+    if endtime is None or not hasattr(endtime, 'timestamp'):
+        return None
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return max((endtime - now).total_seconds() / 3600.0, 0.0)
+
+
 def get_connection():
     conn = mariadb.connect(
         user=os.environ["DB_USER"],
@@ -1369,12 +1379,16 @@ def api_insights_predictions():
                     if (lo <= max(-50, min(49.999, e)) < lo + 10))
             histogram.append({"lo": lo, "hi": lo + 10, "n": n})
 
-        # What the model currently believes: the live premium ratios.
+        # What the model currently believes: the live premium ratios. Keys are
+        # (cat, bid, time) / (cat, bid, 'any') / (cat, 'all') — join the tail
+        # into a readable bucket label ("4+/60m+", "1-3/any", "all").
         cur2 = conn.cursor()
         cur2.execute(queries.SNIPE_PREMIUM_QUERY)
-        ratios = [{"category": cat, "bucket": bucket, "ratio": ratio, "n": n}
-                  for (cat, bucket), (ratio, n)
-                  in sorted(queries.median_ratios(cur2.fetchall()).items())]
+        ratios = [{"category": key[0], "bucket": '/'.join(map(str, key[1:])),
+                   "ratio": ratio, "n": n}
+                  for key, (ratio, n)
+                  in sorted(queries.median_ratios(cur2.fetchall()).items(),
+                            key=lambda kv: tuple(map(str, kv[0])))]
 
         return jsonify({
             "status": "ok",
@@ -2136,11 +2150,11 @@ def model_detail():
         premiums = queries.median_ratios(pcur.fetchall())
         for r in live:
             eff = float(r['ItemPrice'] or 0) + float(r['Shipping'] or 0)
-            entry = (premiums.get((cat.upper(), queries.bid_bucket(int(r['Bids'] or 0))))
-                     or premiums.get((cat.upper(), 'all')))
-            if entry and eff > 0:
-                r['PredictedFinalPrice'] = round(eff * entry[0], 2)
-                r['PremiumSamples'] = entry[1]
+            ratio, samples = queries.premium_for(
+                premiums, cat, int(r['Bids'] or 0), _hours_left(r.get('EndTime')))
+            if samples and eff > 0:
+                r['PredictedFinalPrice'] = round(eff * ratio, 2)
+                r['PremiumSamples'] = samples
 
         # Stats + monthly trend from single-unit sales only (lot totals would
         # skew everything upward).
@@ -2257,11 +2271,10 @@ def deal_detail(ebay_id):
             pcur.execute(queries.SNIPE_PREMIUM_QUERY)
             premiums = queries.median_ratios(pcur.fetchall())
             eff = float(listing["ItemPrice"] or 0) + float(listing["Shipping"] or 0)
-            entry = (premiums.get((category.upper(), queries.bid_bucket(int(listing["Bids"] or 0))))
-                     or premiums.get((category.upper(), 'all')))
-            if entry and eff > 0:
-                prediction = {"final": round(eff * entry[0], 2), "n": entry[1],
-                              "ratio": entry[0]}
+            ratio, samples = queries.premium_for(
+                premiums, category, int(listing["Bids"] or 0), _hours_left(listing["EndTime"]))
+            if samples and eff > 0:
+                prediction = {"final": round(eff * ratio, 2), "n": samples, "ratio": ratio}
 
         for col in ("EndTime", "SoldDate", "LastSeenAt"):
             if listing.get(col):

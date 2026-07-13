@@ -374,7 +374,7 @@ class TestAlertListingRelevance:
     """listing_below second gate: BIN prices are final; auction hits (already
     inside the final window) must have a PREDICTED final under the target."""
 
-    PREMIUMS = {('GPU', '1-3'): (1.30, 12), ('GPU', 'all'): (1.25, 30)}
+    PREMIUMS = {('GPU', '1-3', 'any'): (1.30, 12), ('GPU', 'all'): (1.25, 30)}
 
     def test_bin_always_relevant(self):
         hit = {'PerUnitPrice': 40.0, 'ListingType': 'bin', 'Bids': 0}
@@ -861,16 +861,48 @@ class TestAnnotatePredictions:
         type(self).NOW = datetime(2026, 7, 9, 12, 0)  # rows end 2h later
 
     def test_premium_ratio_applied_by_bucket(self):
-        rows = [self._row(Bids=5)]
-        premiums = {('GPU', '4+'): (1.2, 10)}
+        rows = [self._row(Bids=5)]                        # ends 2h out → 60m+ bucket
+        premiums = {('GPU', '4+', '60m+'): (1.2, 10)}
         queries.annotate_predictions(rows, 'gpu', premiums, now=self.NOW)
         assert rows[0]['PredictedFinalPrice'] == 120.0
         assert rows[0]['PremiumSamples'] == 10
         assert rows[0]['PredictedDiscountPct'] == 20.0   # 1 - 120/150
 
+    def test_time_bucket_selects_ratio(self):
+        # Same 4+ bids, but the ratio depends on time-to-end: an auction with
+        # hours to go keeps climbing; one nearly over does not.
+        far = self._row(Bids=5, EndTime=__import__('datetime').datetime(2026, 7, 9, 14, 0))
+        near = self._row(Bids=5, EndTime=__import__('datetime').datetime(2026, 7, 9, 12, 5))
+        premiums = {('GPU', '4+', '60m+'): (1.30, 10), ('GPU', '4+', '<15m'): (1.02, 10)}
+        queries.annotate_predictions([far], 'gpu', premiums, now=self.NOW)
+        queries.annotate_predictions([near], 'gpu', premiums, now=self.NOW)
+        assert far['PredictedFinalPrice'] == 130.0
+        assert near['PredictedFinalPrice'] == 102.0
+
+    def test_bid_bucket_any_time_fallback(self):
+        rows = [self._row(Bids=5)]
+        premiums = {('GPU', '4+', 'any'): (1.2, 10)}     # no time-specific bucket
+        queries.annotate_predictions(rows, 'gpu', premiums, now=self.NOW)
+        assert rows[0]['PredictedFinalPrice'] == 120.0
+
+    def test_zero_bid_never_inherits_all(self):
+        # #1: a calm 0-bid listing must NOT get the contested 'all' premium.
+        rows = [self._row(Bids=0)]
+        premiums = {('GPU', 'all'): (1.5, 30)}
+        queries.annotate_predictions(rows, 'gpu', premiums, now=self.NOW)
+        assert rows[0]['PredictedFinalPrice'] == 100.0   # identity, not 150
+        assert rows[0]['PremiumSamples'] == 0
+
+    def test_ssd_gets_no_premium(self):
+        # #2: SSD closes near its spotted price — premium disabled.
+        rows = [self._row(Bids=5)]
+        premiums = {('SSD', '4+', '60m+'): (1.3, 10), ('SSD', 'all'): (1.3, 20)}
+        queries.annotate_predictions(rows, 'ssd', premiums, now=self.NOW)
+        assert rows[0]['PredictedFinalPrice'] == 100.0
+
     def test_category_all_fallback(self):
-        rows = [self._row(Bids=1)]
-        premiums = {('GPU', 'all'): (1.1, 8)}            # no '1-3' bucket
+        rows = [self._row(Bids=1)]                        # 1-3 bids DO use 'all'
+        premiums = {('GPU', 'all'): (1.1, 8)}            # no bid/time bucket
         queries.annotate_predictions(rows, 'gpu', premiums, now=self.NOW)
         assert rows[0]['PredictedFinalPrice'] == 110.0
 
@@ -891,7 +923,7 @@ class TestAnnotatePredictions:
     def test_filter_drops_predicted_over_market(self):
         """The feed only shows deals predicted to close BELOW market."""
         rows = [self._row(ID=1, Bids=6), self._row(ID=2, Bids=0)]
-        premiums = {('HDD', '4+'): (1.56, 12)}   # erases the contested row's edge
+        premiums = {('HDD', '4+', '60m+'): (1.56, 12)}   # erases the contested row's edge
         queries.annotate_predictions(rows, 'hdd', premiums, now=self.NOW)
         kept = queries.filter_predicted_deals(rows)
         assert [r['ID'] for r in kept] == [2]
@@ -912,7 +944,7 @@ class TestAnnotatePredictions:
         contested = self._row(ID=1, Bids=6)
         quiet = self._row(ID=2, Bids=0)
         rows = [contested, quiet]
-        premiums = {('HDD', '4+'): (1.56, 12)}           # HDD snipe premium
+        premiums = {('HDD', '4+', '60m+'): (1.56, 12)}           # HDD snipe premium
         queries.annotate_predictions(rows, 'hdd', premiums, now=self.NOW)
         assert rows[0]['ID'] == 2, "quiet auction should now outrank the contested one"
         assert contested['PredictedDiscountPct'] < 0     # predicted OVER market
@@ -1344,18 +1376,23 @@ class TestBidBucket:
 
 
 class TestMedianRatios:
-    def _rows(self, ratios, cat="GPU", bids=0):
-        # surfaced 10000p; final = surfaced * ratio
-        return [(cat, bids, 10000, int(10000 * r)) for r in ratios]
+    def _rows(self, ratios, cat="GPU", bids=0, hours=None):
+        # (cat, bids, hours_to_end, surfaced=10000p, final=surfaced*ratio)
+        return [(cat, bids, hours, 10000, int(10000 * r)) for r in ratios]
 
     def test_median_of_bucket(self):
-        rows = self._rows([1.0, 1.1, 1.2, 1.3, 1.4])
+        rows = self._rows([1.0, 1.1, 1.2, 1.3, 1.4])     # hours unknown → 'any'
         out = EbayScraper._median_ratios(rows, min_samples=5)
-        ratio, n = out[("GPU", "0")]
-        assert ratio == 1.2
-        assert n == 5
+        assert out[("GPU", "0", "any")] == (1.2, 5)
         # category-level fallback aggregates the same rows
         assert out[("GPU", "all")] == (1.2, 5)
+
+    def test_time_bucket_keyed(self):
+        # 5 sales 30 min out → a 15-60m bucket AND the time-agnostic 'any' one.
+        rows = self._rows([1.0, 1.1, 1.2, 1.3, 1.4], bids=5, hours=0.5)
+        out = EbayScraper._median_ratios(rows, min_samples=5)
+        assert out[("GPU", "4+", "15-60m")] == (1.2, 5)
+        assert out[("GPU", "4+", "any")] == (1.2, 5)
 
     def test_min_samples_filters_thin_buckets(self):
         rows = self._rows([1.0, 1.5])  # only 2 samples
@@ -1363,33 +1400,57 @@ class TestMedianRatios:
         assert out == {}
 
     def test_all_fallback_survives_when_buckets_thin(self):
-        # 3 zero-bid + 3 contested sales: neither bucket reaches 5,
+        # 3 zero-bid + 3 contested sales: neither bid bucket reaches 5,
         # but the category-level 'all' pool does at min_samples=5.
         rows = self._rows([1.0, 1.0, 1.0], bids=0) + self._rows([2.0, 2.0, 2.0], bids=5)
         out = EbayScraper._median_ratios(rows, min_samples=5)
-        assert ("GPU", "0") not in out
-        assert ("GPU", "4+") not in out
+        assert ("GPU", "0", "any") not in out
+        assert ("GPU", "4+", "any") not in out
         assert out[("GPU", "all")] == (1.5, 6)
 
     def test_zero_surfaced_price_skipped(self):
-        rows = [("GPU", 0, 0, 12000)] + self._rows([1.0] * 5)
+        rows = [("GPU", 0, None, 0, 12000)] + self._rows([1.0] * 5)
         out = EbayScraper._median_ratios(rows, min_samples=5)
-        assert out[("GPU", "0")][1] == 5  # divide-by-zero row dropped
+        assert out[("GPU", "0", "any")][1] == 5  # divide-by-zero row dropped
 
     def test_none_final_price_skipped(self):
-        rows = [("GPU", 0, 10000, None)] + self._rows([1.0] * 5)
+        rows = [("GPU", 0, None, 10000, None)] + self._rows([1.0] * 5)
         out = EbayScraper._median_ratios(rows, min_samples=5)
-        assert out[("GPU", "0")][1] == 5
+        assert out[("GPU", "0", "any")][1] == 5
 
     def test_categories_kept_separate(self):
         rows = self._rows([1.0] * 5, cat="GPU") + self._rows([2.0] * 5, cat="HDD")
         out = EbayScraper._median_ratios(rows, min_samples=5)
-        assert out[("GPU", "0")][0] == 1.0
-        assert out[("HDD", "0")][0] == 2.0
+        assert out[("GPU", "0", "any")][0] == 1.0
+        assert out[("HDD", "0", "any")][0] == 2.0
 
     def test_decimal_like_inputs(self):
         """mariadb returns Decimal for price columns — helper must coerce."""
         from decimal import Decimal
-        rows = [("GPU", 0, Decimal("10000"), Decimal("11000"))] * 5
+        rows = [("GPU", 0, None, Decimal("10000"), Decimal("11000"))] * 5
         out = EbayScraper._median_ratios(rows, min_samples=5)
-        assert out[("GPU", "0")][0] == 1.1
+        assert out[("GPU", "0", "any")][0] == 1.1
+
+
+class TestPremiumFor:
+    def test_time_and_bid_precedence(self):
+        prem = {('GPU', '4+', '<15m'): (1.02, 9), ('GPU', '4+', 'any'): (1.2, 20),
+                ('GPU', 'all'): (1.25, 40)}
+        assert queries.premium_for(prem, 'gpu', 5, 0.1) == (1.02, 9)   # time-specific
+        assert queries.premium_for(prem, 'gpu', 5, 2.0) == (1.2, 20)   # falls to any-time
+        assert queries.premium_for(prem, 'gpu', 2, 2.0) == (1.25, 40)  # 1-3 → category all
+
+    def test_zero_bid_skips_all(self):
+        assert queries.premium_for({('GPU', 'all'): (1.5, 40)}, 'gpu', 0, 2.0) == (1.0, 0)
+
+    def test_ssd_never_gets_premium(self):
+        assert queries.premium_for({('SSD', '4+', 'any'): (1.3, 20)}, 'ssd', 5, 0.5) == (1.0, 0)
+
+    def test_no_history_is_identity(self):
+        assert queries.premium_for({}, 'gpu', 5, 1.0) == (1.0, 0)
+
+    def test_time_bucket_boundaries(self):
+        assert queries.time_bucket(None) == 'any'
+        assert queries.time_bucket(0.1) == '<15m'
+        assert queries.time_bucket(0.5) == '15-60m'
+        assert queries.time_bucket(5.0) == '60m+'

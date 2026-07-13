@@ -398,20 +398,48 @@ def bid_bucket(bids) -> str:
     return '1-3' if bids <= 3 else '4+'
 
 
-def median_ratios(rows, min_samples: int = 5) -> dict:
-    """rows: (category, bid_count, surfaced_price, final_price) tuples.
+def time_bucket(hours) -> str:
+    """Bucket time-to-end for premium stats. An auction keeps accruing bids
+    until it closes, so how much time is left when we see it drives how far it
+    rises: a 4-bid item with 5 min left is nearly settled; the same with 2h to
+    go keeps climbing. Buckets match the ≤2h surfacing window the ratios are
+    trained on. None (unknown) → 'any' (time-agnostic)."""
+    if hours is None:
+        return 'any'
+    if hours < 0.25:
+        return '<15m'
+    if hours < 1:
+        return '15-60m'
+    return '60m+'
 
-    Returns {(category, bucket): (median_final_over_surfaced, sample_count)}
-    where bucket is a bid_bucket value plus an 'all' category-level fallback.
+
+# Categories whose auctions close near their spotted price — the snipe premium
+# (which, via the category fallback, inherits contested GPU/HDD dynamics) only
+# adds error there. SSD measured worse than the no-model baseline (19.6% vs
+# 14.5%) with an 8% over-prediction bias, so it gets no premium.
+_NO_PREMIUM_CATEGORIES = {'SSD'}
+
+
+def median_ratios(rows, min_samples: int = 5) -> dict:
+    """rows: (category, bid_count, hours_to_end, surfaced_price, final_price).
+
+    Returns {key: (median_final_over_surfaced, sample_count)} at three
+    specificities, so a lookup can degrade gracefully:
+      (cat, bid_bucket, time_bucket) — most specific
+      (cat, bid_bucket, 'any')       — bid bucket, any time-to-end
+      (cat, 'all')                   — category catch-all
     Groups below min_samples are dropped — too little history to trust.
     """
     import statistics
     groups = {}
-    for cat, bids, surfaced, final in rows:
+    for cat, bids, hours, surfaced, final in rows:
         if not surfaced or final is None:
             continue
         ratio = float(final) / float(surfaced)
-        groups.setdefault((cat, bid_bucket(bids)), []).append(ratio)
+        bb, tb = bid_bucket(bids), time_bucket(hours)
+        groups.setdefault((cat, bb, 'any'), []).append(ratio)
+        if tb != 'any':      # avoid double-counting when time-to-end is unknown
+            groups.setdefault((cat, bb, tb), []).append(ratio)
         groups.setdefault((cat, 'all'), []).append(ratio)
     return {
         key: (round(statistics.median(vals), 3), len(vals))
@@ -420,11 +448,36 @@ def median_ratios(rows, min_samples: int = 5) -> dict:
     }
 
 
+def premium_for(premiums, category, bids, hours_to_end=None):
+    """(ratio, samples) for a live listing — the single lookup every prediction
+    surface funnels through. Precedence: exact (cat, bid, time) →
+    (cat, bid, any) → category 'all'. Two guards:
+      • 0-bid listings NEVER inherit the contested 'all' premium (it wildly
+        over-predicts a calm listing that isn't being sniped);
+      • no-premium categories (SSD) always return 1.0.
+    A missing history gives (1.0, 0): the prediction equals the current price."""
+    cat = (category or '').upper()
+    if cat in _NO_PREMIUM_CATEGORIES:
+        return (1.0, 0)
+    bb = bid_bucket(bids)
+    for key in ((cat, bb, time_bucket(hours_to_end)), (cat, bb, 'any')):
+        if key in premiums:
+            return premiums[key]
+    if bb == '0':
+        return (1.0, 0)
+    return premiums.get((cat, 'all'), (1.0, 0))
+
+
 # Resolved outcomes that feed the premium model (sold, not ended-unsold).
 # The near-miss control cohort is excluded: premiums must stay trained on
 # the same population they predict for, or the experiment contaminates it.
+# HoursToEnd = time-to-close when the deal was first surfaced (drives how far
+# it rises before the hammer).
 SNIPE_PREMIUM_QUERY = """
-SELECT d.Category, d.BidCount, d.SurfacedPrice,
+SELECT d.Category, d.BidCount,
+       TIMESTAMPDIFF(SECOND, d.SurfacedAt, COALESCE(e.EndTime, d.EndTime)) / 3600.0
+           AS HoursToEnd,
+       d.SurfacedPrice,
        COALESCE(d.FinalPrice, e.Price)
 FROM Scraper.DealOutcomes d
 JOIN Scraper.EBAY e ON e.ID = d.EbayID
@@ -452,8 +505,11 @@ def annotate_predictions(rows: list, product_type: str, premiums: dict, now=None
         now = datetime.now(timezone.utc).replace(tzinfo=None)
     for row in rows:
         bids = int(row.get('Bids') or 0)
-        entry = premiums.get((cat, bid_bucket(bids))) or premiums.get((cat, 'all'))
-        ratio, samples = entry if entry else (1.0, 0)
+        end = row.get('EndTime')
+        hours_left = None
+        if end is not None and hasattr(end, 'timestamp'):
+            hours_left = max((end - now).total_seconds() / 3600.0, 0.0)
+        ratio, samples = premium_for(premiums, cat, bids, hours_left)
         price = float(row.get('CurrentPrice') or 0)
         qty = int(row.get('Quantity') or 1)
         market_lot = float(row.get('AvgMarketPrice') or 0) * qty
@@ -462,10 +518,7 @@ def annotate_predictions(rows: list, product_type: str, premiums: dict, now=None
         row['PremiumSamples'] = samples
         row['PredictedDiscountPct'] = (
             round((1 - predicted / market_lot) * 100, 1) if market_lot > 0 else None)
-        end = row.get('EndTime')
-        hours = 0.25
-        if end is not None and hasattr(end, 'timestamp'):
-            hours = max((end - now).total_seconds() / 3600.0, 0.25)
+        hours = max(hours_left, 0.25) if hours_left is not None else 0.25
         row['DealScore'] = round(
             max(row['PredictedDiscountPct'] or 0, 0) / hours / (1 + bids), 2)
     rows.sort(key=lambda r: r.get('DealScore') or 0, reverse=True)

@@ -3199,11 +3199,14 @@ def alert_listing_relevant(hit: dict, target_pounds: float, premiums: dict,
     per_unit = float(hit['PerUnitPrice'])
     if hit.get('ListingType') == 'bin':
         return True, per_unit
-    cat = (category or '').upper()
     bids = int(hit.get('Bids') or 0)
-    entry = ((premiums or {}).get((cat, queries.bid_bucket(bids)))
-             or (premiums or {}).get((cat, 'all')))
-    ratio = entry[0] if entry else 1.0
+    end = hit.get('EndTime')
+    hours = None
+    if end is not None and hasattr(end, 'timestamp'):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        hours = max((end - now).total_seconds() / 3600.0, 0.0)
+    ratio, _ = queries.premium_for(premiums or {}, category, bids, hours)
     predicted = round(per_unit * ratio, 2)
     return predicted < target_pounds, predicted
 
