@@ -1831,27 +1831,26 @@ def deals():
                         row[col] = _iso_utc(row[col])
             deals.extend(rows)
 
+        # CPU+motherboard bundles — SCORED against the sum of the bare CPU and
+        # bare board medians, then folded into the deal list with a BUNDLE badge
+        # (dual-membership: they carry both the CPU and mobo attributes, so they
+        # filter and render under either chip). Excluded from medians and never
+        # tracked as an outcome, so they don't touch the win rate. Deduped by ID
+        # so the all-view shows each once.
+        if product_type in ('all', 'cpu', 'mobo'):
+            cur.execute(queries.build_bundle_deals_query(min_discount))
+            for b in cur.fetchall():
+                b['_bundle'] = 1
+                b['_cat'] = 'cpu'    # carries both sides; the page labels by chip
+                if b.get('EndTime'):
+                    b['EndTime'] = _iso_utc(b['EndTime'])
+                deals.append(b)
+
         # Best predicted discount first, so the all-view leads with the
-        # strongest deals across every category.
+        # strongest deals across every category (bundles interleave by discount).
         deals.sort(key=lambda r: float(r.get('PredictedDiscountPct') or r.get('DiscountPct') or 0),
                    reverse=True)
-
-        # CPU+motherboard bundles — shown but not scored (their price covers two
-        # components). Live listings for the requested category, filterable by
-        # the same context filters; the page renders them in a separate section.
-        bundles = []
-        for cat in cats:
-            sql = queries.build_bundle_listings_query(cat)
-            if not sql:
-                continue
-            cur.execute(sql)
-            for row in cur.fetchall():
-                row['_cat'] = cat
-                row['_label'] = queries.model_label_for_row(cat, row)
-                if row.get('EndTime'):
-                    row['EndTime'] = _iso_utc(row['EndTime'])
-                bundles.append(row)
-        return jsonify({"status": "ok", "deals": deals, "bundles": bundles})
+        return jsonify({"status": "ok", "deals": deals})
     except Exception as e:
         log.error("deals error: %s", e)
         return jsonify({"status": "error", "message": "internal error"}), 500

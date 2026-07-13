@@ -844,10 +844,11 @@ class TestCpuMoboBundle:
         # categories without bundles carry no such filter
         assert "IsBundle" not in queries.build_deals_query('gpu')
 
-    def test_bundle_listings_query_only_for_bundle_cats(self):
-        assert "IsBundle = 1" in queries.build_bundle_listings_query('cpu')
-        assert "IsBundle = 1" in queries.build_bundle_listings_query('mobo')
-        assert queries.build_bundle_listings_query('gpu') == ""
+    def test_bundle_deals_query_scores_sum_of_parts(self):
+        q = queries.build_bundle_deals_query(20)
+        assert "mb.IsBundle = 1" in q                    # joins the bundle rows
+        assert "cs.Med + ms.Med" in q                    # value = CPU + board medians
+        assert "c.IsBundle = 0" in q and "mb.IsBundle = 0" in q  # medians exclude bundles
 
 
 class TestXeonParsing:

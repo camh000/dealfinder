@@ -5,7 +5,11 @@
 
 const LS_KEY = 'pcd-deal-filters';
 
-let allDeals = [], allBundles = [], cat = 'all', ctx = {};
+let allDeals = [], cat = 'all', ctx = {};
+
+// A bundle belongs to BOTH the CPU and Mobo categories (dual membership).
+const inCat = d => cat === 'all' || d._cat === cat ||
+  (d._bundle && (cat === 'cpu' || cat === 'mobo'));
 const saved = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
 if (['all', 'gpu', 'cpu', 'hdd', 'ssd', 'ram'].includes(window.PRESELECT_CAT))
   cat = window.PRESELECT_CAT;
@@ -23,6 +27,18 @@ function persist() {
 
 /* ── identity line, per row's own category ── */
 function identity(d) {
+  if (d._bundle) {
+    // Dual membership — label by whichever category chip is active.
+    const title = cat === 'mobo'
+      ? `${d.Chipset || '—'}${d.FormFactor && d.FormFactor !== 'ATX' ? ' ' + d.FormFactor : ''}`
+      : cat === 'cpu' ? (d.Model || '—')
+      : `${d.Model || 'CPU'} + ${d.Chipset || 'board'}`;
+    const chips = ['<span class="chip hot">BUNDLE</span>'];
+    if (d.Socket) chips.push(`<span class="chip">${esc(d.Socket)}</span>`);
+    if (d.SurfacedAt) { /* bundles aren't tracked */ }
+    return `<h3><a href="/deal/${d.ID}" style="color:inherit">${esc(title)}</a></h3>
+            <div>${chips.join('')}</div>`;
+  }
   const c = d._cat;
   const chips = [`<span class="chip">${c.toUpperCase()}</span>`];
   const lot = Number(d.Quantity) > 1;
@@ -109,49 +125,24 @@ function render() {
   const minDisc = Number($('#f-disc').value) || 0;
   const minSave = Number($('#f-save').value) || 0;
   const sortCol = $('#f-sort').value;
-  let rows = allDeals.filter(d => cat === 'all' || d._cat === cat);
+  let rows = allDeals.filter(inCat);
   rows = filterByCtx(rows, cat, ctx);
   rows = rows.filter(d => Number(d.DiscountPct) >= minDisc && Number(d.PotentialGain) >= minSave);
   rows = sortRows(rows, sortCol, sortCol === 'EndTime' || sortCol === 'ItemPrice');
   $('#deal-count').textContent = `${rows.length} deal${rows.length === 1 ? '' : 's'}`;
   const box = $('#rows');
-  const bundles = bundlesSection();
-  const dealsHtml = rows.length
-    ? rows.map(d => `
+  if (!rows.length) {
+    box.innerHTML = '<div class="state">No deals match — widen the window or lower the filters.</div>';
+    return;
+  }
+  box.innerHTML = rows.map(d => `
     <article class="row-card">
       <div class="id-col">${identity(d)}</div>
       <div class="price-col">${priceCol(d)}</div>
       <div class="meta-col">${metaCol(d)}</div>
       <a class="go" href="${safeUrl(d.URL)}" target="_blank" rel="noopener noreferrer">View →</a>
-    </article>`).join('')
-    : `<div class="state">No scored deals match${bundles ? ' — bundles below' : ' — widen the window or lower the filters'}.</div>`;
-  box.innerHTML = dealsHtml + bundles;
-  if (rows.length) loadSparklines(rows);
-}
-
-/* CPU+motherboard bundles — shown but not scored (their price covers two
-   parts). Same category chip + context filters, no discount badge. */
-function bundlesSection() {
-  let b = allBundles.filter(d => cat === 'all' || d._cat === cat);
-  b = filterByCtx(b, cat, ctx);
-  if (!b.length) return '';
-  return `<div class="sub faint" style="margin:16px 0 6px">
-      ${b.length} CPU + motherboard bundle${b.length === 1 ? '' : 's'} —
-      shown for reference, not scored (the price covers two parts):</div>` +
-    b.map(d => {
-      const ship = Number(d.Shipping) || 0;
-      return `<article class="row-card">
-        <div class="id-col">${identity(d)}
-          <div><span class="chip hot">BUNDLE</span></div></div>
-        <div class="price-col">
-          <div class="price-now num">${fmtGBP(d.ItemPrice)}
-            <span class="ship">${ship > 0 ? '+' + fmtGBP(ship) + ' delivery' : 'free delivery'}</span></div>
-          <div class="sub faint">${d.ListingType === 'bin' ? 'fixed price' : (d.Bids || 0) + ' bids'}</div>
-        </div>
-        <div class="meta-col"><div class="countdown" ${endsAttr(d.EndTime)}></div></div>
-        <a class="go" href="${safeUrl(d.URL)}" target="_blank" rel="noopener noreferrer">View →</a>
-      </article>`;
-    }).join('');
+    </article>`).join('');
+  loadSparklines(rows.filter(d => !d._bundle));
 }
 
 async function loadSparklines(rows) {
@@ -181,7 +172,6 @@ async function load() {
     const data = await res.json();
     if (data.status !== 'ok') throw new Error(data.message || 'error');
     allDeals = data.deals;
-    allBundles = data.bundles || [];
     render();
   } catch (e) {
     $('#rows').innerHTML = `<div class="state">Couldn’t load deals: ${esc(e.message)}</div>`;

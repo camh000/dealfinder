@@ -436,23 +436,52 @@ ORDER BY DiscountPct DESC;
 """
 
 
-def build_bundle_listings_query(product_type: str) -> str:
-    """Live CPU+motherboard bundle listings for a category — shown but NOT
-    scored (their price covers two components, so there's no clean median to
-    discount against). Same spec columns as the deal feed, plus price; no
-    discount. Only cpu/mobo have bundles; returns '' for others."""
-    cfg = CATEGORIES[product_type]
-    if not cfg.get('has_bundle'):
-        return ""
-    a = cfg['alias']
-    extra = ',\n    '.join(cfg['deal_select'])
+def build_bundle_deals_query(min_discount: float = 20, min_sold: int = 3) -> str:
+    """Live CPU+motherboard bundle deals, SCORED against the sum of the parts:
+    a bundle's market value = the bare CPU model's median + the bare
+    chipset+form-factor board's median. Both component groups must have
+    enough recent sales (min_sold) or the bundle can't be valued and is
+    skipped. Bundles are excluded from those component medians (IsBundle=0
+    filters below), so they can't inflate the very prices they're valued
+    against. Returns one row per bundle listing with BOTH the CPU and the mobo
+    attributes, so it renders (and filters) under either category. Not tracked
+    as an outcome — bundles never touch the win-rate stats."""
+    threshold = _clamp_threshold(min_discount)
     return f"""
+WITH CpuMed AS (
+    SELECT c.Model,
+           MEDIAN({EFF}) OVER (PARTITION BY c.Model) AS Med,
+           COUNT(*)      OVER (PARTITION BY c.Model) AS N
+    FROM Scraper.CPU c JOIN Scraper.EBAY e ON e.ID = c.ID
+    WHERE e.SoldDate IS NOT NULL AND e.Price IS NOT NULL AND c.Model IS NOT NULL
+      AND c.IsBundle = 0 AND e.SoldDate > NOW() - INTERVAL {MARKET_STATS_DAYS} DAY
+      AND COALESCE(e.Quantity, 1) = 1
+),
+CpuStats AS (SELECT DISTINCT Model, Med FROM CpuMed WHERE N >= {min_sold}),
+MoboMed AS (
+    SELECT mb.Chipset, mb.FormFactor,
+           MEDIAN({EFF}) OVER (PARTITION BY mb.Chipset, mb.FormFactor) AS Med,
+           COUNT(*)      OVER (PARTITION BY mb.Chipset, mb.FormFactor) AS N
+    FROM Scraper.MOBO mb JOIN Scraper.EBAY e ON e.ID = mb.ID
+    WHERE e.SoldDate IS NOT NULL AND e.Price IS NOT NULL AND mb.Chipset IS NOT NULL
+      AND mb.IsBundle = 0 AND e.SoldDate > NOW() - INTERVAL {MARKET_STATS_DAYS} DAY
+      AND COALESCE(e.Quantity, 1) = 1
+),
+MoboStats AS (SELECT DISTINCT Chipset, FormFactor, Med FROM MoboMed WHERE N >= {min_sold})
 SELECT
     e.ID,
-    {extra},
+    c.Model, c.Socket, mb.Chipset, mb.Socket AS MoboSocket, mb.FormFactor,
     ROUND({EFF}, 2)                         AS CurrentPrice,
     ROUND(e.Price / 100, 2)                 AS ItemPrice,
     ROUND(COALESCE(e.Shipping, 0) / 100, 2) AS Shipping,
+    1                                       AS Quantity,
+    ROUND({EFF}, 2)                         AS PerUnitPrice,
+    ROUND(cs.Med + ms.Med, 2)               AS AvgMarketPrice,
+    ROUND((cs.Med + ms.Med) - {EFF}, 2)     AS PotentialGain,
+    ROUND((1 - {EFF} / (cs.Med + ms.Med)) * 100, 1) AS DiscountPct,
+    ROUND(((1 - {EFF} / (cs.Med + ms.Med)) * 100)
+        / GREATEST(TIMESTAMPDIFF(MINUTE, NOW(), e.EndTime) / 60.0, 0.25)
+        / (1 + COALESCE(e.Bids, 0)), 2)     AS DealScore,
     e.Bids,
     COALESCE(e.ListingType, 'auction')      AS ListingType,
     e.SellerFeedbackPct,
@@ -460,12 +489,16 @@ SELECT
     e.EndTime,
     e.URL
 FROM Scraper.EBAY e
-JOIN Scraper.{cfg['table']} {a} ON {a}.ID = e.ID
-WHERE {a}.IsBundle = 1
-  AND e.SoldDate IS NULL
-  AND {FRESH_OK}
+JOIN Scraper.CPU  c  ON c.ID  = e.ID AND c.IsBundle  = 1
+JOIN Scraper.MOBO mb ON mb.ID = e.ID AND mb.IsBundle = 1
+JOIN CpuStats  cs ON cs.Model = c.Model
+JOIN MoboStats ms ON ms.Chipset = mb.Chipset AND ms.FormFactor <=> mb.FormFactor
+WHERE e.SoldDate IS NULL
+  AND {EFF} < (cs.Med + ms.Med) * {threshold}
   AND {FEEDBACK_OK}
-ORDER BY e.EndTime;
+  AND {FRESH_OK}
+  AND COALESCE(e.ReserveNotMet, 0) = 0
+ORDER BY DiscountPct DESC;
 """
 
 
