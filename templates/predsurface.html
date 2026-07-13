@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Prediction-surfacing experiment — PC/DEALS{% endblock %}
+{% block page %}outcomes{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Prediction-surfacing experiment</h1>
+  <span class="sub">could we surface deals on predicted margin, not current discount?</span>
+  <span class="spacer"></span>
+  <a class="btn-ghost" href="/outcomes" style="text-decoration:none">← outcomes</a>
+</div>
+
+<div class="card">
+  <p class="help" style="margin:0">
+    Today a listing is surfaced when its <b>current price</b> is ≥20% under median. This experiment
+    asks the other question: among the deals below that bar, the model flags the ones it
+    <b>predicts will still close ≥10% under median</b> (using the outcome-calibrated snipe premium,
+    not the current price). Those are recorded but never notified. If they win about as often as the
+    live feed — and beat the sub-threshold deals the model <em>didn't</em> flag — then the prediction
+    model discriminates well enough to surface deals on predicted margin.
+  </p>
+</div>
+
+<div class="stats" id="stats"><div class="state"><span class="loader"></span>loading…</div></div>
+
+<div class="card" id="verdict-card" style="display:none">
+  <h2>Verdict so far</h2>
+  <div id="verdict"></div>
+  <div id="progress" style="margin-top:12px"></div>
+</div>
+
+<div class="card">
+  <h2>Recent model-flagged deals</h2>
+  <div class="tbl-wrap" style="box-shadow:none;border:none">
+    <table class="tbl" id="recent-tbl"><thead>
+      <tr><th class="m-hide">Ended</th><th>Cat</th><th>Model</th><th class="num">Off at spotting</th>
+      <th class="num m-hide">Market</th><th class="num">Final</th><th>Result</th></tr>
+    </thead><tbody><tr><td class="state" colspan="7"><span class="loader"></span>loading…</td></tr></tbody></table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/predsurface.js"></script>
+{% endblock %}

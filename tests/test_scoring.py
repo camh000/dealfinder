@@ -1508,8 +1508,32 @@ class TestNearMissCohort:
                    if 'INSERT IGNORE INTO Scraper.DealOutcomes' in str(c[0][0])]
         assert len(inserts) == 2
         by_id = {p[0]: p for p in inserts}
-        assert by_id[1][-1] == 0   # NearMiss flag is the last param
-        assert by_id[2][-1] == 1
+        # params tail: (…, NearMiss, PredMargin)
+        assert by_id[1][-2] == 0   # real deal — not a near-miss
+        assert by_id[2][-2] == 1   # sub-threshold — near-miss
+        # no premium history here → no model prediction → PredMargin off for both
+        assert by_id[1][-1] == 0 and by_id[2][-1] == 0
+
+    def test_pred_margin_flagged_when_model_predicts_margin(self):
+        """A sub-threshold deal the model (with real history) predicts closes
+        >= PRED_SURFACE_MARGIN under median is flagged PredMargin=1."""
+        from datetime import datetime
+        from unittest.mock import MagicMock, patch
+        # 15% off now, 4+ bids, premium 1.0 → predicted stays 15% under median
+        near = {'ID': 3, 'CurrentPrice': 85.0, 'AvgMarketPrice': 100.0,
+                'DiscountPct': 15.0, 'Bids': 6, 'Quantity': 1, 'Model': 'RTX 3070',
+                'EndTime': datetime(2026, 7, 10, 12, 0)}
+        cur = MagicMock(); cur.fetchall.return_value = [near]; cur.rowcount = 1
+        conn = MagicMock(); conn.cursor.return_value = cur
+        prem = {('GPU', '4+', 'any'): (1.0, 20)}     # no bid-up → prediction = current
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'GetSnipePremiums', return_value=prem), \
+             patch.object(EbayScraper, 'EnrichListing', return_value=None), \
+             patch.object(queries, 'CATEGORIES', {'gpu': queries.CATEGORIES['gpu']}):
+            EbayScraper.SurfaceDeals(2, 20, nearmiss_discount=12)
+        ins = [c[0][1] for c in cur.execute.call_args_list
+               if 'INSERT IGNORE INTO Scraper.DealOutcomes' in str(c[0][0])][0]
+        assert ins[-2] == 1 and ins[-1] == 1   # NearMiss and PredMargin both set
 
     def test_cohort_disabled_when_thresholds_equal(self):
         """nearmiss == min_discount → query runs at min_discount, no band."""

@@ -245,6 +245,7 @@ def ensure_outcomes_table():
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN PredictedFinal INT NULL",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN VerifyMisses INT NOT NULL DEFAULT 0",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN NearMiss TINYINT(1) NOT NULL DEFAULT 0",
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN PredMargin TINYINT(1) NOT NULL DEFAULT 0",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN ItemLocation VARCHAR(80) NULL",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN Epid VARCHAR(20) NULL",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN CategoryPath VARCHAR(200) NULL",
@@ -1577,6 +1578,96 @@ def api_insights_nearmiss():
     finally:
         if conn:
             conn.close()
+
+
+@app.route('/insights/predsurface')
+def insights_predsurface_page():
+    return render_template('predsurface.html')
+
+
+@app.route('/api/insights/predsurface')
+def api_insights_predsurface():
+    """Prediction-surfacing experiment: could we surface deals on PREDICTED
+    margin instead of current discount? PredMargin rows are sub-threshold deals
+    (not in the live feed) the model predicted would still close >=10% under
+    median. We compare their resolved win rate to the live feed AND to the
+    sub-threshold deals the model did NOT flag (the ones we'd leave behind) —
+    over the same window. If PredMargin ~ the feed and beats the skipped set,
+    the model discriminates well enough to drive surfacing."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT d.NearMiss, d.PredMargin, d.EndedUnsold, d.GaveUp,
+                   ROUND(COALESCE(d.FinalPrice, e.Price) / 100, 2) AS FinalPrice,
+                   ROUND(d.AvgMarketPrice / 100, 2)                AS AvgMarketPrice,
+                   d.Category, d.Model, d.DiscountPct,
+                   ROUND(d.SurfacedPrice / 100, 2)                 AS SurfacedPrice,
+                   (e.SoldDate IS NOT NULL)                        AS Sold,
+                   COALESCE(e.EndTime, d.EndTime)                  AS EndTime,
+                   d.SurfacedAt
+            FROM Scraper.DealOutcomes d
+            JOIN Scraper.EBAY e ON e.ID = d.EbayID
+            ORDER BY COALESCE(e.EndTime, d.EndTime) DESC
+        """)
+        raw = cur.fetchall()
+
+        def resolved_win(r):
+            if not r['Sold'] or r['EndedUnsold'] or r['FinalPrice'] is None or not r['AvgMarketPrice']:
+                return None
+            return float(r['FinalPrice']) < float(r['AvgMarketPrice'])
+
+        def cohort(rows):
+            done = [(r, w) for r in rows if (w := resolved_win(r)) is not None]
+            wins = sum(1 for _, w in done if w)
+            discs = sorted((1 - float(r['FinalPrice']) / float(r['AvgMarketPrice'])) * 100
+                           for r, _ in done)
+            return {
+                "tracked": len(rows), "resolved": len(done), "wins": wins,
+                "win_rate": round(wins / len(done) * 100, 1) if done else None,
+                "wr_ci": _wilson_ci(wins, len(done)),
+                "pending": sum(1 for r in rows if not r['Sold'] and not r['EndedUnsold'] and not r['GaveUp']),
+                "median_actual_discount": round(statistics.median(discs), 1) if discs else None,
+            }
+
+        pred_rows = [r for r in raw if r['PredMargin']]
+        # Same-window comparison (the cohort only exists from when it started).
+        start = min((r['SurfacedAt'] for r in pred_rows if r['SurfacedAt']), default=None)
+        in_win = lambda r: start is None or (r['SurfacedAt'] and r['SurfacedAt'] >= start)
+        main_rows = [r for r in raw if not r['NearMiss'] and in_win(r)]
+        skipped_rows = [r for r in raw if r['NearMiss'] and not r['PredMargin'] and in_win(r)]
+
+        recent = []
+        for r in pred_rows[:100]:
+            w = resolved_win(r)
+            recent.append({
+                "Category": r['Category'], "Model": r['Model'], "DiscountPct": r['DiscountPct'],
+                "SurfacedPrice": r['SurfacedPrice'], "FinalPrice": r['FinalPrice'],
+                "AvgMarketPrice": r['AvgMarketPrice'], "EndTime": _iso_utc(r['EndTime']),
+                "result": ('win' if w else 'miss') if w is not None
+                          else ('unsold' if r['EndedUnsold'] else 'gave up' if r['GaveUp'] else 'pending'),
+            })
+
+        return jsonify({
+            "status": "ok",
+            "pred": cohort(pred_rows),          # model-flagged sub-threshold deals
+            "main": cohort(main_rows),          # the live feed (same window)
+            "skipped": cohort(skipped_rows),    # sub-threshold deals the model didn't flag
+            "margin": _PRED_SURFACE_MARGIN,
+            "target_n": _NM_TARGET_N,
+            "window_start": _iso_utc(start),
+            "rows": recent,
+        })
+    except Exception as e:
+        log.error("insights_predsurface error: %s", e)
+        return jsonify({"status": "error", "message": "internal error"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+_PRED_SURFACE_MARGIN = float(os.environ.get('PRED_SURFACE_MARGIN', '10'))
 
 
 # ── BIN watcher settings ────────────────────────────────────────────────────────

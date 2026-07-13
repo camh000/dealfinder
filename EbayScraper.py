@@ -2510,6 +2510,7 @@ def EnsureOutcomeColumns() -> None:
         for col_sql in ("PredictedFinal INT NULL",
                         "VerifyMisses INT NOT NULL DEFAULT 0",
                         "NearMiss TINYINT(1) NOT NULL DEFAULT 0",
+                        "PredMargin TINYINT(1) NOT NULL DEFAULT 0",
                         "ItemLocation VARCHAR(80) NULL",
                         "ItemCondition VARCHAR(40) NULL",
                         "Epid VARCHAR(20) NULL",
@@ -3031,6 +3032,14 @@ def _enrich_and_gate(cur, ebay_id: int, product_type: str):
     return suppress
 
 
+# Prediction-surfacing experiment: among the sub-threshold deals we record but
+# don't surface, flag the ones the premium model PREDICTS will still close at
+# least this far under median (a real model prediction, not the current price).
+# Their resolved win rate vs the live feed tests whether we could surface deals
+# on predicted margin instead of current discount (the TODO'd end-state).
+PRED_SURFACE_MARGIN = float(os.environ.get('PRED_SURFACE_MARGIN', '10'))
+
+
 def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
                  nearmiss_discount: float | None = None) -> list[dict]:
     """Detect current deals server-side and record first sightings.
@@ -3045,6 +3054,11 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
     excluded from the outcomes scoreboard and from premium training. Their
     resolved outcomes are the control group that shows whether min_discount
     is set right.
+
+    Prediction-surfacing cohort: within those sub-threshold rows, the ones the
+    model predicts will still close >= PRED_SURFACE_MARGIN under median are also
+    flagged PredMargin=1 — the parallel experiment for predicted-margin-first
+    surfacing.
 
     This replaces the old browser-driven surfacing in /api/deals — deals are
     now captured even when nobody has the dashboard open.
@@ -3073,6 +3087,12 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
                                  row.get('Bids'), row.get('EndTime'))
                 label = queries.model_label_for_row(product_type, row)
                 near_miss = 1 if float(row['DiscountPct']) < min_discount else 0
+                # Prediction-surfacing cohort: a sub-threshold deal the model
+                # (with real premium history) predicts still closes >= the margin
+                # under median. Needs PremiumSamples so it's a model call, not
+                # the identity prediction of a no-history row.
+                pred_margin = 1 if (near_miss and row.get('PremiumSamples')
+                                    and (row.get('PredictedDiscountPct') or 0) >= PRED_SURFACE_MARGIN) else 0
                 # SurfacedPrice is the whole-lot price, so the stored market
                 # value must be whole-lot too (median × quantity) — outcome
                 # win/loss math compares FinalPrice against AvgMarketPrice.
@@ -3083,8 +3103,8 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
                              if row.get('PremiumSamples') else None)
                 ins.execute("""
                     INSERT IGNORE INTO Scraper.DealOutcomes
-                        (EbayID, Category, Model, SurfacedPrice, AvgMarketPrice, DiscountPct, BidCount, EndTime, PredictedFinal, NearMiss)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (EbayID, Category, Model, SurfacedPrice, AvgMarketPrice, DiscountPct, BidCount, EndTime, PredictedFinal, NearMiss, PredMargin)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     row['ID'],
                     product_type.upper(),
@@ -3096,6 +3116,7 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
                     row['EndTime'],
                     predicted,
                     near_miss,
+                    pred_margin,
                 ))
                 if ins.rowcount == 1:
                     if near_miss:
