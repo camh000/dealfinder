@@ -851,6 +851,37 @@ class TestCpuMoboBundle:
         assert "c.IsBundle = 0" in q and "mb.IsBundle = 0" in q  # medians exclude bundles
 
 
+class TestWorkstationAndMixedLots:
+    """Cam-flagged misparses: workstation PCs read as bare CPUs, and a mixed-
+    capacity drive lot read as one giant drive."""
+
+    @pytest.mark.parametrize("title", [
+        # HP Z / Dell T workstations — a shipped drive, an OS, or "Workstation PC"
+        "HP Z4 G4 Core i9-10900x 3.70GHz Workstation PC 32GB RAM/1TB Win 11 Pro",
+        "Dell T7820 - Intel Xeon Silver 4210R@2.40GHz 10 Core, 8GB, 400GB SSD",
+        "Dell Precision Tower i7-8700 16GB 512GB NVMe Windows 10",
+    ])
+    def test_workstation_pc_not_a_cpu(self, title):
+        assert _parse_one(title, "CPU") is None
+
+    @pytest.mark.parametrize("title,ok", [
+        ("Intel Xeon W-2145 8 Core Workstation CPU", True),      # bare CPU, "workstation"≠"workstation pc"
+        ("Intel Xeon Gold 6132 CPU for Server and Networking", True),
+        ("AMD Ryzen 5 5600X 6-Core Processor AM4", True),
+    ])
+    def test_bare_cpu_still_parses(self, title, ok):
+        assert (_parse_one(title, "CPU") is not None) == ok
+
+    def test_mixed_capacity_lot_skipped(self):
+        assert _parse_one('Job Lot 12TB SATA 3.5" HDD (2x 2TB, 2x 3TB, 2x 1TB)', "HDD") is None
+        assert _parse_one('Bundle 5x 2TB + 5x 4TB + 3x 1TB SAS drives', "HDD") is None
+
+    def test_clean_drive_and_lot_still_parse(self):
+        assert _parse_one('Seagate Exos 16TB SATA 3.5" HDD', "HDD")['capacity-gb'] == 16000
+        # a clean total+per-unit lot is only 2 distinct values — kept
+        assert _parse_one('(9.6TB) 8x Seagate 1.2TB SAS 2.5" HDD', "HDD")['quantity'] == 8
+
+
 class TestXeonParsing:
     @pytest.mark.parametrize("title,model", [
         ("Intel Xeon E5-2680 V4 14 Core 2.4GHz LGA2011-3 CPU", "Xeon E5-2680 V4"),

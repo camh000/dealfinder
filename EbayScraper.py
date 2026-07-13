@@ -703,6 +703,22 @@ def title_capacity_values(title: str) -> set:
     return vals
 
 
+# Interface speeds ("12Gb/s", "6 Gbps") read as capacities by the regex above —
+# strip them before counting distinct sizes for the mixed-lot test.
+_IFACE_SPEED_RE = re.compile(r'\d+\s*gb\s*/?\s*s(?:ec)?\b|\d+\s*gbps\b', re.IGNORECASE)
+
+
+def is_mixed_capacity_lot(title: str) -> bool:
+    """A job lot of drives in 3+ different sizes ("12TB … 2x 2TB, 2x 3TB, 2x
+    1TB") — no single capacity fits and it can't be valued per unit, so skip it.
+    Only applies to actual lots: a 'choose your capacity' variation (quantity 1)
+    is a single drive handled by the price-range flag, not a mixed lot. A clean
+    lot names at most the total + one per-unit size (two values)."""
+    if extract_lot_quantity(title) <= 1:
+        return False
+    return len(title_capacity_values(_IFACE_SPEED_RE.sub('', title or ''))) >= 3
+
+
 def lot_is_risky(title: str) -> bool:
     """True for untested/spares-or-repairs/damaged wording — the market median
     assumes working units, so these must not be valued against it. Applied to
@@ -977,8 +993,13 @@ def __ParseItems(soup, query, productType):
                 # "Radeon Vega Graphics" stays a legit CPU.
                 or bool(re.search(r'\brtx\b|\bgtx\b|\bgeforce\b|\bquadro\b|'
                                   r'\brx\s?[5-9]\d00\b', _tl))
-                or (bool(re.search(r'\d+\s*gb\s*(ddr\d?|ram)', _tl))
-                    and bool(re.search(r'\d+\s*(tb|gb)\s*(ssd|nvme|hdd|m\.2)', _tl)))
+                # A bare CPU never SHIPS with storage or an OS. A drive spec
+                # ("400GB SSD"), a Windows install ("Win 11 Pro") or the phrase
+                # "Workstation PC" means a whole machine — HP Z-series and Dell
+                # T-series workstations kept slipping through as their Xeon/i9.
+                or bool(_SYS_STORAGE_RE.search(title))
+                or bool(re.search(r'\bwin(?:dows)?\s*1[01]\b', _tl))
+                or 'workstation pc' in _tl
                 or (('motherboard' in _tl or ' mobo' in _tl)
                     and bool(re.search(r'\bddr\d|\bram\b', _tl)))
             )
@@ -1122,6 +1143,11 @@ def __ParseItems(soup, query, productType):
             if title_is_system(title, 'hdd') or 'graphics card' in _tl or _GPU_TELL_RE.search(title):
                 log.debug("[%s] Skipping system/GPU listing in HDD: %s", query, title[:60])
                 continue
+            # Mixed-capacity job lot ("12TB ... 2x 2TB, 2x 3TB, 2x 1TB") — no
+            # single capacity fits and it can't be valued per unit.
+            if is_mixed_capacity_lot(title):
+                log.debug("[%s] Skipping mixed-capacity lot in HDD: %s", query, title[:60])
+                continue
 
             HDD_BRANDS = ['SEAGATE','TOSHIBA','SAMSUNG','HITACHI','HGST','FUJITSU','MAXTOR']
 
@@ -1208,6 +1234,9 @@ def __ParseItems(soup, query, productType):
             # in SSD). Storage size is the product here, so it isn't a tell.
             if title_is_system(title, 'ssd') or 'graphics card' in _tl or _GPU_TELL_RE.search(title):
                 log.debug("[%s] Skipping system/GPU listing in SSD: %s", query, title[:60])
+                continue
+            if is_mixed_capacity_lot(title):                # mixed-capacity lot
+                log.debug("[%s] Skipping mixed-capacity lot in SSD: %s", query, title[:60])
                 continue
 
             ssd_cap_pattern = re.compile(r'(\d+(?:\.\d+)?)\s*(TB|GB)', re.IGNORECASE)
