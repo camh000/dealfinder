@@ -568,10 +568,20 @@ def ensure_mobo_table():
                 Chipset    VARCHAR(12),
                 Socket     VARCHAR(12),
                 FormFactor VARCHAR(8),
+                IsBundle   TINYINT(1)  NOT NULL DEFAULT 0,
                 FOREIGN KEY (ID) REFERENCES Scraper.EBAY(ID)
             )
         """)
         conn.commit()
+        # IsBundle on both bundle-bearing tables (CPU+mobo bundles). Guarded so
+        # the guide/deal queries can filter bundles out regardless of boot order.
+        for tbl in ('CPU', 'MOBO'):
+            try:
+                cur.execute(f"ALTER TABLE Scraper.{tbl} ADD COLUMN IsBundle TINYINT(1) NOT NULL DEFAULT 0")
+                conn.commit()
+            except mariadb.Error as e:
+                if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                    log.error("%s IsBundle column: %s", tbl, e)
     except Exception:
         pass
     finally:
@@ -1805,7 +1815,23 @@ def deals():
         # strongest deals across every category.
         deals.sort(key=lambda r: float(r.get('PredictedDiscountPct') or r.get('DiscountPct') or 0),
                    reverse=True)
-        return jsonify({"status": "ok", "deals": deals})
+
+        # CPU+motherboard bundles — shown but not scored (their price covers two
+        # components). Live listings for the requested category, filterable by
+        # the same context filters; the page renders them in a separate section.
+        bundles = []
+        for cat in cats:
+            sql = queries.build_bundle_listings_query(cat)
+            if not sql:
+                continue
+            cur.execute(sql)
+            for row in cur.fetchall():
+                row['_cat'] = cat
+                row['_label'] = queries.model_label_for_row(cat, row)
+                if row.get('EndTime'):
+                    row['EndTime'] = _iso_utc(row['EndTime'])
+                bundles.append(row)
+        return jsonify({"status": "ok", "deals": deals, "bundles": bundles})
     except Exception as e:
         log.error("deals error: %s", e)
         return jsonify({"status": "error", "message": "internal error"}), 500

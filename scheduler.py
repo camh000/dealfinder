@@ -643,6 +643,12 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("MOBO table setup failed: %s", e)
 
+    # CPU/MOBO IsBundle flag (CPU+motherboard bundles, dual membership).
+    try:
+        EbayScraper.EnsureBundleColumns()
+    except Exception as e:
+        log.error("Bundle column setup failed: %s", e)
+
     # Dual-VRAM GPU models: split historical rows into per-variant groups.
     try:
         EbayScraper.EnsureGpuVramSplit()

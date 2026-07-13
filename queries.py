@@ -197,6 +197,7 @@ CATEGORIES = {
         'deal_select': ['c.Model', 'c.Brand', 'c.Socket', 'c.Cores'],
         'guide_select': ['rs.Model'],
         'guide_order': 'ms.AvgPrice DESC',
+        'has_bundle': True,   # CPU+mobo bundles live here too — kept out of stats
     },
     'hdd': {
         'table': 'HDD', 'alias': 'h',
@@ -231,6 +232,7 @@ CATEGORIES = {
         'deal_select': ['mb.Brand', 'mb.Chipset', 'mb.Socket', 'mb.FormFactor'],
         'guide_select': ['rs.Chipset', 'rs.FormFactor'],
         'guide_order': 'rs.Chipset, ms.AvgPrice DESC',
+        'has_bundle': True,   # a bundle is a MOBO row too — kept out of stats
     },
     'ram': {
         'table': 'RAM', 'alias': 'r',
@@ -263,6 +265,13 @@ def _join_cond(cfg, left: str, right: str) -> str:
     return ' AND '.join(parts)
 
 
+def _bundle_excl(cfg, alias: str | None = None) -> str:
+    """SQL fragment excluding CPU+mobo bundles. Their price covers two
+    components, so they'd poison a single-item median and score as a fake deal —
+    kept out of the stats and the scored feed, surfaced separately instead."""
+    return f" AND {alias or cfg['alias']}.IsBundle = 0" if cfg.get('has_bundle') else ""
+
+
 # eBay sold prices are heavily right-skewed (bundles, mislabelled multi-item
 # lots): on real data the GPU mean sat ~75% above the median. Market price is
 # therefore the MEDIAN of sold effective prices — a single absurd sale cannot
@@ -289,7 +298,7 @@ def _median_ctes(cfg) -> str:
     JOIN Scraper.EBAY e ON e.ID = {a}.ID
     WHERE e.SoldDate IS NOT NULL AND e.Price IS NOT NULL AND {not_null}
       AND e.SoldDate > NOW() - INTERVAL {MARKET_STATS_DAYS} DAY
-      AND COALESCE(e.Quantity, 1) = 1
+      AND COALESCE(e.Quantity, 1) = 1{_bundle_excl(cfg)}
 ),
 RawStats AS (
     SELECT DISTINCT {cols},
@@ -367,7 +376,7 @@ WHERE
     AND {FRESH_OK}
     AND COALESCE(e.ReserveNotMet, 0) = 0
     AND e.EndTime > NOW()
-    AND e.EndTime < NOW() + {interval}
+    AND e.EndTime < NOW() + {interval}{_bundle_excl(cfg)}
 ORDER BY DealScore DESC;
 """
 
@@ -422,8 +431,41 @@ WHERE
     AND COALESCE(e.ReserveNotMet, 0) = 0
     AND {EFF_UNIT} < ms.AvgPrice * {threshold}
     AND {FEEDBACK_OK}
-    AND {FRESH_OK}{added_clause}
+    AND {FRESH_OK}{added_clause}{_bundle_excl(cfg)}
 ORDER BY DiscountPct DESC;
+"""
+
+
+def build_bundle_listings_query(product_type: str) -> str:
+    """Live CPU+motherboard bundle listings for a category — shown but NOT
+    scored (their price covers two components, so there's no clean median to
+    discount against). Same spec columns as the deal feed, plus price; no
+    discount. Only cpu/mobo have bundles; returns '' for others."""
+    cfg = CATEGORIES[product_type]
+    if not cfg.get('has_bundle'):
+        return ""
+    a = cfg['alias']
+    extra = ',\n    '.join(cfg['deal_select'])
+    return f"""
+SELECT
+    e.ID,
+    {extra},
+    ROUND({EFF}, 2)                         AS CurrentPrice,
+    ROUND(e.Price / 100, 2)                 AS ItemPrice,
+    ROUND(COALESCE(e.Shipping, 0) / 100, 2) AS Shipping,
+    e.Bids,
+    COALESCE(e.ListingType, 'auction')      AS ListingType,
+    e.SellerFeedbackPct,
+    e.SellerFeedbackCount,
+    e.EndTime,
+    e.URL
+FROM Scraper.EBAY e
+JOIN Scraper.{cfg['table']} {a} ON {a}.ID = e.ID
+WHERE {a}.IsBundle = 1
+  AND e.SoldDate IS NULL
+  AND {FRESH_OK}
+  AND {FEEDBACK_OK}
+ORDER BY e.EndTime;
 """
 
 

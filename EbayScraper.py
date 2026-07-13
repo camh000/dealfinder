@@ -662,6 +662,21 @@ def extract_mobo_brand(title: str) -> str:
     return ''
 
 
+# A CPU+motherboard bundle needs an EXPLICIT pairing signal — "bundle", "combo",
+# or "<join> motherboard" — not just a chipset mention (a bare CPU listing often
+# says "compatible with B550 motherboards"). Paired with a chipset + a CPU model,
+# this marks the listing for dual CPU/MOBO membership.
+_BUNDLE_RE = re.compile(
+    r'\bbundle\b|\bcombo\b|'
+    r'(?:\+|&|\band\b|\bwith\b|\bincl(?:uding|\.)?\b|\binc\b)\s*(?:a\s+)?'
+    r'(?:motherboard|mother\s*board|mobo|mainboard|m/?board)\b',
+    re.IGNORECASE)
+
+
+def is_cpu_mobo_bundle(title: str) -> bool:
+    return bool(_BUNDLE_RE.search(title or ''))
+
+
 def extract_lot_quantity(title: str) -> int:
     """Number of units in a multi-item listing; 1 when not confidently a lot."""
     t = _MODEL_FAMILY_X_RE.sub(r'\1', title or '')
@@ -858,6 +873,7 @@ def __ParseItems(soup, query, productType):
 
         socket = cores = capacity_gb = interface = form_factor = rpm = ram_type = speed = None
         drive_type = ram_format = pcie_gen = kit_config = chipset = None
+        is_bundle = False
         quantity = 1
 
         if productType == 'GPU':
@@ -1072,6 +1088,15 @@ def __ParseItems(soup, query, productType):
             # from the model (family+generation) so every CPU carries a socket.
             socket = extract_socket(title) or queries.socket_for(model)
             cores  = extract_cores(title)
+            # CPU + motherboard bundle: a chipset + an explicit pairing signal
+            # (and no storage/GPU that would make it a whole PC). Marked for dual
+            # CPU/MOBO membership — _upload also writes the MOBO side.
+            _chip = extract_chipset(title)
+            if (model and _chip and is_cpu_mobo_bundle(title)
+                    and not _MOBO_SYSTEM_RE.search(title) and not _GPU_TELL_RE.search(title)):
+                chipset     = _chip
+                is_bundle   = True
+                form_factor = extract_mobo_form_factor(title)
 
         elif productType == 'HDD':
 
@@ -1344,6 +1369,7 @@ def __ParseItems(soup, query, productType):
             'socket': socket,
             'cores': cores,
             'chipset': chipset,
+            'is-bundle': is_bundle,
             'capacity-gb': capacity_gb,
             'interface': interface,
             'form-factor': form_factor,
@@ -1569,6 +1595,8 @@ class Product:
     cores: Optional[int] = None
     # Motherboard fields (Socket is shared with CPU; FormFactor with HDD/RAM)
     chipset: Optional[str] = None
+    # CPU+motherboard bundle → dual CPU/MOBO membership, excluded from medians.
+    is_bundle: bool = False
     # HDD fields
     capacity_gb: Optional[int] = None
     interface: Optional[str] = None
@@ -1656,15 +1684,20 @@ def _upload(cur, p: Product, product_type: str, listing_kind: str = 'auction',
         )
     elif product_type == 'CPU':
         cur.execute("""
-            INSERT INTO CPU (ID, Brand, Model, Socket, Cores)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO CPU (ID, Brand, Model, Socket, Cores, IsBundle)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 Brand = VALUES(Brand),
                 Model = VALUES(Model),
                 Socket = VALUES(Socket),
-                Cores = VALUES(Cores);
-            """, (p.id, p.brand, p.model, p.socket, p.cores)
+                Cores = VALUES(Cores),
+                IsBundle = GREATEST(IsBundle, VALUES(IsBundle));
+            """, (p.id, p.brand, p.model, p.socket, p.cores, 1 if p.is_bundle else 0)
         )
+        # Bundle: also write the motherboard side so it joins the MOBO category.
+        if p.is_bundle and p.chipset:
+            _upsert_mobo(cur, p.id, p.brand, p.chipset,
+                         queries.chipset_socket(p.chipset), p.form_factor, is_bundle=True)
     elif product_type == 'HDD':
         cur.execute("""
             INSERT INTO HDD (ID, Brand, CapacityGB, Interface, FormFactor, RPM, DriveType)
@@ -1705,17 +1738,26 @@ def _upload(cur, p: Product, product_type: str, listing_kind: str = 'auction',
             """, (p.id, p.brand, p.capacity_gb, p.ram_type, p.speed, p.ram_format, p.kit_config)
         )
     elif product_type == 'MOBO':
-        cur.execute("""
-            INSERT INTO MOBO (ID, Brand, Chipset, Socket, FormFactor)
-            VALUES (%s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                Brand      = VALUES(Brand),
-                Chipset    = VALUES(Chipset),
-                Socket     = VALUES(Socket),
-                FormFactor = VALUES(FormFactor);
-            """, (p.id, p.brand, p.chipset, p.socket, p.form_factor)
-        )
+        _upsert_mobo(cur, p.id, p.brand, p.chipset, p.socket, p.form_factor,
+                     is_bundle=p.is_bundle)
     return ebay_rc
+
+
+def _upsert_mobo(cur, ebay_id, brand, chipset, socket, form_factor, is_bundle=False):
+    """MOBO upsert used by both the MOBO branch and the CPU-bundle dual write.
+    IsBundle uses GREATEST so a plain-board re-scrape of a bundle listing can't
+    downgrade the flag the CPU branch set."""
+    cur.execute("""
+        INSERT INTO MOBO (ID, Brand, Chipset, Socket, FormFactor, IsBundle)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            Brand      = VALUES(Brand),
+            Chipset    = VALUES(Chipset),
+            Socket     = VALUES(Socket),
+            FormFactor = VALUES(FormFactor),
+            IsBundle   = GREATEST(IsBundle, VALUES(IsBundle));
+        """, (ebay_id, brand, chipset, socket, form_factor, 1 if is_bundle else 0)
+    )
 
 def _scrape_item_by_id(ebay_id: int, category: str, *, sold: bool) -> dict | None:
     """Fetch a single eBay listing by its item ID.
@@ -1993,6 +2035,7 @@ def _product_from_dict(d: dict) -> Product:
         reviews_count=d["reviews-count"], url=d["url"],
         brand=d["brand"], model=d["model"], vram=d["vram"],
         socket=d["socket"], cores=d["cores"], chipset=d.get("chipset"),
+        is_bundle=bool(d.get("is-bundle")),
         capacity_gb=d["capacity-gb"], interface=d["interface"],
         form_factor=d["form-factor"], rpm=d["rpm"],
         drive_type=d.get("drive-type"),
@@ -2815,6 +2858,27 @@ def EnsureMoboTable() -> None:
         conn.commit()
     except mariadb.Error as e:
         log.error("EnsureMoboTable failed: %s", e)
+    finally:
+        conn.close()
+
+
+def EnsureBundleColumns() -> None:
+    """CPU.IsBundle / MOBO.IsBundle — a CPU+motherboard bundle lives in BOTH
+    tables (dual category membership) flagged IsBundle=1, so it appears under
+    both filters yet is excluded from the bare-item medians (its price covers
+    two components)."""
+    DUP = 1060
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        for tbl in ('CPU', 'MOBO'):
+            try:
+                cur.execute(f"ALTER TABLE Scraper.{tbl} ADD COLUMN IsBundle TINYINT(1) NOT NULL DEFAULT 0")
+                conn.commit()
+                log.info("%s: added IsBundle column", tbl)
+            except mariadb.Error as e:
+                if getattr(e, "errno", None) != DUP:
+                    log.error("%s IsBundle column: %s", tbl, e)
     finally:
         conn.close()
 

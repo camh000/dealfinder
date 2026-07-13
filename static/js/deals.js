@@ -5,7 +5,7 @@
 
 const LS_KEY = 'pcd-deal-filters';
 
-let allDeals = [], cat = 'all', ctx = {};
+let allDeals = [], allBundles = [], cat = 'all', ctx = {};
 const saved = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
 if (['all', 'gpu', 'cpu', 'hdd', 'ssd', 'ram'].includes(window.PRESELECT_CAT))
   cat = window.PRESELECT_CAT;
@@ -125,8 +125,33 @@ function render() {
       <div class="price-col">${priceCol(d)}</div>
       <div class="meta-col">${metaCol(d)}</div>
       <a class="go" href="${safeUrl(d.URL)}" target="_blank" rel="noopener noreferrer">View →</a>
-    </article>`).join('');
+    </article>`).join('') + bundlesSection();
   loadSparklines(rows);
+}
+
+/* CPU+motherboard bundles — shown but not scored (their price covers two
+   parts). Same category chip + context filters, no discount badge. */
+function bundlesSection() {
+  let b = allBundles.filter(d => cat === 'all' || d._cat === cat);
+  b = filterByCtx(b, cat, ctx);
+  if (!b.length) return '';
+  return `<div class="sub faint" style="margin:16px 0 6px">
+      ${b.length} CPU + motherboard bundle${b.length === 1 ? '' : 's'} —
+      shown for reference, not scored (the price covers two parts):</div>` +
+    b.map(d => {
+      const ship = Number(d.Shipping) || 0;
+      return `<article class="row-card">
+        <div class="id-col">${identity(d)}
+          <div><span class="chip hot">BUNDLE</span></div></div>
+        <div class="price-col">
+          <div class="price-now num">${fmtGBP(d.ItemPrice)}
+            <span class="ship">${ship > 0 ? '+' + fmtGBP(ship) + ' delivery' : 'free delivery'}</span></div>
+          <div class="sub faint">${d.ListingType === 'bin' ? 'fixed price' : (d.Bids || 0) + ' bids'}</div>
+        </div>
+        <div class="meta-col"><div class="countdown" ${endsAttr(d.EndTime)}></div></div>
+        <a class="go" href="${safeUrl(d.URL)}" target="_blank" rel="noopener noreferrer">View →</a>
+      </article>`;
+    }).join('');
 }
 
 async function loadSparklines(rows) {
@@ -156,6 +181,7 @@ async function load() {
     const data = await res.json();
     if (data.status !== 'ok') throw new Error(data.message || 'error');
     allDeals = data.deals;
+    allBundles = data.bundles || [];
     render();
   } catch (e) {
     $('#rows').innerHTML = `<div class="state">Couldn’t load deals: ${esc(e.message)}</div>`;

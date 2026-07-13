@@ -805,6 +805,51 @@ class TestMotherboard:
         assert queries.model_label_for_row('mobo', {'Chipset': 'B650', 'FormFactor': 'ITX'}) == 'B650 ITX'
 
 
+class TestCpuMoboBundle:
+    """A CPU+motherboard bundle joins BOTH categories (dual membership) and is
+    kept out of the bare-item medians + scored feeds."""
+
+    @pytest.mark.parametrize("title,bundle", [
+        ("AMD Ryzen 5 5600X + MSI B550 Tomahawk Motherboard Bundle", True),
+        ("Intel i7-8700K and Gigabyte Z370 Motherboard Combo", True),
+        ("Ryzen 7 5800X with Motherboard", True),
+        ("AMD Ryzen 5 5600X Processor", False),                 # bare CPU
+        ("Intel i5-9400F CPU compatible with B360 motherboards", False),  # just compatibility
+        ("MSI B550 Tomahawk Motherboard", False),               # bare board
+    ])
+    def test_bundle_signal(self, title, bundle):
+        assert EbayScraper.is_cpu_mobo_bundle(title) == bundle
+
+    def test_cpu_bundle_populates_both_sides(self):
+        item = _parse_one("AMD Ryzen 5 5600X + MSI B550 Tomahawk ATX Motherboard Bundle", "CPU")
+        assert item['model'] == "Ryzen 5 5600X"
+        assert item['socket'] == "AM4"
+        assert item['is-bundle'] is True
+        assert item['chipset'] == "B550"          # mobo side captured for dual write
+
+    def test_bare_cpu_not_a_bundle(self):
+        item = _parse_one("AMD Ryzen 5 5600X 6-Core Processor AM4", "CPU")
+        assert item['is-bundle'] is False
+        assert item['chipset'] is None
+
+    def test_full_pc_not_a_bundle(self):
+        # A CPU+mobo listing that also has storage is a whole PC, not a bundle
+        item = _parse_one("Ryzen 5 5600X B550 Motherboard 16GB 1TB SSD Gaming Bundle", "CPU")
+        assert item is None or item['is-bundle'] is False
+
+    def test_bundles_excluded_from_cpu_stats_and_feed(self):
+        assert "IsBundle = 0" in queries.build_deals_query('cpu')
+        assert "IsBundle = 0" in queries.build_price_guide_query('cpu')
+        assert "IsBundle = 0" in queries.build_deals_query('mobo')
+        # categories without bundles carry no such filter
+        assert "IsBundle" not in queries.build_deals_query('gpu')
+
+    def test_bundle_listings_query_only_for_bundle_cats(self):
+        assert "IsBundle = 1" in queries.build_bundle_listings_query('cpu')
+        assert "IsBundle = 1" in queries.build_bundle_listings_query('mobo')
+        assert queries.build_bundle_listings_query('gpu') == ""
+
+
 class TestXeonParsing:
     @pytest.mark.parametrize("title,model", [
         ("Intel Xeon E5-2680 V4 14 Core 2.4GHz LGA2011-3 CPU", "Xeon E5-2680 V4"),
