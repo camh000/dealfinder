@@ -115,18 +115,18 @@ function render() {
   rows = sortRows(rows, sortCol, sortCol === 'EndTime' || sortCol === 'ItemPrice');
   $('#deal-count').textContent = `${rows.length} deal${rows.length === 1 ? '' : 's'}`;
   const box = $('#rows');
-  if (!rows.length) {
-    box.innerHTML = '<div class="state">No deals match — widen the window or lower the filters.</div>';
-    return;
-  }
-  box.innerHTML = rows.map(d => `
+  const bundles = bundlesSection();
+  const dealsHtml = rows.length
+    ? rows.map(d => `
     <article class="row-card">
       <div class="id-col">${identity(d)}</div>
       <div class="price-col">${priceCol(d)}</div>
       <div class="meta-col">${metaCol(d)}</div>
       <a class="go" href="${safeUrl(d.URL)}" target="_blank" rel="noopener noreferrer">View →</a>
-    </article>`).join('') + bundlesSection();
-  loadSparklines(rows);
+    </article>`).join('')
+    : `<div class="state">No scored deals match${bundles ? ' — bundles below' : ' — widen the window or lower the filters'}.</div>`;
+  box.innerHTML = dealsHtml + bundles;
+  if (rows.length) loadSparklines(rows);
 }
 
 /* CPU+motherboard bundles — shown but not scored (their price covers two
