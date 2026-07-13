@@ -141,6 +141,12 @@ const CTX_FILTERS = {
              ['ryzen 3', 'Ryzen 3'], ['ryzen 5', 'Ryzen 5'], ['ryzen 7', 'Ryzen 7'],
              ['ryzen 9', 'Ryzen 9'], ['xeon', 'Xeon']],
       match: (r, v) => (r.Model || '').toLowerCase().includes(v) },
+    { key: 'socket', label: 'Socket',
+      opts: [['AM4', 'AM4'], ['AM5', 'AM5'], ['LGA1151', 'LGA1151'], ['LGA1200', 'LGA1200'],
+             ['LGA1700', 'LGA1700'], ['LGA1150', 'LGA1150'], ['LGA1155', 'LGA1155'],
+             ['LGA2011-3', 'LGA2011-3'], ['LGA2011', 'LGA2011'], ['LGA2066', 'LGA2066'],
+             ['LGA3647', 'LGA3647'], ['LGA1366', 'LGA1366']],
+      match: (r, v) => (r.Socket || '') === v },
   ],
   hdd: [
     { key: 'iface', label: 'Interface', opts: [['SATA', 'SATA'], ['SAS', 'SAS']],

@@ -716,6 +716,47 @@ class TestGpuBoardNameVariants:
         assert _parse_one(title, "GPU")['model'] == model
 
 
+class TestCpuSocket:
+    """Socket derived from the normalised model (family + generation), filling
+    the ~43% of CPU listings whose title never states it. No per-SKU table."""
+
+    @pytest.mark.parametrize("model,socket", [
+        # AMD Ryzen — generation → AM4 / AM5, mobile → None
+        ("Ryzen 7 3700X", "AM4"), ("Ryzen 5 5600X", "AM4"), ("Ryzen 3 3200G", "AM4"),
+        ("Ryzen 9 7950X", "AM5"), ("Ryzen 7 9800X3D", "AM5"),
+        ("Ryzen 5 2500U", None), ("Ryzen 9 7940HS", None),
+        # Intel Core — generation → socket
+        ("i7-2600K", "LGA1155"), ("i7-3770", "LGA1155"), ("i7-4790K", "LGA1150"),
+        ("i5-6500", "LGA1151"), ("i7-8700K", "LGA1151"), ("i9-9900K", "LGA1151"),
+        ("i5-10500T", "LGA1200"), ("i5-12400F", "LGA1700"), ("i9-14900KF", "LGA1700"),
+        ("i7-980", "LGA1366"), ("i7-860", "LGA1156"),
+        # Intel Core HEDT (overlaps mainstream gens — the tricky exceptions)
+        ("i7-5820K", "LGA2011-3"), ("i7-5960X", "LGA2011-3"), ("i9-10980XE", "LGA2066"),
+        # Intel Xeon families
+        ("Xeon E5-2680 V4", "LGA2011-3"), ("Xeon E5-2670", "LGA2011"),
+        ("Xeon E3-1230 V2", "LGA1155"), ("Xeon E3-1240 V5", "LGA1151"),
+        ("Xeon Silver 4110", "LGA3647"), ("Xeon Gold 6348", "LGA4189"),
+        ("Xeon W-2145", "LGA2066"), ("Xeon E-2224G", "LGA1151"), ("Xeon X5670", "LGA1366"),
+        (None, None), ("", None),
+    ])
+    def test_socket_for(self, model, socket):
+        assert queries.socket_for(model) == socket
+
+    def test_parse_derives_socket_when_title_omits_it(self):
+        # No socket in the title → derived from the model
+        assert _parse_one("Intel Core i5-9400F 6-Core Processor", "CPU")['socket'] == "LGA1151"
+        assert _parse_one("AMD Ryzen 5 5600X Processor", "CPU")['socket'] == "AM4"
+
+    def test_title_socket_wins_over_derived(self):
+        # An explicit (if unusual) socket in the title is kept as-is
+        item = _parse_one("AMD Ryzen 5 5600X AM4 Socket CPU", "CPU")
+        assert item['socket'] == "AM4"
+
+    def test_socket_is_a_cpu_ctx_filter(self):
+        assert queries.ctx_filter_match('cpu', {'socket': 'AM4'}, {'Socket': 'AM4'})
+        assert not queries.ctx_filter_match('cpu', {'socket': 'AM4'}, {'Socket': 'LGA1700'})
+
+
 class TestXeonParsing:
     @pytest.mark.parametrize("title,model", [
         ("Intel Xeon E5-2680 V4 14 Core 2.4GHz LGA2011-3 CPU", "Xeon E5-2680 V4"),

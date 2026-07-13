@@ -1025,7 +1025,9 @@ def __ParseItems(soup, query, productType):
             brand  = extract_cpu_brand(title)
             model  = extract_cpu_model(title)
             vram   = None
-            socket = extract_socket(title)
+            # Title socket wins when the seller states it; otherwise derive it
+            # from the model (family+generation) so every CPU carries a socket.
+            socket = extract_socket(title) or queries.socket_for(model)
             cores  = extract_cores(title)
 
         elif productType == 'HDD':
@@ -2719,6 +2721,34 @@ def EnsureSellerFeedbackColumns() -> None:
             except mariadb.Error as e:
                 if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
                     log.error("EBAY: unexpected error adding %s: %s", col_sql.split()[0], e)
+    finally:
+        conn.close()
+
+
+def EnsureCpuSocketBackfill() -> None:
+    """Fill CPU.Socket for rows whose title never stated it, deriving the socket
+    from the model (queries.socket_for). Idempotent — only touches NULLs, so
+    re-running is cheap and title-stated sockets are never overwritten."""
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT DISTINCT Model FROM Scraper.CPU
+                       WHERE Socket IS NULL AND Model IS NOT NULL""")
+        models = [r[0] for r in cur.fetchall()]
+        filled = 0
+        for model in models:
+            sock = queries.socket_for(model)
+            if not sock:
+                continue
+            cur.execute("UPDATE Scraper.CPU SET Socket=%s WHERE Model=%s AND Socket IS NULL",
+                        (sock, model))
+            filled += cur.rowcount
+        conn.commit()
+        if filled:
+            log.info("CPU socket backfill: derived socket for %d row(s) across %d model(s)",
+                     filled, len(models))
+    except mariadb.Error as e:
+        log.error("EnsureCpuSocketBackfill failed: %s", e)
     finally:
         conn.close()
 

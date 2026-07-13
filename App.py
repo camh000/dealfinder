@@ -2061,6 +2061,10 @@ def price_guide():
                 t = trends.get(key)
                 r['Trend30dPct'] = t[0] if t else None
                 r['TrendSamples'] = t[1] if t else None
+                # Guide groups CPUs by Model only; derive the socket so the
+                # shared socket filter works on the price guide too.
+                if cat == 'cpu':
+                    r['Socket'] = queries.socket_for(r.get('Model'))
             result[cat] = rows
         return jsonify({"status": "ok", "components": result})
     except Exception as e:

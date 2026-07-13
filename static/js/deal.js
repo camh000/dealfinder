@@ -281,6 +281,22 @@ function outcome(d) {
   $('#outcome-body').innerHTML = `<p class="help" style="font-size:14px;margin:0">${body}</p>`;
 }
 
+/* Share this deal — the native share sheet on mobile/PWA (where there's no
+   address bar to copy), clipboard on desktop, with a last-ditch prompt. */
+$('#share-btn')?.addEventListener('click', async () => {
+  const url = location.href;
+  const title = ($('#deal-title').textContent || 'PC/DEALS deal').slice(0, 100);
+  try {
+    if (navigator.share) { await navigator.share({ title, url }); return; }
+    await navigator.clipboard.writeText(url);
+    const b = $('#share-btn'); const t = b.textContent;
+    b.textContent = '✓ Link copied'; setTimeout(() => { b.textContent = t; }, 1500);
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;   // user dismissed the share sheet
+    prompt('Copy this link:', url);
+  }
+});
+
 (async () => {
   try {
     const res = await fetch(`/api/deal/${ID}`);

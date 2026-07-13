@@ -8,6 +8,95 @@ Shipping applies to both the sold-market statistics and the live listing
 price, so discounts are postage-inclusive and apples-to-apples.
 """
 import os
+import re
+
+
+# ── CPU socket derivation ───────────────────────────────────────────────────
+# A CPU's socket is a function of its family + generation, so a compact rules
+# table fills it for the ~43% of listings whose title never states it — no
+# per-SKU master table needed. Genuinely ambiguous cases (Intel HEDT X-series
+# that overlaps mainstream generations, mobile BGA parts) return None rather
+# than a confidently-wrong socket. Models arrive already normalised
+# ("i5-6600K", "Ryzen 5 5600X", "Xeon E5-2680 V4").
+
+_INTEL_CORE_SOCKET = {          # mainstream desktop Core, by generation
+    2: 'LGA1155', 3: 'LGA1155', 4: 'LGA1150', 5: 'LGA1150',
+    6: 'LGA1151', 7: 'LGA1151', 8: 'LGA1151', 9: 'LGA1151',
+    10: 'LGA1200', 11: 'LGA1200', 12: 'LGA1700', 13: 'LGA1700', 14: 'LGA1700',
+}
+_INTEL_HEDT_SOCKET = {          # X-series / -E enthusiast platforms, by generation
+    3: 'LGA2011', 4: 'LGA2011', 5: 'LGA2011-3', 6: 'LGA2011-3',
+    7: 'LGA2066', 9: 'LGA2066', 10: 'LGA2066',
+}
+# HEDT SKUs ending in K are indistinguishable from mainstream by generation.
+_INTEL_HEDT_SKUS = {'3820', '3930K', '3960X', '4820K', '4930K', '4960X',
+                    '5820K', '5930K', '5960X', '6800K', '6850K', '6900K', '6950X'}
+_XEON_E3_SOCKET = {1: 'LGA1155', 2: 'LGA1155', 3: 'LGA1150', 4: 'LGA1150',
+                   5: 'LGA1151', 6: 'LGA1151'}
+
+
+def socket_for(model) -> str | None:
+    """Derive a CPU socket from its normalised model string, or None if the
+    family/generation doesn't pin one unambiguously."""
+    if not model:
+        return None
+    u = str(model).strip().upper()
+
+    # ── AMD Ryzen — "RYZEN 5 5600X", "RYZEN 3 3400G", "RYZEN 9 7940HS" ──
+    m = re.match(r'RYZEN\s+\d\s+(\d)\d{2,3}([A-Z0-9]*)$', u)
+    if m:
+        gen, suf = int(m.group(1)), m.group(2)
+        if suf.endswith(('HS', 'HX', 'H', 'U')):     # mobile BGA — no socket
+            return None
+        if gen in (1, 2, 3, 4, 5):
+            return 'AM4'
+        if gen in (7, 8, 9):
+            return 'AM5'
+        return None
+    if 'THREADRIPPER' in u:
+        return None                                   # TR4 / sTRX4 / sWRX8 vary
+
+    # ── Intel Core — "I5-6600K", "I7-10700K", "I9-13900KF" ──
+    m = re.match(r'I([3579])-(\d{3,5})([A-Z]*)$', u)
+    if m:
+        tier, num, suf = int(m.group(1)), m.group(2), m.group(3)
+        if (num + suf) in _INTEL_HEDT_SKUS or (tier in (7, 9) and suf.startswith('X')):
+            gen = int(num) // 1000 if len(num) >= 4 else int(num[0])
+            return _INTEL_HEDT_SOCKET.get(gen)
+        if len(num) == 3:                              # 1st-gen (Nehalem/Westmere)
+            return 'LGA1366' if num[0] == '9' else 'LGA1156'
+        return _INTEL_CORE_SOCKET.get(int(num) // 1000)
+
+    # ── Intel Xeon ──
+    return _xeon_socket(u)
+
+
+def _xeon_socket(u) -> str | None:
+    m = re.match(r'XEON\s+(E\d)-\d{4}(?:\s+V(\d))?', u)          # E3/E5/E7 (+Vn)
+    if m:
+        fam, v = m.group(1), int(m.group(2) or 1)
+        if fam == 'E3':
+            return _XEON_E3_SOCKET.get(v)
+        if fam == 'E5':
+            return 'LGA2011' if v <= 2 else 'LGA2011-3'
+        return 'LGA2011'                                          # E7 (coarse)
+    m = re.match(r'XEON\s+(?:SILVER|GOLD|PLATINUM|BRONZE)\s+(\d{4})', u)  # Scalable
+    if m:
+        g = int(m.group(1)[1])                                   # 2nd digit = gen
+        if g <= 2:
+            return 'LGA3647'
+        if g == 3:
+            return 'LGA4189'
+        return 'LGA4677'                                          # Sapphire/Emerald
+    m = re.match(r'XEON\s+W-(\d)\d{3}', u)                        # W-1250 / W-2145 / W-3175
+    if m:
+        return {'1': 'LGA1151', '2': 'LGA2066', '3': 'LGA3647'}.get(m.group(1))
+    if re.match(r'XEON\s+E-2\d{3}', u):                           # E-2224G (Coffee)
+        return 'LGA1151'
+    m = re.match(r'XEON\s+[WEXL](\d)\d{3}', u)                    # legacy X5670 / W3690
+    if m:
+        return 'LGA1366' if m.group(1) in ('3', '5') else None
+    return None
 
 # Effective listing price in pounds. Older rows scraped before the Shipping
 # column existed have NULL shipping and are treated as free-postage.
@@ -580,6 +669,7 @@ _CTX_FILTER_MATCHERS = {
     },
     'cpu': {
         'family': lambda r, v: str(v).lower() in str(r.get('Model') or '').lower(),
+        'socket': lambda r, v: (r.get('Socket') or '') == v,
     },
     'hdd': {
         'iface': lambda r, v: (r.get('Interface') or 'SATA') == v,

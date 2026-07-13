@@ -619,6 +619,12 @@ if __name__ == "__main__":
     except Exception as e:
         log.error("Seller feedback migration failed: %s", e)
 
+    # CPU socket: derive it from the model for listings whose title omitted it.
+    try:
+        EbayScraper.EnsureCpuSocketBackfill()
+    except Exception as e:
+        log.error("CPU socket backfill failed: %s", e)
+
     # Dual-VRAM GPU models: split historical rows into per-variant groups.
     try:
         EbayScraper.EnsureGpuVramSplit()
