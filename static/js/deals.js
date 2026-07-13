@@ -44,6 +44,10 @@ function identity(d) {
     if (d.FormFactor === 'SODIMM') chips.push('<span class="chip">SODIMM</span>');
     if (d.Brand) chips.push(`<span class="chip">${esc(d.Brand)}</span>`);
     if (d.Speed) chips.push(`<span class="chip">${d.Speed}MHz</span>`);
+  } else if (c === 'mobo') {
+    title = `${d.Chipset || '—'}${d.FormFactor && d.FormFactor !== 'ATX' ? ' ' + d.FormFactor : ''}`;
+    if (d.Socket) chips.push(`<span class="chip">${esc(d.Socket)}</span>`);
+    if (d.Brand) chips.push(`<span class="chip">${esc(d.Brand)}</span>`);
   } else { // hdd / ssd
     title = `${fmtCap(d.CapacityGB)} ${d.Interface || 'SATA'}`;
     if (d.DriveType === 'External') chips.push('<span class="chip">EXT</span>');

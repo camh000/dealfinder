@@ -201,7 +201,7 @@ def test_bin_settings_post_validates_ranges(app_module):
 def test_bin_settings_post_validates_filters(app_module):
     client = app_module.app.test_client()
     base = {"scan_minutes": 30, "min_discount": 25, "enabled": True}
-    for filters in ({"mobo": "B550"},              # unknown category
+    for filters in ({"psu": "750W"},               # unknown category
                     {"hdd": 123},                  # not a string
                     {"hdd": "x" * 400},            # absurd length
                     "6TB"):                        # not an object

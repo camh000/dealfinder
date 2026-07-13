@@ -164,6 +164,20 @@ const CTX_FILTERS = {
       opts: [['500', '500GB+'], ['1000', '1TB+'], ['2000', '2TB+'], ['4000', '4TB+']],
       match: (r, v) => Number(r.CapacityGB) >= Number(v) },
   ],
+  mobo: [
+    { key: 'socket', label: 'Socket',
+      opts: [['AM4', 'AM4'], ['AM5', 'AM5'], ['LGA1151', 'LGA1151'], ['LGA1200', 'LGA1200'],
+             ['LGA1700', 'LGA1700'], ['LGA1150', 'LGA1150'], ['LGA1155', 'LGA1155']],
+      match: (r, v) => (r.Socket || '') === v },
+    { key: 'chipset', label: 'Chipset',
+      opts: [['B550', 'B550'], ['X570', 'X570'], ['B450', 'B450'], ['B650', 'B650'],
+             ['X670', 'X670'], ['B760', 'B760'], ['Z790', 'Z790'], ['B660', 'B660'],
+             ['Z690', 'Z690'], ['B560', 'B560'], ['Z590', 'Z590'], ['Z390', 'Z390']],
+      match: (r, v) => (r.Chipset || '') === v },
+    { key: 'ff', label: 'Form',
+      opts: [['ATX', 'ATX'], ['mATX', 'Micro-ATX'], ['ITX', 'Mini-ITX'], ['E-ATX', 'E-ATX']],
+      match: (r, v) => (r.FormFactor || 'ATX') === v },
+  ],
   ram: [
     { key: 'type', label: 'Type', opts: [['DDR3', 'DDR3'], ['DDR4', 'DDR4'], ['DDR5', 'DDR5']],
       match: (r, v) => (r.Type || '') === v },
@@ -209,6 +223,9 @@ function filterByCtx(rows, cat, ctx) {
 function modelHref(cat, row) {
   const p = new URLSearchParams();
   if (cat === 'gpu' || cat === 'cpu') p.set('Model', row.Model ?? '');
+  else if (cat === 'mobo') {
+    p.set('Chipset', row.Chipset ?? ''); p.set('FormFactor', row.FormFactor ?? '');
+  }
   else if (cat === 'ram') {
     p.set('Type', row.Type ?? ''); p.set('CapacityGB', row.CapacityGB ?? '');
     p.set('FormFactor', row.FormFactor ?? '');
@@ -222,6 +239,8 @@ function modelHref(cat, row) {
 
 function groupLabel(cat, g) {
   if (cat === 'gpu' || cat === 'cpu') return g.Model || '—';
+  if (cat === 'mobo')
+    return `${g.Chipset || '—'}${g.FormFactor && g.FormFactor !== 'ATX' ? ' ' + g.FormFactor : ''}`;
   if (cat === 'ram')
     return `${g.CapacityGB}GB ${g.Type || ''}${g.FormFactor === 'SODIMM' ? ' SODIMM' : ''}${g.KitConfig ? ' (' + g.KitConfig + ')' : ''}`.trim();
   const kind = cat === 'ssd' ? ' SSD' : '';

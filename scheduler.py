@@ -172,6 +172,30 @@ RAM_QUERY_LIST = [
     "64gb ddr5 ram",
 ]
 
+MOBO_QUERY_LIST = [
+    "AM4 motherboard",
+    "AM5 motherboard",
+    "LGA1700 motherboard",
+    "LGA1200 motherboard",
+    "LGA1151 motherboard",
+    "B550 motherboard",
+    "B650 motherboard",
+    "X570 motherboard",
+    "Z790 motherboard",
+    "gaming motherboard",
+]
+
+# Every category scraped in the full run + BIN sweep. New categories added here
+# flow through surfacing, counts, the guide and the audit automatically.
+CATEGORY_QUERIES = [
+    (GPU_QUERY_LIST, 'GPU'),
+    (CPU_QUERY_LIST, 'CPU'),
+    (HDD_QUERY_LIST, 'HDD'),
+    (SSD_QUERY_LIST, 'SSD'),
+    (RAM_QUERY_LIST, 'RAM'),
+    (MOBO_QUERY_LIST, 'MOBO'),
+]
+
 # ── Scheduler state ────────────────────────────────────────────────────────────
 
 _last_full_scrape: datetime | None = None
@@ -311,13 +335,7 @@ def run_bin_scan(min_discount: float):
     global _last_bin_scan
     _last_bin_scan = _utcnow()      # set first: a crashing scan must not hot-loop
     log.info("Starting BIN scan (min discount %.0f%%)...", min_discount)
-    for query_list, product_type in [
-        (GPU_QUERY_LIST, 'GPU'),
-        (CPU_QUERY_LIST, 'CPU'),
-        (HDD_QUERY_LIST, 'HDD'),
-        (SSD_QUERY_LIST, 'SSD'),
-        (RAM_QUERY_LIST, 'RAM'),
-    ]:
+    for query_list, product_type in CATEGORY_QUERIES:
         try:
             EbayScraper.ScrapeBinAndUpload(query_list, product_type=product_type,
                                            country=SCRAPE_COUNTRY, condition=SCRAPE_CONDITION)
@@ -393,13 +411,7 @@ def run_full_scrape():
     )
     total_rows = 0
     categories_ok = 0
-    for query_list, product_type in [
-        (GPU_QUERY_LIST, 'GPU'),
-        (CPU_QUERY_LIST, 'CPU'),
-        (HDD_QUERY_LIST, 'HDD'),
-        (SSD_QUERY_LIST, 'SSD'),
-        (RAM_QUERY_LIST, 'RAM'),
-    ]:
+    for query_list, product_type in CATEGORY_QUERIES:
         try:
             log.info("Scraping %s...", product_type)
             inserted, updated = EbayScraper.ScrapeAndUpload(query_list, product_type=product_type, **common)
@@ -464,7 +476,7 @@ def run_full_scrape():
                   "for this field. Kuma heartbeat withheld.", a)
     kuma_heartbeat(
         ok=(categories_ok > 0 and total_rows > 0 and not alerts),
-        msg=f"full scrape ok: {total_rows} rows across {categories_ok}/5 categories",
+        msg=f"full scrape ok: {total_rows} rows across {categories_ok}/{len(CATEGORY_QUERIES)} categories",
     )
     if categories_ok > 0 and total_rows == 0:
         log.error(
@@ -624,6 +636,12 @@ if __name__ == "__main__":
         EbayScraper.EnsureCpuSocketBackfill()
     except Exception as e:
         log.error("CPU socket backfill failed: %s", e)
+
+    # Motherboard satellite table (new MOBO category).
+    try:
+        EbayScraper.EnsureMoboTable()
+    except Exception as e:
+        log.error("MOBO table setup failed: %s", e)
 
     # Dual-VRAM GPU models: split historical rows into per-variant groups.
     try:

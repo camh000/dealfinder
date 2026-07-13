@@ -98,6 +98,52 @@ def _xeon_socket(u) -> str | None:
         return 'LGA1366' if m.group(1) in ('3', '5') else None
     return None
 
+
+# ── Motherboard chipset → socket ────────────────────────────────────────────
+# A board's socket is fixed by its chipset. This small, stable table (~60
+# chipsets) is the mobo equivalent of the CPU family rules — it pins the socket
+# and doubles as the chipset vocabulary the parser recognises. Chipset codes
+# don't collide across vendors (AMD A/B/X + specific numbers vs Intel
+# H/B/Z/Q/P/X + different numbers), so one flat map is unambiguous.
+_CHIPSET_SOCKET = {
+    # AMD AM4
+    'A320': 'AM4', 'B350': 'AM4', 'X370': 'AM4', 'B450': 'AM4', 'X470': 'AM4',
+    'A520': 'AM4', 'B550': 'AM4', 'X570': 'AM4',
+    # AMD AM5
+    'A620': 'AM5', 'B650': 'AM5', 'B650E': 'AM5', 'X670': 'AM5', 'X670E': 'AM5',
+    'B840': 'AM5', 'B850': 'AM5', 'X870': 'AM5', 'X870E': 'AM5',
+    # AMD Threadripper
+    'X399': 'TR4', 'TRX40': 'sTRX4', 'WRX80': 'sWRX8',
+    # Intel LGA1155 (Sandy/Ivy Bridge)
+    'H61': 'LGA1155', 'B75': 'LGA1155', 'Q75': 'LGA1155', 'H77': 'LGA1155',
+    'Z75': 'LGA1155', 'Z77': 'LGA1155', 'P67': 'LGA1155', 'H67': 'LGA1155',
+    'Z68': 'LGA1155', 'Q77': 'LGA1155',
+    # Intel LGA1150 (Haswell / Broadwell)
+    'H81': 'LGA1150', 'B85': 'LGA1150', 'Q87': 'LGA1150', 'H87': 'LGA1150',
+    'Z87': 'LGA1150', 'H97': 'LGA1150', 'Z97': 'LGA1150',
+    # Intel LGA1151 (Skylake → Coffee Lake, 100/200/300 series)
+    'H110': 'LGA1151', 'B150': 'LGA1151', 'Q150': 'LGA1151', 'H170': 'LGA1151',
+    'Z170': 'LGA1151', 'B250': 'LGA1151', 'H270': 'LGA1151', 'Z270': 'LGA1151',
+    'H310': 'LGA1151', 'B360': 'LGA1151', 'B365': 'LGA1151', 'H370': 'LGA1151',
+    'Q370': 'LGA1151', 'Z370': 'LGA1151', 'Z390': 'LGA1151',
+    # Intel LGA1200 (Comet / Rocket Lake, 400/500 series)
+    'H410': 'LGA1200', 'B460': 'LGA1200', 'H470': 'LGA1200', 'Z490': 'LGA1200',
+    'Q470': 'LGA1200', 'H510': 'LGA1200', 'B560': 'LGA1200', 'H570': 'LGA1200',
+    'Z590': 'LGA1200',
+    # Intel LGA1700 (Alder / Raptor Lake, 600/700 series)
+    'H610': 'LGA1700', 'B660': 'LGA1700', 'H670': 'LGA1700', 'Z690': 'LGA1700',
+    'B760': 'LGA1700', 'H770': 'LGA1700', 'Z790': 'LGA1700',
+    # Intel HEDT
+    'X79': 'LGA2011', 'X99': 'LGA2011-3', 'X299': 'LGA2066',
+}
+# Chipset codes longest-first so "X670E"/"B650E" win over "X670"/"B650".
+CHIPSETS = sorted(_CHIPSET_SOCKET, key=len, reverse=True)
+
+
+def chipset_socket(chipset) -> str | None:
+    """Socket for a motherboard chipset code, or None if unknown."""
+    return _CHIPSET_SOCKET.get(str(chipset or '').upper())
+
 # Effective listing price in pounds. Older rows scraped before the Shipping
 # column existed have NULL shipping and are treated as free-postage.
 EFF = "((e.Price + COALESCE(e.Shipping, 0)) / 100)"
@@ -174,6 +220,17 @@ CATEGORIES = {
         'deal_select': ['s.Brand', 's.CapacityGB', 's.Interface', 's.FormFactor', 's.DriveType', 's.Gen'],
         'guide_select': ['rs.CapacityGB', 'rs.Interface', 'rs.DriveType'],
         'guide_order': 'rs.CapacityGB DESC, ms.AvgPrice DESC',
+    },
+    'mobo': {
+        'table': 'MOBO', 'alias': 'mb',
+        # Grouped by chipset + form factor: an ITX/mATX board of the same
+        # chipset commands a real premium over full ATX, so they price apart
+        # (null-safe FormFactor so a rare unstated one still forms a group).
+        'group_cols': [('Chipset', False), ('FormFactor', True)],
+        'not_null': ['Chipset'],
+        'deal_select': ['mb.Brand', 'mb.Chipset', 'mb.Socket', 'mb.FormFactor'],
+        'guide_select': ['rs.Chipset', 'rs.FormFactor'],
+        'guide_order': 'rs.Chipset, ms.AvgPrice DESC',
     },
     'ram': {
         'table': 'RAM', 'alias': 'r',
@@ -671,6 +728,11 @@ _CTX_FILTER_MATCHERS = {
         'family': lambda r, v: str(v).lower() in str(r.get('Model') or '').lower(),
         'socket': lambda r, v: (r.get('Socket') or '') == v,
     },
+    'mobo': {
+        'socket': lambda r, v: (r.get('Socket') or '') == v,
+        'chipset': lambda r, v: (r.get('Chipset') or '') == v,
+        'ff': lambda r, v: (r.get('FormFactor') or 'ATX') == v,
+    },
     'hdd': {
         'iface': lambda r, v: (r.get('Interface') or 'SATA') == v,
         'type': lambda r, v: (r.get('DriveType') or 'Internal') == v,
@@ -803,4 +865,9 @@ def _base_label(product_type: str, row: dict) -> str:
         so = ' SODIMM' if row.get('FormFactor') == 'SODIMM' else ''
         kit = f" ({row['KitConfig']})" if row.get('KitConfig') else ''
         return f"{cap}GB {ram_type}{so}{kit}" if cap else f"{ram_type}{so}{kit}"
+    if product_type == 'mobo':
+        chip = row.get('Chipset') or 'Motherboard'
+        # Only annotate the non-default (full ATX) form factor.
+        ff = row.get('FormFactor')
+        return f"{chip} {ff}" if ff and ff != 'ATX' else chip
     return row.get('Model')

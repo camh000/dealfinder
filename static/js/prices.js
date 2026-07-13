@@ -9,7 +9,7 @@ let basket = JSON.parse(localStorage.getItem('pcd-basket') || '[]');
 let ctx = {};
 
 function rowsFlat() {
-  const cats = cat === 'all' ? ['gpu', 'cpu', 'hdd', 'ssd', 'ram'] : [cat];
+  const cats = cat === 'all' ? ['gpu', 'cpu', 'mobo', 'hdd', 'ssd', 'ram'] : [cat];
   let rows = [];
   for (const c of cats)
     for (const r of (guide[c] || []))

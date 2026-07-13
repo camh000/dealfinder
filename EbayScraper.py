@@ -619,6 +619,49 @@ def strip_leading_total(title: str) -> str:
 _GPU_TELL_RE = re.compile(r'geforce|radeon|\bgtx\b|\bquadro\b|\brtx[\s-]*[a-z]?\d', re.IGNORECASE)
 
 
+# ── Motherboard parsing ─────────────────────────────────────────────────────
+# Chipset vocabulary comes straight from queries._CHIPSET_SOCKET (longest-first
+# so "X670E" beats "X670"). A full prebuilt PC also lists a motherboard, so a
+# storage drive, a GPU model or a build/OS keyword disqualifies the listing —
+# a bare board or a CPU+mobo bundle names none of those.
+# Optional trailing letter captures board-name variants ("B450M", "B660M") where
+# the letter is the form factor, not part of the chipset. Longest-first ordering
+# keeps "X670E"/"B650E" from being read as "X670"+E / "B650"+E.
+_MOBO_CHIPSET_RE = re.compile(r'\b(' + '|'.join(queries.CHIPSETS) + r')[A-Za-z]?\b', re.IGNORECASE)
+_MOBO_SYSTEM_RE = re.compile(
+    r'\bgaming pc\b|\bdesktop pc\b|\btower pc\b|\bpre-?built\b|\bwindows\s*1[01]\b|'
+    r'\b\d{3,4}\s*gb\s+ssd\b|\b\d+\s*tb\s+ssd\b|\b\d{3,4}\s*gb\s+hdd\b|\b\d+\s*tb\s+hdd\b',
+    re.IGNORECASE)
+_MOBO_BRANDS = ['ASROCK', 'ASUS', 'ROG', 'GIGABYTE', 'AORUS', 'MSI', 'BIOSTAR',
+                'EVGA', 'NZXT', 'COLORFUL', 'SUPERMICRO', 'FOXCONN']
+
+
+def extract_chipset(title: str) -> str | None:
+    m = _MOBO_CHIPSET_RE.search(title or '')
+    return m.group(1).upper() if m else None
+
+
+def extract_mobo_form_factor(title: str) -> str:
+    """ATX by default — unstated boards are almost always full ATX; the smaller
+    (pricier) form factors are near-always called out in the title."""
+    t = (title or '').lower()
+    if 'e-atx' in t or 'eatx' in t or 'extended atx' in t:
+        return 'E-ATX'
+    if 'mini-itx' in t or 'mini itx' in t or re.search(r'\bitx\b', t):
+        return 'ITX'
+    if any(k in t for k in ('micro-atx', 'micro atx', 'matx', 'm-atx', 'µatx', 'uatx')):
+        return 'mATX'
+    return 'ATX'
+
+
+def extract_mobo_brand(title: str) -> str:
+    u = (title or '').upper()
+    for b in _MOBO_BRANDS:
+        if b in u:
+            return {'ROG': 'Asus', 'AORUS': 'Gigabyte'}.get(b, b.title())
+    return ''
+
+
 def extract_lot_quantity(title: str) -> int:
     """Number of units in a multi-item listing; 1 when not confidently a lot."""
     t = _MODEL_FAMILY_X_RE.sub(r'\1', title or '')
@@ -814,7 +857,7 @@ def __ParseItems(soup, query, productType):
             continue
 
         socket = cores = capacity_gb = interface = form_factor = rpm = ram_type = speed = None
-        drive_type = ram_format = pcie_gen = kit_config = None
+        drive_type = ram_format = pcie_gen = kit_config = chipset = None
         quantity = 1
 
         if productType == 'GPU':
@@ -1260,6 +1303,22 @@ def __ParseItems(soup, query, productType):
             vram  = None
             ram_format = classify_ram_form_factor(title)
 
+        elif productType == 'MOBO':
+            # A bare board or a CPU+mobo bundle — never a whole prebuilt PC
+            # (those add storage + a graphics card). No chipset → can't group it.
+            if _MOBO_SYSTEM_RE.search(title) or _GPU_TELL_RE.search(title):
+                log.debug("[%s] Skipping system listing in MOBO: %s", query, title[:60])
+                continue
+            chipset = extract_chipset(title)
+            if not chipset:
+                log.debug("[%s] No chipset in MOBO listing: %s", query, title[:60])
+                continue
+            brand       = extract_mobo_brand(title)
+            model       = None
+            vram        = None
+            socket      = queries.chipset_socket(chipset)
+            form_factor = extract_mobo_form_factor(title)
+
         else:
             brand = ''
             model = ''
@@ -1284,6 +1343,7 @@ def __ParseItems(soup, query, productType):
             'vram': vram,
             'socket': socket,
             'cores': cores,
+            'chipset': chipset,
             'capacity-gb': capacity_gb,
             'interface': interface,
             'form-factor': form_factor,
@@ -1507,6 +1567,8 @@ class Product:
     # CPU fields
     socket: Optional[str] = None
     cores: Optional[int] = None
+    # Motherboard fields (Socket is shared with CPU; FormFactor with HDD/RAM)
+    chipset: Optional[str] = None
     # HDD fields
     capacity_gb: Optional[int] = None
     interface: Optional[str] = None
@@ -1641,6 +1703,17 @@ def _upload(cur, p: Product, product_type: str, listing_kind: str = 'auction',
                 FormFactor = VALUES(FormFactor),
                 KitConfig  = VALUES(KitConfig);
             """, (p.id, p.brand, p.capacity_gb, p.ram_type, p.speed, p.ram_format, p.kit_config)
+        )
+    elif product_type == 'MOBO':
+        cur.execute("""
+            INSERT INTO MOBO (ID, Brand, Chipset, Socket, FormFactor)
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                Brand      = VALUES(Brand),
+                Chipset    = VALUES(Chipset),
+                Socket     = VALUES(Socket),
+                FormFactor = VALUES(FormFactor);
+            """, (p.id, p.brand, p.chipset, p.socket, p.form_factor)
         )
     return ebay_rc
 
@@ -1919,7 +1992,7 @@ def _product_from_dict(d: dict) -> Product:
         sold_date=d["sold-date"], bid_count=d["bid-count"],
         reviews_count=d["reviews-count"], url=d["url"],
         brand=d["brand"], model=d["model"], vram=d["vram"],
-        socket=d["socket"], cores=d["cores"],
+        socket=d["socket"], cores=d["cores"], chipset=d.get("chipset"),
         capacity_gb=d["capacity-gb"], interface=d["interface"],
         form_factor=d["form-factor"], rpm=d["rpm"],
         drive_type=d.get("drive-type"),
@@ -2721,6 +2794,27 @@ def EnsureSellerFeedbackColumns() -> None:
             except mariadb.Error as e:
                 if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
                     log.error("EBAY: unexpected error adding %s: %s", col_sql.split()[0], e)
+    finally:
+        conn.close()
+
+
+def EnsureMoboTable() -> None:
+    """Create the MOBO satellite table (new motherboard category)."""
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.MOBO (
+                ID         BIGINT      NOT NULL PRIMARY KEY,
+                Brand      VARCHAR(40),
+                Chipset    VARCHAR(12),
+                Socket     VARCHAR(12),
+                FormFactor VARCHAR(8)
+            )
+        """)
+        conn.commit()
+    except mariadb.Error as e:
+        log.error("EnsureMoboTable failed: %s", e)
     finally:
         conn.close()
 

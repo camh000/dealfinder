@@ -554,6 +554,34 @@ def ensure_ssd_table():
 ensure_ssd_table()
 
 
+def ensure_mobo_table():
+    """MOBO satellite (new motherboard category). Created web-side too so the
+    guide/deal queries don't depend on the scraper booting first."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Scraper.MOBO (
+                ID         BIGINT      NOT NULL PRIMARY KEY,
+                Brand      VARCHAR(40),
+                Chipset    VARCHAR(12),
+                Socket     VARCHAR(12),
+                FormFactor VARCHAR(8),
+                FOREIGN KEY (ID) REFERENCES Scraper.EBAY(ID)
+            )
+        """)
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        if conn:
+            conn.close()
+
+
+ensure_mobo_table()
+
+
 # ── user accounts ──────────────────────────────────────────────────────────────
 # Session-cookie login. Bootstrap mode: while no users exist, everything is
 # open and Settings offers "create the admin account"; the first user created
@@ -1666,7 +1694,7 @@ def service_worker():
     return resp
 
 
-PAGE_CATEGORIES = ('gpu', 'cpu', 'hdd', 'ssd', 'ram')
+PAGE_CATEGORIES = ('gpu', 'cpu', 'mobo', 'hdd', 'ssd', 'ram')
 
 
 @app.route("/")
@@ -1814,7 +1842,7 @@ def deal_counts():
         pcur.execute(queries.SNIPE_PREMIUM_QUERY)
         premiums = queries.median_ratios(pcur.fetchall())
         counts = {}
-        for key in ('gpu', 'cpu', 'hdd', 'ssd', 'ram'):
+        for key in PAGE_CATEGORIES:
             cur.execute(get_deals_query(key, window_hours, min_discount))
             rows = cur.fetchall()
             queries.annotate_predictions(rows, key, premiums)
@@ -1969,7 +1997,7 @@ def outcomes():
             conn.close()
 
 
-VALID_CATEGORIES = ('GPU', 'CPU', 'HDD', 'SSD', 'RAM')
+VALID_CATEGORIES = ('GPU', 'CPU', 'MOBO', 'HDD', 'SSD', 'RAM')
 
 
 def ensure_notify_recipients_table():
@@ -2050,7 +2078,7 @@ def price_guide():
         cur = conn.cursor(dictionary=True)
         pcur = conn.cursor()
         result = {}
-        for cat in ('gpu', 'cpu', 'hdd', 'ssd', 'ram'):
+        for cat in PAGE_CATEGORIES:
             cur.execute(queries.build_price_guide_query(cat))
             rows = cur.fetchall()
             live, trends = _guide_extras(pcur, cat)

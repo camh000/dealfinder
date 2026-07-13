@@ -757,6 +757,54 @@ class TestCpuSocket:
         assert not queries.ctx_filter_match('cpu', {'socket': 'AM4'}, {'Socket': 'LGA1700'})
 
 
+class TestMotherboard:
+    """MOBO category: chipset → socket, form factor, grouping and filters."""
+
+    @pytest.mark.parametrize("chipset,socket", [
+        ("B550", "AM4"), ("X570", "AM4"), ("B450", "AM4"),
+        ("B650", "AM5"), ("X670E", "AM5"), ("B850", "AM5"),
+        ("Z790", "LGA1700"), ("B660", "LGA1700"), ("H610", "LGA1700"),
+        ("Z590", "LGA1200"), ("Z390", "LGA1151"), ("Z87", "LGA1150"),
+        ("Z77", "LGA1155"), ("X99", "LGA2011-3"), ("TRX40", "sTRX4"),
+        ("nope", None),
+    ])
+    def test_chipset_socket(self, chipset, socket):
+        assert queries.chipset_socket(chipset) == socket
+
+    @pytest.mark.parametrize("title,chip,sock,ff,brand", [
+        ("ASUS ROG STRIX B550-F Gaming ATX Motherboard AM4", "B550", "AM4", "ATX", "Asus"),
+        ("MSI MAG B650 Tomahawk WIFI Motherboard", "B650", "AM5", "ATX", "Msi"),
+        ("Gigabyte B450M DS3H Micro-ATX Motherboard", "B450", "AM4", "mATX", "Gigabyte"),
+        ("ASRock Z790 PG Lightning Mini-ITX", "Z790", "LGA1700", "ITX", "Asrock"),
+        ("MSI MPG X670E Carbon E-ATX Motherboard", "X670E", "AM5", "E-ATX", "Msi"),
+    ])
+    def test_parse_mobo(self, title, chip, sock, ff, brand):
+        item = _parse_one(title, "MOBO")
+        assert item is not None, f"dropped: {title}"
+        assert item['chipset'] == chip
+        assert item['socket'] == sock
+        assert item['form-factor'] == ff
+        assert item['brand'] == brand
+
+    def test_full_pc_rejected_from_mobo(self):
+        # A prebuilt lists a motherboard but adds storage + a GPU
+        assert _parse_one("Gaming PC Ryzen 5 5600X B550 16GB RTX 3060 1TB SSD Windows 11",
+                          "MOBO") is None
+
+    def test_no_chipset_dropped(self):
+        assert _parse_one("Generic Computer Motherboard Untested", "MOBO") is None
+
+    def test_mobo_ctx_filters(self):
+        row = {'Chipset': 'B550', 'Socket': 'AM4', 'FormFactor': 'mATX'}
+        assert queries.ctx_filter_match('mobo', {'socket': 'AM4'}, row)
+        assert queries.ctx_filter_match('mobo', {'chipset': 'B550', 'ff': 'mATX'}, row)
+        assert not queries.ctx_filter_match('mobo', {'socket': 'AM5'}, row)
+
+    def test_mobo_label(self):
+        assert queries.model_label_for_row('mobo', {'Chipset': 'B550', 'FormFactor': 'ATX'}) == 'B550'
+        assert queries.model_label_for_row('mobo', {'Chipset': 'B650', 'FormFactor': 'ITX'}) == 'B650 ITX'
+
+
 class TestXeonParsing:
     @pytest.mark.parametrize("title,model", [
         ("Intel Xeon E5-2680 V4 14 Core 2.4GHz LGA2011-3 CPU", "Xeon E5-2680 V4"),
