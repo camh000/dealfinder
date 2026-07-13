@@ -120,7 +120,27 @@ def get_count_query(product_type: str, window_hours: int = 2, min_discount: floa
     return queries.build_count_query(product_type, window_hours, min_discount)
 
 
-OUTCOMES_RESOLVED_QUERY = """
+# Structured satellite attributes attached to each outcome row so the shared
+# context filters (socket / capacity / chipset / …) work on this page too — the
+# outcome itself only stores a Model label. One row lives in one satellite, so
+# COALESCE across them picks the right value (GPU uses the Model label already).
+_OUTCOME_ATTRS = """,
+    COALESCE(c.Socket, mb.Socket)                       AS Socket,
+    mb.Chipset                                          AS Chipset,
+    COALESCE(h.CapacityGB, sd.CapacityGB, ra.CapacityGB) AS CapacityGB,
+    COALESCE(h.Interface, sd.Interface)                 AS Interface,
+    COALESCE(h.DriveType, sd.DriveType)                 AS DriveType,
+    ra.Type                                             AS Type,
+    COALESCE(mb.FormFactor, h.FormFactor, sd.FormFactor, ra.FormFactor) AS FormFactor,
+    ra.KitConfig                                        AS KitConfig"""
+_OUTCOME_JOINS = """
+LEFT JOIN Scraper.CPU  c  ON c.ID  = d.EbayID
+LEFT JOIN Scraper.MOBO mb ON mb.ID = d.EbayID
+LEFT JOIN Scraper.HDD  h  ON h.ID  = d.EbayID
+LEFT JOIN Scraper.SSD  sd ON sd.ID = d.EbayID
+LEFT JOIN Scraper.RAM  ra ON ra.ID = d.EbayID"""
+
+OUTCOMES_RESOLVED_QUERY = f"""
 SELECT
     d.EbayID,
     d.Category,
@@ -136,9 +156,9 @@ SELECT
     e.SoldDate,
     ROUND((1 - COALESCE(d.FinalPrice, e.Price) / d.AvgMarketPrice) * 100, 1) AS ActualDiscountPct,
     d.EndedUnsold,
-    e.URL
+    e.URL{_OUTCOME_ATTRS}
 FROM Scraper.DealOutcomes d
-JOIN Scraper.EBAY e ON e.ID = d.EbayID
+JOIN Scraper.EBAY e ON e.ID = d.EbayID{_OUTCOME_JOINS}
 WHERE e.SoldDate IS NOT NULL AND d.NearMiss = 0
 ORDER BY d.SurfacedAt DESC
 LIMIT 200;
@@ -149,7 +169,7 @@ LIMIT 200;
 # after ~90 days, so they can never resolve), and listing them as "unresolved"
 # just buried the one or two live deals under a pile of dead months-old records.
 # They're still counted separately in the summary so the history isn't hidden.
-OUTCOMES_PENDING_QUERY = """
+OUTCOMES_PENDING_QUERY = f"""
 SELECT
     d.EbayID,
     d.Category,
@@ -162,9 +182,9 @@ SELECT
     ROUND(e.Price / 100, 2)          AS CurrentPrice,
     e.Bids                           AS CurrentBids,
     d.GaveUp,
-    e.URL
+    e.URL{_OUTCOME_ATTRS}
 FROM Scraper.DealOutcomes d
-JOIN Scraper.EBAY e ON e.ID = d.EbayID
+JOIN Scraper.EBAY e ON e.ID = d.EbayID{_OUTCOME_JOINS}
 WHERE e.SoldDate IS NULL AND d.GaveUp = 0 AND d.NearMiss = 0
 ORDER BY d.EndTime ASC;
 """

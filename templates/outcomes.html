@@ -10,14 +10,16 @@
 
 <div class="stats" id="stats"></div>
 
-<div class="pills" id="cat-pills" style="margin-bottom:var(--gap)">
+<div class="pills" id="cat-pills" style="margin-bottom:8px">
   <button class="pill active" data-cat="all">All</button>
   <button class="pill" data-cat="gpu">GPU</button>
   <button class="pill" data-cat="cpu">CPU</button>
+  <button class="pill" data-cat="mobo">Mobo</button>
   <button class="pill" data-cat="hdd">HDD</button>
   <button class="pill" data-cat="ssd">SSD</button>
   <button class="pill" data-cat="ram">RAM</button>
 </div>
+<div class="toolbar" id="ctx-filters" style="display:none;margin-bottom:var(--gap)"></div>
 
 <div id="pending-section" style="display:none;margin-bottom:var(--gap)">
   <h2 class="sub" style="margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)">Pending / awaiting result</h2>

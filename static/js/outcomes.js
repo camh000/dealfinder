@@ -2,14 +2,17 @@
    control cohort), category filter, resolved + pending tables. */
 
 let resolved = [], pending = [], summary = null;
-let cat = 'all';
+let cat = 'all', ctx = {};
 let rSort = { col: 'EndTime', asc: false }, pSort = { col: 'EndTime', asc: true };
 
 const inCat = r => cat === 'all' || (r.Category || '').toLowerCase() === cat;
+// Category pill + the shared context filters (socket / capacity / …).
+const applyF = rows => filterByCtx(rows.filter(inCat), cat, ctx);
+const rerender = () => { statStrip(); renderResolved(); renderPending(); };
 
 function statStrip() {
-  const res = resolved.filter(inCat);
-  const pen = pending.filter(inCat);
+  const res = applyF(resolved);
+  const pen = applyF(pending);
   const priced = res.filter(r => !r.EndedUnsold && r.FinalPrice != null);
   const beat = priced.filter(r => Number(r.FinalPrice) < Number(r.AvgMarketPrice)).length;
   const wr = priced.length ? (beat / priced.length * 100).toFixed(1) : '0';
@@ -49,7 +52,7 @@ const th = (label, col, sort, fn, num = false, mob = '') =>
     sort.col === col ? `<span class="arrow">${sort.asc ? '▲' : '▼'}</span>` : ''}</th>`;
 
 function renderResolved() {
-  const rows = resolved.filter(r => !r.EndedUnsold && inCat(r));
+  const rows = applyF(resolved).filter(r => !r.EndedUnsold);
   rows.forEach(r => {
     r.SavingGbp = (r.FinalPrice != null && r.AvgMarketPrice != null)
       ? Number(r.AvgMarketPrice) - Number(r.FinalPrice) : null;
@@ -93,7 +96,7 @@ function renderResolved() {
 }
 
 function renderPending() {
-  const rows = pending.filter(inCat);
+  const rows = applyF(pending);
   $('#pending-section').style.display = rows.length ? '' : 'none';
   if (!rows.length) return;
   $('#pending-tbl thead').innerHTML = `<tr>
@@ -124,8 +127,10 @@ window.sortP = col => { pSort = pSort.col === col ? { col, asc: !pSort.asc } : {
 
 $$('#cat-pills .pill').forEach(p => p.addEventListener('click', () => {
   cat = p.dataset.cat;
+  ctx = {};                        // filters are per-type — reset on switch
   $$('#cat-pills .pill').forEach(x => x.classList.toggle('active', x === p));
-  statStrip(); renderResolved(); renderPending();
+  renderCtxFilters($('#ctx-filters'), cat, ctx, rerender);
+  rerender();
 }));
 
 (async () => {
