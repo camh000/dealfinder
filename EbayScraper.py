@@ -3038,6 +3038,12 @@ def _enrich_and_gate(cur, ebay_id: int, product_type: str):
 # Their resolved win rate vs the live feed tests whether we could surface deals
 # on predicted margin instead of current discount (the TODO'd end-state).
 PRED_SURFACE_MARGIN = float(os.environ.get('PRED_SURFACE_MARGIN', '10'))
+# The flag is probabilistic, not a point estimate: surface only when the
+# cohort's realized ratio distribution says the deal closes >= the margin under
+# median with at least this (Wilson-lower-bounded) confidence, and only when the
+# cohort has enough resolved samples to estimate that tail.
+PRED_SURFACE_CONFIDENCE = float(os.environ.get('PRED_SURFACE_CONFIDENCE', '0.75'))
+PRED_PROB_MIN_SAMPLES = int(os.environ.get('PRED_PROB_MIN_SAMPLES', '8'))
 
 
 def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
@@ -3068,6 +3074,7 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
     query_discount = (min_discount if nearmiss_discount is None
                       else min(nearmiss_discount, min_discount))
     premiums = GetSnipePremiums()
+    dists = GetSnipeDistributions()   # ratio distributions for the probabilistic flag
     conn = _get_connection()
     try:
         cur = conn.cursor(dictionary=True)
@@ -3087,19 +3094,35 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
                                  row.get('Bids'), row.get('EndTime'))
                 label = queries.model_label_for_row(product_type, row)
                 near_miss = 1 if float(row['DiscountPct']) < min_discount else 0
-                # Prediction-surfacing cohort: ANY deal the model (with real
-                # premium history) predicts will close >= the margin under median
-                # — regardless of its current discount, since the proposed rule
-                # is purely "predicted final >= X% under median". Needs
-                # PremiumSamples so it's a model call, not the identity
-                # prediction of a no-history row. The complement (has a
-                # prediction but < the margin) is the set the rule would skip.
-                pred_margin = 1 if (row.get('PremiumSamples')
-                                    and (row.get('PredictedDiscountPct') or 0) >= PRED_SURFACE_MARGIN) else 0
                 # SurfacedPrice is the whole-lot price, so the stored market
                 # value must be whole-lot too (median × quantity) — outcome
                 # win/loss math compares FinalPrice against AvgMarketPrice.
                 qty = int(row.get('Quantity') or 1)
+                # Prediction-surfacing cohort: flag deals the model expects to
+                # close >= PRED_SURFACE_MARGIN under median — regardless of
+                # current discount. But PROBABILISTICALLY, not on a point
+                # estimate: a listing at lot price c with per-unit median m
+                # closes >= X% under median iff its final/surfaced ratio r
+                # <= (1-X)·m·qty / c. We take the empirical share of the
+                # cohort's realized ratios at/under that threshold, Wilson-
+                # lower-bounded for thin samples, and flag only when that
+                # confidence clears the bar. This folds in the model's bias
+                # (real outcomes) and its spread (noisy cohorts rarely clear it).
+                pred_margin = 0
+                if row.get('PremiumSamples'):
+                    cur_lot = float(row.get('CurrentPrice') or 0)
+                    med_unit = float(row.get('AvgMarketPrice') or 0)
+                    end = row.get('EndTime')
+                    _now = datetime.now(timezone.utc).replace(tzinfo=None)
+                    hours = (max((end - _now).total_seconds() / 3600.0, 0.0)
+                             if end is not None and hasattr(end, 'timestamp') else None)
+                    if cur_lot > 0 and med_unit > 0:
+                        threshold = (1.0 - PRED_SURFACE_MARGIN / 100.0) * med_unit * qty / cur_lot
+                        prob, n = queries.prob_below(
+                            dists, product_type, int(row.get('Bids') or 0), hours, threshold)
+                        if (prob is not None and n >= PRED_PROB_MIN_SAMPLES
+                                and prob >= PRED_SURFACE_CONFIDENCE):
+                            pred_margin = 1
                 # PredictedFinal is stored at surfacing so resolved outcomes
                 # can grade the premium model itself (predicted vs actual).
                 predicted = (int(round(row['PredictedFinalPrice'] * 100))
@@ -3752,4 +3775,23 @@ def GetSnipePremiums(min_samples: int = 5) -> dict:
         return _median_ratios(rows, min_samples)
     except Exception as e:
         log.error("GetSnipePremiums failed: %s", e)
+        return {}
+
+
+def GetSnipeDistributions(min_samples: int = 5) -> dict:
+    """Full realized final/surfaced ratio distribution per cohort (same source
+    and cohorts as GetSnipePremiums). Feeds the probabilistic surfacing flag,
+    which asks P(closes at/under target) rather than trusting a point median.
+    {} on error or thin history."""
+    try:
+        conn = _get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(queries.SNIPE_PREMIUM_QUERY)
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        return queries.ratio_distributions(rows, min_samples)
+    except Exception as e:
+        log.error("GetSnipeDistributions failed: %s", e)
         return {}

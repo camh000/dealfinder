@@ -1497,6 +1497,7 @@ class TestNearMissCohort:
         gpu_only = {'gpu': queries.CATEGORIES['gpu']}
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
              patch.object(EbayScraper, 'GetSnipePremiums', return_value={}), \
+             patch.object(EbayScraper, 'GetSnipeDistributions', return_value={}), \
              patch.object(EbayScraper, 'EnrichListing', return_value=None), \
              patch.object(queries, 'CATEGORIES', gpu_only):
             new_deals = EbayScraper.SurfaceDeals(2, 20, nearmiss_discount=12)
@@ -1526,8 +1527,14 @@ class TestNearMissCohort:
         cur = MagicMock(); cur.fetchall.return_value = [near]; cur.rowcount = 1
         conn = MagicMock(); conn.cursor.return_value = cur
         prem = {('GPU', '4+', 'any'): (1.0, 20)}     # no bid-up → prediction = current
+        # Cohort closes tightly at/under the current price (ratios ~0.9–1.0), so
+        # threshold (1-0.10)*100/85 ≈ 1.059 is cleared by ~all samples → high
+        # Wilson-lower-bounded confidence of closing >=10% under median.
+        dist = {('GPU', '4+', 'any'): [0.90, 0.92, 0.94, 0.95, 0.96, 0.97,
+                                       0.98, 0.99, 1.00, 1.00, 1.01, 1.02]}
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
              patch.object(EbayScraper, 'GetSnipePremiums', return_value=prem), \
+             patch.object(EbayScraper, 'GetSnipeDistributions', return_value=dist), \
              patch.object(EbayScraper, 'EnrichListing', return_value=None), \
              patch.object(queries, 'CATEGORIES', {'gpu': queries.CATEGORIES['gpu']}):
             EbayScraper.SurfaceDeals(2, 20, nearmiss_discount=12)
@@ -1544,6 +1551,7 @@ class TestNearMissCohort:
         conn.cursor.return_value = cur
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
              patch.object(EbayScraper, 'GetSnipePremiums', return_value={}), \
+             patch.object(EbayScraper, 'GetSnipeDistributions', return_value={}), \
              patch.object(queries, 'CATEGORIES', {'gpu': queries.CATEGORIES['gpu']}):
             EbayScraper.SurfaceDeals(2, 20, nearmiss_discount=20)
         sql = cur.execute.call_args_list[0][0][0]
@@ -1554,6 +1562,42 @@ class TestNearMissCohort:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. Snipe-premium helpers
 # ═══════════════════════════════════════════════════════════════════════════════
+
+class TestProbabilisticSurfacing:
+    def test_ratio_distributions_sorted_and_gated(self):
+        thin = [('GPU', 5, 0.5, 100, 110)] * 4          # 4 < min 5 → dropped
+        assert queries.ratio_distributions(thin, min_samples=5) == {}
+        rows = [('GPU', 5, 0.5, 100, 100 + i) for i in range(6)]
+        d = queries.ratio_distributions(rows, min_samples=5)
+        vals = d[('GPU', '4+', 'any')]
+        assert vals == sorted(vals) and len(vals) == 6
+
+    def test_wilson_lower_bound_is_conservative_when_thin(self):
+        # 8/10 naive is 0.8; the lower bound is well under it
+        assert 0.5 < queries.wilson_lower_bound(8, 10) < 0.8
+        # a large clean sample is trusted near 1.0
+        assert queries.wilson_lower_bound(200, 200) > 0.97
+        assert queries.wilson_lower_bound(0, 0) == 0.0
+
+    def test_prob_below_reads_the_distribution(self):
+        dist = {('GPU', '4+', 'any'):
+                [0.8, 0.9, 0.95, 1.0, 1.05, 1.1, 1.2, 1.3, 1.4, 1.5]}
+        p, n = queries.prob_below(dist, 'gpu', 6, None, 1.0)   # 4/10 <= 1.0
+        assert n == 10 and 0.0 < p < 0.5
+        # tight cohort well under threshold → high confidence
+        tight = {('GPU', '4+', 'any'): [0.9] * 12}
+        p2, _ = queries.prob_below(tight, 'gpu', 6, None, 1.05)
+        assert p2 > 0.75
+
+    def test_prob_below_guards(self):
+        assert queries.prob_below({}, 'gpu', 6, None, 1.0) == (None, 0)
+        # 0-bid listings never inherit the category catch-all
+        assert queries.prob_below(
+            {('GPU', 'all'): [0.5] * 10}, 'gpu', 0, None, 1.0) == (None, 0)
+        # no-premium categories opt out entirely
+        assert queries.prob_below(
+            {('SSD', '4+', 'any'): [0.5] * 10}, 'ssd', 6, None, 1.0) == (None, 0)
+
 
 class TestBidBucket:
     def test_edges(self):

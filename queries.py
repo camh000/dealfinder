@@ -7,6 +7,7 @@ Pricing basis: EFFECTIVE price = item price + shipping (both stored in pence).
 Shipping applies to both the sold-market statistics and the live listing
 price, so discounts are postage-inclusive and apples-to-apples.
 """
+import math
 import os
 import re
 
@@ -687,6 +688,76 @@ def premium_for(premiums, category, bids, hours_to_end=None):
     if bb == '0':
         return (1.0, 0)
     return premiums.get((cat, 'all'), (1.0, 0))
+
+
+# ── probabilistic surfacing ─────────────────────────────────────────────────
+# premium_for gives a POINT prediction (current × median ratio). That ignores
+# how noisy a cohort is: a deal predicted to land exactly at the margin is
+# flagged whether the cohort's outcomes are tight or scattered. The functions
+# below keep the full realized ratio distribution per cohort so a surfacing
+# rule can ask "what's the probability this closes at/under the target?" — which
+# folds in both the model's bias (these are real outcomes) and its spread.
+
+def ratio_distributions(rows, min_samples: int = 5) -> dict:
+    """Like median_ratios, but returns the full sorted final/surfaced ratio
+    list per cohort (same three specificities and min_samples guard), so a
+    caller can compute empirical P(final <= threshold)."""
+    groups = {}
+    for cat, bids, hours, surfaced, final in rows:
+        if not surfaced or final is None:
+            continue
+        ratio = float(final) / float(surfaced)
+        bb, tb = bid_bucket(bids), time_bucket(hours)
+        groups.setdefault((cat, bb, 'any'), []).append(ratio)
+        if tb != 'any':
+            groups.setdefault((cat, bb, tb), []).append(ratio)
+        groups.setdefault((cat, 'all'), []).append(ratio)
+    return {k: sorted(v) for k, v in groups.items() if len(v) >= min_samples}
+
+
+def _distribution_for(dists, category, bids, hours_to_end):
+    """Best-matching ratio list for a live listing, using the exact precedence
+    (and 0-bid / no-premium guards) as premium_for. None when unusable."""
+    cat = (category or '').upper()
+    if cat in _NO_PREMIUM_CATEGORIES:
+        return None
+    bb = bid_bucket(bids)
+    for key in ((cat, bb, time_bucket(hours_to_end)), (cat, bb, 'any')):
+        if key in dists:
+            return dists[key]
+    if bb == '0':
+        return None
+    return dists.get((cat, 'all'))
+
+
+def wilson_lower_bound(k: int, n: int, z: float = 1.0) -> float:
+    """Lower bound of a binomial proportion (Wilson score interval). With few
+    samples this pulls the naive k/n estimate down, so a thin or noisy cohort
+    must show a stronger empirical signal to clear a confidence bar. z=1.0 is a
+    ~84% one-sided bound; larger z = more conservative."""
+    if n <= 0:
+        return 0.0
+    phat = k / n
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    centre = phat + z2 / (2 * n)
+    half = z * math.sqrt((phat * (1.0 - phat) + z2 / (4 * n)) / n)
+    return max(0.0, (centre - half) / denom)
+
+
+def prob_below(dists, category, bids, hours_to_end, threshold_ratio, z: float = 1.0):
+    """Conservative empirical probability that final/surfaced <= threshold_ratio
+    for this listing's cohort — i.e. that it closes at/under the target price.
+
+    Uses the realized ratio distribution (embodying the model's bias AND its
+    spread), then a Wilson lower bound so thin cohorts stay honest. Returns
+    (prob_lower_bound, samples); (None, 0) when there is no usable cohort."""
+    dist = _distribution_for(dists, category, bids, hours_to_end)
+    if not dist:
+        return (None, 0)
+    n = len(dist)
+    k = sum(1 for r in dist if r <= threshold_ratio)
+    return (wilson_lower_bound(k, n, z), n)
 
 
 # Resolved outcomes that feed the premium model (sold, not ended-unsold).
