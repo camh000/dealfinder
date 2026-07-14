@@ -103,15 +103,17 @@ function priceCol(d) {
       <span class="ship">${ship > 0 ? '+' + fmtGBP(ship) + ' delivery' : 'free delivery'}</span></div>`);
   const extra = [];
   if (qty > 1) extra.push(`${fmtGBP(d.PerUnitPrice)}/unit`);
-  if (d.PremiumSamples > 0 && d.PredictedFinalPrice !== d.CurrentPrice)
-    extra.push(`predicted final <b>${fmtGBP(d.PredictedFinalPrice)}</b> <span class="faint">(n=${d.PremiumSamples})</span>`);
+  if (d.PremiumSamples > 0 && d.PredictedFinalPrice !== d.CurrentPrice) {
+    const pm = d.PredictedDiscountPct != null ? `~${Number(d.PredictedDiscountPct).toFixed(0)}% off · ` : '';
+    extra.push(`predicted final <b>${fmtGBP(d.PredictedFinalPrice)}</b> <span class="faint">${pm}(n=${d.PremiumSamples})</span>`);
+  }
   if (extra.length) bits.push(`<div class="sub pred">${extra.join(' · ')}</div>`);
   bits.push(posbar(d));
   return bits.join('');
 }
 
 function metaCol(d) {
-  const disc = Number(d.PredictedDiscountPct ?? d.DiscountPct);
+  const disc = Number(d.DiscountPct);
   return `<div class="countdown" ${endsAttr(d.EndTime)}></div>
     <div class="sub">${d.Bids || 0} bid${d.Bids === 1 ? '' : 's'}${
       d.SellerFeedbackPct != null && d.SellerFeedbackCount >= 3

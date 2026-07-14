@@ -21,10 +21,12 @@ function statStrip(d) {
   if (s && s.median != null)
     cells.push(`<div class="stat"><b class="num">${fmtGBP(s.median)}</b><span>market median (n=${s.n})</span></div>`);
   if (disc != null)
-    cells.push(`<div class="stat"><b class="num ${disc > 0 ? 'good' : 'bad'}">${disc.toFixed(1)}%</b><span>${disc > 0 ? 'below' : 'above'} market</span></div>`);
-  if (p && live)
+    cells.push(`<div class="stat"><b class="num ${disc > 0 ? 'good' : 'bad'}">${disc.toFixed(1)}%</b><span>${disc > 0 ? 'below' : 'above'} market${live ? ' now' : ''}</span></div>`);
+  if (p && live) {
+    const pdisc = s && s.median ? (1 - (p.final / qty) / s.median) * 100 : null;
     cells.push(`<div class="stat" title="current × ${p.ratio} (from ${p.n} resolved outcomes)">
-        <b class="num">${fmtGBP(p.final)}</b><span>predicted final</span></div>`);
+        <b class="num">${fmtGBP(p.final)}</b><span>predicted final${pdisc != null ? ` (~${pdisc.toFixed(0)}% off)` : ''}</span></div>`);
+  }
   if (live)
     cells.push(`<div class="stat"><b class="countdown num" ${endsAttr(l.EndTime)}></b>
         <span>remaining${l.EndTimeExact ? ' (exact)' : ''}</span></div>`);
