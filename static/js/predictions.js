@@ -56,6 +56,36 @@ function histogram(bins) {
   </svg>`;
 }
 
+const TREND_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const trendDay = iso => { const [, mo, da] = iso.split('-'); return `${+da} ${TREND_MON[+mo - 1]}`; };
+
+function trend(series) {
+  if (!series || series.length < 2)
+    return '<div class="state">Need a couple of days of resolved deals to plot a trend.</div>';
+  const narrow = isNarrowScreen();
+  const W = narrow ? 380 : 720, H = narrow ? 200 : 200, P = narrow ? 34 : 40, PB = 26;
+  const vals = series.flatMap(s => [s.median_abs_err_pct, s.baseline_median_abs_err_pct]);
+  const hi = Math.max(...vals, 1) * 1.15;
+  const x = i => P + (series.length === 1 ? 0.5 : i / (series.length - 1)) * (W - P - 14);
+  const y = v => H - PB - v / hi * (H - PB - 16);
+  const step = narrow && series.length > 5 ? 2 : 1;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="prediction error over time">
+    <line class="axis" x1="${P}" y1="${H - PB}" x2="${W - 14}" y2="${H - PB}"/>
+    ${[0.25, 0.5, 0.75, 1].map(f => `<text x="${P - 6}" y="${(y(hi * f) + 3).toFixed(1)}"
+        text-anchor="end" class="faint">${Math.round(hi * f)}%</text>`).join('')}
+    <polyline points="${series.map((s, i) => `${x(i).toFixed(1)},${y(s.baseline_median_abs_err_pct).toFixed(1)}`).join(' ')}"
+      fill="none" stroke="var(--faint,#888)" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <polyline points="${series.map((s, i) => `${x(i).toFixed(1)},${y(s.median_abs_err_pct).toFixed(1)}`).join(' ')}"
+      fill="none" stroke="var(--accent)" stroke-width="2"/>
+    ${series.map((s, i) => `
+      <circle cx="${x(i).toFixed(1)}" cy="${y(s.median_abs_err_pct).toFixed(1)}" r="3.5" fill="var(--accent)">
+        <title>${trendDay(s.date)}: model ±${s.median_abs_err_pct}% vs baseline ±${s.baseline_median_abs_err_pct}% (n=${s.n})</title>
+      </circle>
+      ${i % step === 0 ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle">${trendDay(s.date)}</text>` : ''}`).join('')}
+  </svg>`;
+}
+
 const errCell = v => v == null ? '—'
   : `<span style="color:${Math.abs(v) <= 2 ? 'var(--gain)' : Math.abs(v) >= 10 ? 'var(--warn)' : 'inherit'}">${v > 0 ? '+' : ''}${v}%</span>`;
 
@@ -79,6 +109,7 @@ const errCell = v => v == null ? '—'
 
     $('#scatter').innerHTML = scatter(d.rows);
     $('#hist').innerHTML = histogram(d.histogram);
+    $('#trend').innerHTML = trend(d.over_time);
 
     $('#cat-tbl tbody').innerHTML = d.by_category.map(c => `
       <tr><td><span class="chip">${esc(c.category)}</span></td>

@@ -1420,7 +1420,7 @@ def api_insights_predictions():
         """)
         raw = cur.fetchall()
 
-        by_cat, by_bucket, pairs = {}, {}, []
+        by_cat, by_bucket, pairs, over_time = {}, {}, [], {}
         for r in raw:
             final, pred, surf = float(r['FinalPrice']), float(r['PredictedFinal']), float(r['SurfacedPrice'])
             # signed: positive = closed ABOVE the prediction (we under-called)
@@ -1430,7 +1430,20 @@ def api_insights_predictions():
             pairs.append(pair)
             by_cat.setdefault(r['Category'], []).append(pair)
             by_bucket.setdefault(queries.bid_bucket(r['BidCount']), []).append(pair)
+            # Trend: bucket by the day the auction resolved (EndTime), so the
+            # tuning changes show up as the newer days' error drops.
+            et = r['EndTime']
+            day = et.strftime('%Y-%m-%d') if hasattr(et, 'strftime') else str(et)[:10]
+            over_time.setdefault(day, []).append((abs(r['ErrPct']), baseline))
             r['EndTime'] = _iso_utc(r['EndTime'])
+
+        over_time_series = [
+            {"date": d,
+             "median_abs_err_pct": round(statistics.median([a for a, _ in v]), 1),
+             "baseline_median_abs_err_pct": round(statistics.median([b for _, b in v]), 1),
+             "n": len(v)}
+            for d, v in sorted(over_time.items())
+        ]
 
         histogram = []
         for lo in range(-50, 50, 10):
@@ -1457,6 +1470,7 @@ def api_insights_predictions():
             "by_bucket": [{"bucket": b, **_err_stats(v)}
                           for b, v in sorted(by_bucket.items())],
             "histogram": histogram,
+            "over_time": over_time_series,
             "ratios": ratios,
             "rows": raw[:150],
         })

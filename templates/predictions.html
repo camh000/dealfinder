@@ -28,6 +28,16 @@
   </div>
 </div>
 
+<div class="card" style="margin-top:var(--gap)">
+  <h2>Prediction error over time</h2>
+  <div id="trend"></div>
+  <p class="help" style="margin:8px 0 0">Median absolute error of resolved deals by the day they
+    closed (<span style="color:var(--accent)">■</span> model vs <span class="faint">■ no-model
+    baseline</span>). A downward trend means the model is getting sharper; below the baseline line
+    means it's beating "assume it closes at the spotted price". Hover a point for the day's sample
+    size.</p>
+</div>
+
 <div class="split cols-2" style="margin-top:var(--gap)">
   <div class="card" style="margin-bottom:0">
     <h2>By category</h2>
