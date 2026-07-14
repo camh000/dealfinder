@@ -4,7 +4,15 @@
 const CAT = window.PAGE_CATEGORY;
 const params = new URLSearchParams(location.search);
 
-function chart(trend, median, predictions) {
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// "2026-07" → "Jul '26" — unambiguous, unlike the old "26-07" (read as a day).
+const monthLabel = m => {
+  const [y, mo] = m.split('-');
+  return `${MONTH_ABBR[+mo - 1]} '${y.slice(2)}`;
+};
+
+function chart(trend, median, predictions, windowStart) {
   if (!trend || trend.length < 2)
     return '<div class="state">Not enough monthly history yet.</div>';
   // On phones a 720-unit viewBox renders unreadably small — emit a narrow
@@ -19,6 +27,24 @@ function chart(trend, median, predictions) {
   const x = i => P + i / (trend.length - 1) * (W - P - PR);
   const y = v => H - 24 - (v - lo) / ((hi - lo) || 1) * (H - 48);
   const pts = trend.map((t, i) => `${x(i).toFixed(1)},${y(t.median).toFixed(1)}`).join(' ');
+
+  // Shade the months that fall OUTSIDE the 120-day median window. The median
+  // uses only the last 120 days; the chart shows ~6 months for trend context,
+  // so this makes clear which points actually feed the headline median.
+  let outWindow = '';
+  if (windowStart) {
+    const cut = new Date(windowStart).getTime();
+    const monthEnd = m => { const [yy, mm] = m.split('-').map(Number); return Date.UTC(yy, mm, 1); };
+    const firstIn = trend.findIndex(t => monthEnd(t.month) > cut);
+    if (firstIn > 0) {                       // some months are out of window
+      const dx = (x(firstIn - 1) + x(firstIn)) / 2;
+      outWindow = `<rect x="${P}" y="${(H - 24 - (H - 48)).toFixed(1)}" width="${(dx - P).toFixed(1)}"
+          height="${(H - 48).toFixed(1)}" fill="var(--fg)" opacity="0.05"/>
+        <line x1="${dx.toFixed(1)}" y1="10" x2="${dx.toFixed(1)}" y2="${H - 24}"
+          stroke="var(--faint,#888)" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="${(dx + 4).toFixed(1)}" y="16" font-size="9" fill="var(--faint,#888)">120-day median →</text>`;
+    }
+  }
 
   // Track every text label we draw so nothing overlaps.
   const placed = [];
@@ -55,13 +81,14 @@ function chart(trend, median, predictions) {
       <title>predicted final ${fmtGBP(v)}</title></circle>`).join('');
 
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="monthly median prices">
+    ${outWindow}
     <line class="axis" x1="${P}" y1="${H - 24}" x2="${W - PR + 6}" y2="${H - 24}"/>
     ${medLine}
     <polyline class="line" points="${pts}"/>
     ${trend.map((t, i) => `
       <circle class="pt" cx="${x(i).toFixed(1)}" cy="${y(t.median).toFixed(1)}" r="3">
         <title>${t.month}: ${fmtGBP(t.median)} (n=${t.n})</title></circle>
-      ${i % step === 0 ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle">${t.month.slice(2)}</text>` : ''}
+      ${i % step === 0 ? `<text x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle">${monthLabel(t.month)}</text>` : ''}
     `).join('')}
     ${monthLabels}
     ${predMarks}
@@ -147,7 +174,7 @@ $('#al-save').addEventListener('click', async () => {
 
     $('#trend-chart').innerHTML = chart(
       data.trend, data.stats.median,
-      data.live.map(l => l.PredictedFinalPrice));
+      data.live.map(l => l.PredictedFinalPrice), data.window_start);
 
     if (data.live.length) {
       $('#live-card').style.display = '';

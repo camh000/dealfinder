@@ -2353,7 +2353,9 @@ def model_detail():
                 r['EndTime'] = _iso_utc(r['EndTime'])
 
         return jsonify({"status": "ok", "group": params, "stats": stats,
-                        "trend": trend, "sold": sold[:40], "live": live})
+                        "trend": trend, "sold": sold[:40], "live": live,
+                        "window_start": _iso_utc(cutoff_120),
+                        "window_days": queries.MARKET_STATS_DAYS})
     except Exception as e:
         log.error("model_detail error: %s", e)
         return jsonify({"status": "error", "message": "internal error"}), 500
