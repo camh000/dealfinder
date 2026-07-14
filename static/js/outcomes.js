@@ -1,5 +1,5 @@
-/* Outcomes page: stat strip (incl. prediction accuracy, lifetime, near-miss
-   control cohort), category filter, resolved + pending tables. */
+/* Outcomes page: stat strip (incl. prediction accuracy, lifetime),
+   category filter, resolved + pending tables. */
 
 let resolved = [], pending = [], summary = null;
 let cat = 'all', ctx = {};
@@ -18,7 +18,6 @@ function statStrip() {
   const wr = priced.length ? (beat / priced.length * 100).toFixed(1) : '0';
   const all = cat === 'all';
   const gaveUp = all ? (summary?.gave_up || 0) : 0;
-  const nm = all ? summary?.near_miss : null;
   const pred = all ? summary?.prediction : null;
   const life = all ? summary?.lifetime : null;
   const cell = (v, label, cls = '', title = '', href = '') => {
@@ -34,9 +33,6 @@ function statStrip() {
     cell(pen.length, 'pending'),
     gaveUp ? cell(gaveUp, 'gave up', 'warn',
       'Unresolvable — the listing left eBay search before it could be verified') : '',
-    nm && nm.resolved > 0 ? cell(`${nm.win_rate}%`, 'near-miss WR', '',
-      `Control cohort: 12–20%-off listings, recorded but never surfaced (n=${nm.resolved}). Click for the full experiment.`,
-      '/insights/nearmiss') : '',
     pred && pred.n >= 5 ? cell(`±${pred.median_abs_err_pct}%`, 'prediction error', '',
       `Median gap between the predicted final price and reality, over ${pred.n} resolved deals. Click for the full model report.`,
       '/insights/predictions') : '',

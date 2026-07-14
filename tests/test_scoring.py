@@ -1500,7 +1500,7 @@ class TestNearMissCohort:
              patch.object(EbayScraper, 'GetSnipeDistributions', return_value={}), \
              patch.object(EbayScraper, 'EnrichListing', return_value=None), \
              patch.object(queries, 'CATEGORIES', gpu_only):
-            new_deals = EbayScraper.SurfaceDeals(2, 20, nearmiss_discount=12)
+            new_deals = EbayScraper.SurfaceDeals(2, 20, record_discount=12)
 
         # only the real deal comes back for notification
         assert [r['ID'] for r in new_deals] == [1]
@@ -1537,7 +1537,7 @@ class TestNearMissCohort:
              patch.object(EbayScraper, 'GetSnipeDistributions', return_value=dist), \
              patch.object(EbayScraper, 'EnrichListing', return_value=None), \
              patch.object(queries, 'CATEGORIES', {'gpu': queries.CATEGORIES['gpu']}):
-            EbayScraper.SurfaceDeals(2, 20, nearmiss_discount=12)
+            EbayScraper.SurfaceDeals(2, 20, record_discount=12)
         ins = [c[0][1] for c in cur.execute.call_args_list
                if 'INSERT IGNORE INTO Scraper.DealOutcomes' in str(c[0][0])][0]
         assert ins[-2] == 1 and ins[-1] == 1   # NearMiss and PredMargin both set
@@ -1553,7 +1553,7 @@ class TestNearMissCohort:
              patch.object(EbayScraper, 'GetSnipePremiums', return_value={}), \
              patch.object(EbayScraper, 'GetSnipeDistributions', return_value={}), \
              patch.object(queries, 'CATEGORIES', {'gpu': queries.CATEGORIES['gpu']}):
-            EbayScraper.SurfaceDeals(2, 20, nearmiss_discount=20)
+            EbayScraper.SurfaceDeals(2, 20, record_discount=20)
         sql = cur.execute.call_args_list[0][0][0]
         # threshold factor for 20% is 0.8 — the query ran at min_discount
         assert "* 0.8" in sql

@@ -12,7 +12,6 @@ const ASSETS = [
   '/static/js/prices.js',
   '/static/js/model.js',
   '/static/js/predictions.js',
-  '/static/js/nearmiss.js',
   '/static/js/predsurface.js',
   '/static/js/settings.js',
   '/static/js/health.js',

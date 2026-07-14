@@ -3037,7 +3037,11 @@ def _enrich_and_gate(cur, ebay_id: int, product_type: str):
 # least this far under median (a real model prediction, not the current price).
 # Their resolved win rate vs the live feed tests whether we could surface deals
 # on predicted margin instead of current discount (the TODO'd end-state).
-PRED_SURFACE_MARGIN = float(os.environ.get('PRED_SURFACE_MARGIN', '10'))
+# Surface anything the model is confident finishes BELOW median (margin 0).
+# The old 10% was wiggle-room for prediction error; the probabilistic flag now
+# handles that error directly (Wilson-bounded confidence over the real ratio
+# distribution), so no arbitrary cushion is needed.
+PRED_SURFACE_MARGIN = float(os.environ.get('PRED_SURFACE_MARGIN', '0'))
 # The flag is probabilistic, not a point estimate: surface only when the
 # cohort's realized ratio distribution says the deal closes >= the margin under
 # median with at least this (Wilson-lower-bounded) confidence, and only when the
@@ -3047,23 +3051,23 @@ PRED_PROB_MIN_SAMPLES = int(os.environ.get('PRED_PROB_MIN_SAMPLES', '8'))
 
 
 def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
-                 nearmiss_discount: float | None = None) -> list[dict]:
+                 record_discount: float | None = None) -> list[dict]:
     """Detect current deals server-side and record first sightings.
 
     Runs the shared deal query for every category, INSERT IGNOREs each hit
     into DealOutcomes, and returns ONLY the real deals recorded for the
     first time (rowcount==1) so the caller can notify exactly once per deal.
 
-    Near-miss control cohort: when nearmiss_discount is set below
-    min_discount, the query runs at the lower threshold and rows in the
-    [nearmiss, min) band are recorded flagged NearMiss=1 — never notified,
-    excluded from the outcomes scoreboard and from premium training. Their
-    resolved outcomes are the control group that shows whether min_discount
-    is set right.
+    Recording floor: when record_discount is set below min_discount, the query
+    runs at the lower threshold and rows in the [record, min) band are recorded
+    flagged NearMiss=1 — never notified, and excluded from the outcomes
+    scoreboard and from premium training (they are below the notify line). This
+    wide recording feeds the prediction-surfacing experiment; the flag's only
+    job now is to keep sub-threshold deals out of the headline stats.
 
-    Prediction-surfacing cohort: within those sub-threshold rows, the ones the
-    model predicts will still close >= PRED_SURFACE_MARGIN under median are also
-    flagged PredMargin=1 — the parallel experiment for predicted-margin-first
+    Prediction-surfacing cohort: any recorded row (regardless of current
+    discount) the model is confident closes >= PRED_SURFACE_MARGIN under median
+    is flagged PredMargin=1 — the parallel experiment for predicted-margin-first
     surfacing.
 
     This replaces the old browser-driven surfacing in /api/deals — deals are
@@ -3071,8 +3075,8 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
     """
     new_deals = []
     near_misses = 0
-    query_discount = (min_discount if nearmiss_discount is None
-                      else min(nearmiss_discount, min_discount))
+    query_discount = (min_discount if record_discount is None
+                      else min(record_discount, min_discount))
     premiums = GetSnipePremiums()
     dists = GetSnipeDistributions()   # ratio distributions for the probabilistic flag
     conn = _get_connection()
@@ -3158,7 +3162,7 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
                             new_deals.append(row)
         conn.commit()
         if new_deals or near_misses:
-            log.info("SurfaceDeals: %d new deal(s), %d near-miss(es) recorded",
+            log.info("SurfaceDeals: %d new deal(s), %d sub-threshold recorded",
                      len(new_deals), near_misses)
         return new_deals
     except Exception as e:

@@ -42,8 +42,8 @@ def _noindex_header(resp):
     removes a URL from results. Belt-and-braces with the <meta robots> tag."""
     resp.headers['X-Robots-Tag'] = 'noindex, nofollow'
     # API payloads are live data (deal feeds, insight cohorts, stats). Without
-    # this, a browser or Cloudflare can serve a stale response — e.g. the
-    # near-miss page showing an old win rate that "never changes".
+    # this, a browser or Cloudflare can serve a stale response — e.g. an insight
+    # page showing an old win rate that "never changes".
     if request.path.startswith('/api/'):
         resp.headers['Cache-Control'] = 'no-store'
     return resp
@@ -194,20 +194,6 @@ SELECT COUNT(*) AS n
 FROM Scraper.DealOutcomes d
 JOIN Scraper.EBAY e ON e.ID = d.EbayID
 WHERE e.SoldDate IS NULL AND d.GaveUp = 1 AND d.NearMiss = 0;
-"""
-
-# Near-miss control cohort (12–20% band, recorded but never surfaced):
-# resolved win rate, kept out of the headline scoreboard. If this rivals
-# the main win rate, the surfacing threshold is leaving money on the table.
-NEAR_MISS_SUMMARY_QUERY = """
-SELECT COUNT(*) AS n,
-       COALESCE(SUM(COALESCE(d.FinalPrice, e.Price) < d.AvgMarketPrice), 0) AS beat
-FROM Scraper.DealOutcomes d
-JOIN Scraper.EBAY e ON e.ID = d.EbayID
-WHERE d.NearMiss = 1
-  AND e.SoldDate IS NOT NULL
-  AND d.EndedUnsold = 0
-  AND COALESCE(d.FinalPrice, e.Price) IS NOT NULL;
 """
 
 
@@ -1353,7 +1339,7 @@ def api_bin_deals():
             conn.close()
 
 
-# ── insight pages: prediction accuracy + near-miss experiment ──────────────────
+# ── insight pages: prediction accuracy + prediction-surfacing experiment ───────
 # Linked from the OUTCOMES stat cards. Read-only analytics over DealOutcomes;
 # all math in Python so the SQL stays one plain SELECT each.
 
@@ -1390,11 +1376,6 @@ def _err_stats(rows: list) -> dict:
 @app.route('/insights/predictions')
 def insights_predictions_page():
     return render_template('predictions.html')
-
-
-@app.route('/insights/nearmiss')
-def insights_nearmiss_page():
-    return render_template('nearmiss.html')
 
 
 @app.route('/api/insights/predictions')
@@ -1482,116 +1463,8 @@ def api_insights_predictions():
             conn.close()
 
 
-# Near-miss experiment bands: the control cohort spans [12, 20); the main
-# feed is >= 20. Sliced finer so the chart shows WHERE the threshold bites.
-_NM_BANDS = [(12, 16), (16, 20), (20, 25), (25, 30), (30, 999)]
-_NM_TARGET_N = 50   # resolved near-misses needed before the verdict means much
-
-
-@app.route('/api/insights/nearmiss')
-def api_insights_nearmiss():
-    conn = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor(dictionary=True)
-        cur.execute("""
-            SELECT d.EbayID, d.Category, d.Model, d.NearMiss, d.DiscountPct,
-                   d.EndedUnsold, d.GaveUp,
-                   ROUND(d.SurfacedPrice / 100, 2)                 AS SurfacedPrice,
-                   ROUND(COALESCE(d.FinalPrice, e.Price) / 100, 2) AS FinalPrice,
-                   ROUND(d.AvgMarketPrice / 100, 2)                AS AvgMarketPrice,
-                   (e.SoldDate IS NOT NULL)                        AS Sold,
-                   COALESCE(e.EndTime, d.EndTime)                  AS EndTime,
-                   d.SurfacedAt
-            FROM Scraper.DealOutcomes d
-            JOIN Scraper.EBAY e ON e.ID = d.EbayID
-            ORDER BY COALESCE(e.EndTime, d.EndTime) DESC
-        """)
-        raw = cur.fetchall()
-
-        def resolved_win(r):
-            if not r['Sold'] or r['EndedUnsold'] or r['FinalPrice'] is None \
-                    or not r['AvgMarketPrice']:
-                return None
-            return float(r['FinalPrice']) < float(r['AvgMarketPrice'])
-
-        def cohort(rows):
-            res = [(r, resolved_win(r)) for r in rows]
-            done = [(r, w) for r, w in res if w is not None]
-            wins = sum(1 for _, w in done if w)
-            discs = sorted((1 - float(r['FinalPrice']) / float(r['AvgMarketPrice'])) * 100
-                           for r, _ in done)
-            return {
-                "tracked": len(rows),
-                "resolved": len(done),
-                "wins": wins,
-                "win_rate": round(wins / len(done) * 100, 1) if done else None,
-                "wr_ci": _wilson_ci(wins, len(done)),
-                "pending": sum(1 for r in rows if not r['Sold'] and not r['EndedUnsold'] and not r['GaveUp']),
-                "ended_unsold": sum(1 for r in rows if r['EndedUnsold']),
-                "gave_up": sum(1 for r in rows if r['GaveUp']),
-                "median_actual_discount": round(statistics.median(discs), 1) if discs else None,
-            }
-
-        nm_rows = [r for r in raw if r['NearMiss']]
-        # Like-for-like baseline: the near-miss cohort only exists from when the
-        # experiment started, so the main feed must be measured over the SAME
-        # window. The all-time average predates recent model improvements, reads
-        # ~6 points below the recent main feed (disagreeing with the Outcomes
-        # scoreboard), and understates the gap enough to flip the verdict.
-        nm_start = min((r['SurfacedAt'] for r in nm_rows if r['SurfacedAt']), default=None)
-
-        def in_window(r):
-            return nm_start is None or (r['SurfacedAt'] and r['SurfacedAt'] >= nm_start)
-
-        main_rows = [r for r in raw if not r['NearMiss'] and in_window(r)]
-
-        bands = []
-        for lo, hi in _NM_BANDS:
-            in_band = [r for r in raw if in_window(r) and r['DiscountPct'] is not None
-                       and lo <= float(r['DiscountPct']) < hi]
-            done = [(r, resolved_win(r)) for r in in_band]
-            done = [(r, w) for r, w in done if w is not None]
-            wins = sum(1 for _, w in done if w)
-            bands.append({
-                "label": f"{lo}–{hi}%" if hi < 999 else f"{lo}%+",
-                "lo": lo,
-                "resolved": len(done),
-                "wins": wins,
-                "win_rate": round(wins / len(done) * 100, 1) if done else None,
-                "wr_ci": _wilson_ci(wins, len(done)),
-                "near_miss_band": hi <= 20,
-            })
-
-        recent = []
-        for r in nm_rows[:100]:
-            w = resolved_win(r)
-            recent.append({
-                "EbayID": r['EbayID'], "Category": r['Category'], "Model": r['Model'],
-                "DiscountPct": r['DiscountPct'],
-                "SurfacedPrice": r['SurfacedPrice'], "FinalPrice": r['FinalPrice'],
-                "AvgMarketPrice": r['AvgMarketPrice'],
-                "EndTime": _iso_utc(r['EndTime']),
-                "result": ('win' if w else 'miss') if w is not None
-                          else ('unsold' if r['EndedUnsold'] else
-                                'gave up' if r['GaveUp'] else 'pending'),
-            })
-
-        return jsonify({
-            "status": "ok",
-            "near_miss": cohort(nm_rows),
-            "main": cohort(main_rows),
-            "bands": bands,
-            "target_n": _NM_TARGET_N,
-            "window_start": _iso_utc(nm_start),
-            "rows": recent,
-        })
-    except Exception as e:
-        log.error("insights_nearmiss error: %s", e)
-        return jsonify({"status": "error", "message": "internal error"}), 500
-    finally:
-        if conn:
-            conn.close()
+# Resolved flagged deals before the prediction-surfacing verdict means much.
+_PRED_TARGET_N = 50
 
 
 @app.route('/insights/predsurface')
@@ -1673,7 +1546,7 @@ def api_insights_predsurface():
             "main": cohort(main_rows),          # the live feed, same window (reference)
             "skipped": cohort(skipped_rows),    # predicted below margin (rule skips)
             "margin": _PRED_SURFACE_MARGIN,
-            "target_n": _NM_TARGET_N,
+            "target_n": _PRED_TARGET_N,
             "window_start": _iso_utc(start),
             "rows": recent,
         })
@@ -1685,7 +1558,7 @@ def api_insights_predsurface():
             conn.close()
 
 
-_PRED_SURFACE_MARGIN = float(os.environ.get('PRED_SURFACE_MARGIN', '10'))
+_PRED_SURFACE_MARGIN = float(os.environ.get('PRED_SURFACE_MARGIN', '0'))
 
 
 # ── BIN watcher settings ────────────────────────────────────────────────────────
@@ -2076,16 +1949,6 @@ def outcomes():
         cur.execute(GAVE_UP_COUNT_QUERY)
         gave_up = cur.fetchone()['n']
 
-        cur.execute(NEAR_MISS_SUMMARY_QUERY)
-        nm = cur.fetchone()
-        nm_resolved = int(nm['n'] or 0)
-        nm_beat = int(nm['beat'] or 0)
-        near_miss = {
-            "resolved": nm_resolved,
-            "beat_market": nm_beat,
-            "win_rate": round(nm_beat / nm_resolved * 100, 1) if nm_resolved else 0,
-        }
-
         for row in resolved:
             for col in ('EndTime', 'SoldDate', 'SurfacedAt'):
                 if row.get(col):
@@ -2136,7 +1999,6 @@ def outcomes():
                 "total_pending": len(pending),
                 "ended_unsold": ended_unsold,
                 "gave_up": gave_up,
-                "near_miss": near_miss,
                 "prediction": prediction,
                 "lifetime": lifetime,
             },

@@ -30,7 +30,6 @@ def client(request):
     ("/deal/123456789012", "Deal detail"),
     ("/health", "System health"),
     ("/insights/predictions", "Prediction model"),
-    ("/insights/nearmiss", "Near-miss experiment"),
     ("/bin", "Buy It Now"),
 ])
 def test_page_renders(client, path, marker):

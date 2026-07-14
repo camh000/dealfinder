@@ -14,7 +14,7 @@
         ageMin != null ? timeAgo(data.last_scrape_at) : '—'}</b><span>last full scrape</span></div>
       <div class="stat"><b class="num">${o.pending}</b><span>deals pending</span></div>
       <div class="stat"><b class="num">${o.resolved}</b><span>resolved</span></div>
-      <div class="stat"><b class="num">${o.near_miss}</b><span>near-miss cohort</span></div>
+      <div class="stat"><b class="num">${o.near_miss}</b><span>recorded sub-20%</span></div>
       <div class="stat"><b class="num">${o.gave_up}</b><span>gave up</span></div>
       <div class="stat"><b class="num">${data.snapshots.rows.toLocaleString('en-GB')}</b><span>price snapshots (${data.snapshots.deals} deals)</span></div>`;
 

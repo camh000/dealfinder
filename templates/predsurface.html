@@ -14,13 +14,13 @@
   <p class="help" style="margin:0">
     Today a listing is surfaced when its <b>current price</b> is ≥20% under median. This experiment
     asks the other question: forget the current discount — the model flags every deal it is
-    <b>confident (≥75%) will close ≥10% under median</b>. That confidence isn't a point guess: it's
-    the share of the cohort's <em>real</em> past outcomes (final ÷ spotted price) that would land
-    at/under the target, Wilson-adjusted for thin samples — so it folds in the model's bias and how
-    noisy each cohort is. Those are recorded but never notified. If they win clearly more often than
-    the deals the model was <em>not</em> confident about — the set this rule would skip — then the
-    prediction discriminates well enough to surface on predicted margin alone. The live feed over the
-    same window is shown for reference.
+    <b>confident (≥75%) will finish below median</b>. That confidence isn't a point guess: it's the
+    share of the cohort's <em>real</em> past outcomes (final ÷ spotted price) that would land under
+    median, Wilson-adjusted for thin samples — so it folds in the model's bias and how noisy each
+    cohort is (that adjustment replaces the old fixed 10% error cushion). Those are recorded but never
+    notified. If they win clearly more often than the deals the model was <em>not</em> confident
+    about — the set this rule would skip — then the prediction discriminates well enough to surface on
+    predicted margin alone. The live feed over the same window is shown for reference.
   </p>
 </div>
 

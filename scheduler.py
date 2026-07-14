@@ -73,11 +73,12 @@ SURFACE_MIN_DISCOUNT = float(os.environ.get('SURFACE_MIN_DISCOUNT', '20'))
 # must include the ones the gate suppressed, or we can't tell if it works.
 SURFACE_MIN_PREDICTED_DISCOUNT = float(os.environ.get('SURFACE_MIN_PREDICTED_DISCOUNT', '10'))
 
-# Near-miss control cohort: also record listings in the
-# [SURFACE_NEARMISS_DISCOUNT, SURFACE_MIN_DISCOUNT) band, flagged NearMiss=1
-# and never notified. Their resolved outcomes validate the 20%% threshold.
-# Set equal to SURFACE_MIN_DISCOUNT to disable the cohort.
-SURFACE_NEARMISS_DISCOUNT = float(os.environ.get('SURFACE_NEARMISS_DISCOUNT', '12'))
+# Recording floor: also record listings from this discount up to
+# SURFACE_MIN_DISCOUNT, flagged NearMiss=1 and never notified (below the notify
+# line, kept out of the scoreboard + premium training). This wide net feeds the
+# prediction-surfacing experiment. Set equal to SURFACE_MIN_DISCOUNT to record
+# only notified deals.
+SURFACE_RECORD_DISCOUNT = float(os.environ.get('SURFACE_RECORD_DISCOUNT', '5'))
 
 # BIN watcher: a separate fast lane sweeping newly-listed Buy-It-Now items.
 # Fixed prices can't be bid past their value, so a good BIN find is real the
@@ -431,7 +432,7 @@ def run_full_scrape():
     # and alerted even when nobody has the dashboard open.
     try:
         new_deals = EbayScraper.SurfaceDeals(SURFACE_WINDOW_HOURS, SURFACE_MIN_DISCOUNT,
-                                             nearmiss_discount=SURFACE_NEARMISS_DISCOUNT)
+                                             record_discount=SURFACE_RECORD_DISCOUNT)
         notify_new_deals(new_deals)
     except Exception as e:
         log.error("Deal surfacing failed: %s", e)

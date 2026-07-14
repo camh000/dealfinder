@@ -257,7 +257,7 @@ function market(d) {
     factRow('Spotted by dealfinder', o.SurfacedAt
       ? `${fmtDateTime(o.SurfacedAt)} at ${fmtGBP(o.SurfacedPrice)} (${o.DiscountPct}% off, ${o.BidsAtSurfacing} bids)` : null),
     factRow('Predicted at spotting', o.PredictedFinal && fmtGBP(o.PredictedFinal)),
-    factRow('Cohort', o.NearMiss ? 'near-miss control (12–20% band)' : null),
+    factRow('Cohort', o.NearMiss ? 'below notify threshold (recorded, not alerted)' : null),
     factRow('Enrichment note', o.EnrichNote && esc(o.EnrichNote)),
   ].join('') || '<tr><td class="state">No market group — not enough comparables.</td></tr>';
 }
