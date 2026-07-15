@@ -1891,15 +1891,26 @@ def stats():
         conn = get_connection()
         cur = conn.cursor(dictionary=True)
 
-        cur.execute("SELECT COUNT(*) AS total FROM Scraper.EBAY WHERE SoldDate IS NULL")
-        active = cur.fetchone()["total"]
-
-        cur.execute("SELECT COUNT(*) AS total FROM Scraper.EBAY WHERE SoldDate IS NOT NULL")
-        sold = cur.fetchone()["total"]
-
-        cur.execute("""
-            SELECT LastScrapeAt FROM Scraper.ScrapeMeta WHERE id = 1
+        # "Listings" = genuinely-live + all-time sold, using the SAME definitions
+        # as the health page's category table (else the header double-counts a
+        # tail of ended/stale/no-end-time rows that aren't live and aren't sold).
+        # Live = not sold, not ended, seen this scrape cycle; both scoped to rows
+        # that made it into a category (uncategorised junk isn't a "listing").
+        cats_union = " UNION ALL ".join(
+            f"SELECT ID FROM Scraper.{queries.CATEGORIES[c]['table']}" for c in PAGE_CATEGORIES)
+        cur.execute(f"""
+            SELECT
+                COALESCE(SUM(e.SoldDate IS NULL AND e.EndTime > NOW()
+                    AND e.LastSeenAt > NOW() - INTERVAL {queries.STALE_DEAL_MINUTES} MINUTE), 0) AS live,
+                COALESCE(SUM(e.SoldDate IS NOT NULL), 0) AS sold
+            FROM Scraper.EBAY e
+            WHERE e.ID IN ({cats_union})
         """)
+        counts = cur.fetchone()
+        active = int(counts["live"] or 0)
+        sold = int(counts["sold"] or 0)
+
+        cur.execute("SELECT LastScrapeAt FROM Scraper.ScrapeMeta WHERE id = 1")
         row = cur.fetchone()
         last_scrape = row["LastScrapeAt"] if row else None
 

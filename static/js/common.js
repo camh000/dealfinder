@@ -71,8 +71,9 @@ async function refreshChrome() {
     }
     const line = $('#status-line'), dot = $('#live-dot');
     if (stats.active_listings != null && line) {
-      const total = (stats.active_listings + stats.sold_listings).toLocaleString('en-GB');
-      line.textContent = `${total} listings · scraped ${timeAgo(stats.last_scrape_at)}`;
+      const live = stats.active_listings.toLocaleString('en-GB');
+      const sold = stats.sold_listings.toLocaleString('en-GB');
+      line.textContent = `${live} live · ${sold} sold · scraped ${timeAgo(stats.last_scrape_at)}`;
       const ageMin = stats.last_scrape_at
         ? (Date.now() - new Date(stats.last_scrape_at).getTime()) / 60000 : Infinity;
       dot.className = 'dot ' + (ageMin < 90 ? 'ok' : 'stale');
