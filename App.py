@@ -237,6 +237,7 @@ def ensure_outcomes_table():
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN CategoryPath VARCHAR(200) NULL",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN EnrichNote VARCHAR(60) NULL",
             "ALTER TABLE Scraper.DealOutcomes ADD COLUMN ItemCondition VARCHAR(40) NULL",
+            "ALTER TABLE Scraper.DealOutcomes ADD COLUMN Watchers INT NULL",
         ]:
             col_name = col_sql.split("ADD COLUMN ")[1].split()[0]
             try:
@@ -2302,7 +2303,7 @@ def deal_detail(ebay_id):
                    ROUND(PredictedFinal / 100, 2) AS PredictedFinal,
                    ROUND(FinalPrice / 100, 2) AS FinalPrice,
                    EndedUnsold, GaveUp, NearMiss, ItemLocation, Epid,
-                   CategoryPath, ItemCondition, EnrichNote, Model
+                   CategoryPath, ItemCondition, EnrichNote, Watchers, Model
             FROM Scraper.DealOutcomes WHERE EbayID = %s
         """, (ebay_id,))
         outcome = cur.fetchone()

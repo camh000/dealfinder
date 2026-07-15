@@ -2515,7 +2515,8 @@ def EnsureOutcomeColumns() -> None:
                         "ItemCondition VARCHAR(40) NULL",
                         "Epid VARCHAR(20) NULL",
                         "CategoryPath VARCHAR(200) NULL",
-                        "EnrichNote VARCHAR(60) NULL"):
+                        "EnrichNote VARCHAR(60) NULL",
+                        "Watchers INT NULL"):
             try:
                 cur.execute(f"ALTER TABLE Scraper.DealOutcomes ADD COLUMN {col_sql}")
                 conn.commit()
@@ -2625,6 +2626,23 @@ _RESERVE_NOT_MET_RE = re.compile(r'reserve\s+(?:price\s+)?not\s+met', re.IGNOREC
 _LOCATED_IN_RE = re.compile(r'Located in:\s*([^<]{2,80})<')
 _EPID_RE = re.compile(r'"epid"\s*:\s*"?(\d{6,15})')
 
+# Watcher count = demand signal. The "Add to Watchlist - N watchers" aria-label
+# on the heart button is the stable figure (an anonymous fetch always sees "Add
+# to", never "Remove from"); fall back to any "N watchers" social-proof text.
+_WATCHERS_ARIA_RE = re.compile(r'Watchlist\s*-\s*([\d,]+)\s+watchers', re.IGNORECASE)
+_WATCHERS_TEXT_RE = re.compile(r'([\d,]+)\s+watchers', re.IGNORECASE)
+
+
+def _extract_watchers(html: str):
+    """How many people are watching the listing, or None if not shown."""
+    m = _WATCHERS_ARIA_RE.search(html) or _WATCHERS_TEXT_RE.search(html)
+    if not m:
+        return None
+    try:
+        return int(m.group(1).replace(',', ''))
+    except ValueError:
+        return None
+
 # Which purchase actions a listing OFFERS — from the item page's call-to-action
 # panels, not eBay's label dictionary (which lists every CTA name regardless of
 # which are shown: "auction","buyItNow","bestOffer" all appear as translation
@@ -2706,6 +2724,7 @@ def _extract_enrichment(html: str) -> dict:
         'has_bid': bool(_HAS_BID_RE.search(html)),
         'has_bin': bool(_HAS_BIN_RE.search(html)),
         'has_best_offer': bool(_HAS_OFFER_RE.search(html)),
+        'watchers': _extract_watchers(html),
     }
 
 
@@ -3025,10 +3044,10 @@ def _enrich_and_gate(cur, ebay_id: int, product_type: str):
     cur.execute("""
         UPDATE Scraper.DealOutcomes
         SET ItemLocation = %s, Epid = %s, CategoryPath = %s,
-            ItemCondition = %s, EnrichNote = %s
+            ItemCondition = %s, EnrichNote = %s, Watchers = %s
         WHERE EbayID = %s
     """, (enrich['location'], enrich['epid'], enrich['category_path'],
-          enrich['condition'], suppress, ebay_id))
+          enrich['condition'], suppress, enrich.get('watchers'), ebay_id))
     return suppress
 
 

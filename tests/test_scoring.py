@@ -1222,6 +1222,17 @@ class TestItemEnrichment:
         assert enrich['has_bin'] is False
         assert enrich['has_best_offer'] is False
 
+    def test_fixture_watchers(self, enrich):
+        # the "Add to Watchlist - 35 watchers" aria-label is the stable count
+        assert enrich['watchers'] == 35
+
+    def test_watchers_parsing(self):
+        assert EbayScraper._extract_watchers(
+            '<button aria-label="Add to Watchlist - 1,204 watchers">') == 1204
+        assert EbayScraper._extract_watchers(
+            '<span>3 watchers</span>') == 3          # social-proof text fallback
+        assert EbayScraper._extract_watchers('<div>no watch info</div>') is None
+
     def test_purchase_route_detection(self):
         # label dictionary strings must NOT count — only real CTA panels do
         dict_only = ('<span>"auction":"Auction","buyItNow":"Buy It Now",'
