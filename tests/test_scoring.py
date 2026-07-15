@@ -1570,6 +1570,57 @@ class TestNearMissCohort:
         assert "* 0.8" in sql
 
 
+class TestVerifyBinAvailability:
+    def _conn(self, candidate_ids):
+        from unittest.mock import MagicMock
+        cur = MagicMock()
+        cur.fetchall.return_value = [(i,) for i in candidate_ids]
+        cur.fetchone.return_value = (1,)   # _category_for_ebay_id → first category
+        conn = MagicMock(); conn.cursor.return_value = cur
+        return conn, cur
+
+    def test_marks_stale_bin_sold(self):
+        from unittest.mock import patch
+        conn, cur = self._conn([101])
+        sold_item = {'id': 101, 'sold-date': '2026-07-14', 'price': 250.0, 'bid-count': 0}
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, '_scrape_item_by_id', return_value=sold_item):
+            res = EbayScraper.VerifyBinAvailability(max_check=10)
+        assert res['sold'] == 1 and res['still_live'] == 0
+        assert any('SoldDate' in str(c[0][0]) and 'UPDATE' in str(c[0][0])
+                   for c in cur.execute.call_args_list)
+
+    def test_refreshes_still_live_bin(self):
+        from unittest.mock import patch
+        conn, cur = self._conn([102])
+        # not in sold, but still in active results
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, '_scrape_item_by_id',
+                          side_effect=[None, {'id': 102, 'price': 99.0}]):
+            res = EbayScraper.VerifyBinAvailability(max_check=10)
+        assert res['sold'] == 0 and res['still_live'] == 1
+        assert any('LastSeenAt = NOW()' in str(c[0][0]) for c in cur.execute.call_args_list)
+
+    def test_removed_bin_left_for_prune(self):
+        from unittest.mock import patch
+        conn, cur = self._conn([103])
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, '_scrape_item_by_id', return_value=None):
+            res = EbayScraper.VerifyBinAvailability(max_check=10)
+        assert res == {'checked': 1, 'sold': 0, 'still_live': 0}
+        assert not any('SoldDate' in str(c[0][0]) and 'UPDATE' in str(c[0][0])
+                       for c in cur.execute.call_args_list)
+
+    def test_no_candidates_no_fetch(self):
+        from unittest.mock import patch
+        conn, cur = self._conn([])
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, '_scrape_item_by_id') as sid:
+            res = EbayScraper.VerifyBinAvailability(max_check=10)
+        assert res == {'checked': 0, 'sold': 0, 'still_live': 0}
+        sid.assert_not_called()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. Snipe-premium helpers
 # ═══════════════════════════════════════════════════════════════════════════════
