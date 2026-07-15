@@ -80,11 +80,6 @@ SURFACE_MIN_PREDICTED_DISCOUNT = float(os.environ.get('SURFACE_MIN_PREDICTED_DIS
 # only notified deals.
 SURFACE_RECORD_DISCOUNT = float(os.environ.get('SURFACE_RECORD_DISCOUNT', '5'))
 
-# BIN availability check: max surfaced BIN finds to re-verify per full scrape
-# (only stale ones — those that dropped out of the active feed — are candidates,
-# so this caps the extra sold/active lookups per cycle).
-BIN_VERIFY_MAX = int(os.environ.get('BIN_VERIFY_MAX', '40'))
-
 # BIN watcher: a separate fast lane sweeping newly-listed Buy-It-Now items.
 # Fixed prices can't be bid past their value, so a good BIN find is real the
 # moment it's seen — and gone in minutes, hence a cadence faster than the full
@@ -432,14 +427,6 @@ def run_full_scrape():
         EbayScraper.VerifyPendingOutcomes(hours_after=OUTCOME_VERIFY_HOURS, give_up_days=OUTCOME_GIVE_UP_DAYS)
     except Exception as e:
         log.error("Outcome verification failed: %s", e)
-
-    # Resolve surfaced BIN finds that dropped out of the active feed: a stale
-    # one is either sold (mark it) or still live (refresh it). Capped per run so
-    # it only fetches for listings that actually disappeared.
-    try:
-        EbayScraper.VerifyBinAvailability(max_check=BIN_VERIFY_MAX)
-    except Exception as e:
-        log.error("BIN availability verification failed: %s", e)
 
     # Server-side deal surfacing + push notifications — deals are captured
     # and alerted even when nobody has the dashboard open.
