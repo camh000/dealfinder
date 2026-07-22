@@ -843,6 +843,15 @@ def __ParseItems(soup, query, productType):
                 bidCount = int("".join(filter(str.isdigit, el.get_text(strip=True))))
                 break
 
+        # Watcher count: eBay prints a "N watchers" badge on a card only when the
+        # count is notable, so a missing badge means LOW interest, not unknown —
+        # recorded as 0 so the demand signal is present on every scraped listing
+        # at zero extra fetch cost (the item page is never needed for this).
+        watchers = 0
+        wm = _CARD_WATCHERS_RE.search(item.get_text(' ', strip=True))
+        if wm:
+            watchers = int(wm.group(1).replace(',', ''))
+
         # Seller feedback — every card in both markups carries
         # "seller 100% positive (290)". A (0) count means a no-history
         # seller, not a bad one; consumers must gate on the count.
@@ -1390,6 +1399,7 @@ def __ParseItems(soup, query, productType):
             'time-end': timeEnd,
             'sold-date': soldDate,
             'bid-count': bidCount,
+            'watchers': watchers,
             'reviews-count': reviewCount,
             'url': url,
             'brand': brand,
@@ -1453,6 +1463,8 @@ def __ParseRawPrice(string):
         return None
 
 _FEEDBACK_RE = re.compile(r'(\d{1,3}(?:\.\d+)?)%\s*positive\s*\((\d[\d,]*)\)', re.IGNORECASE)
+# "15 watchers" badge on a search card — the free demand signal.
+_CARD_WATCHERS_RE = re.compile(r'(\d[\d,]*)\s*watchers?\b', re.IGNORECASE)
 
 _SHIPPING_KEYWORD_RE = re.compile(r'delivery|postage', re.IGNORECASE)
 _GBP_AMOUNT_RE = re.compile(r'£\s*([\d,]+(?:\.\d+)?)')
@@ -1619,6 +1631,9 @@ class Product:
     vram: Optional[int]
     # Postage in pounds; folded into effective price by the deal queries.
     shipping: float = 0.0
+    # Watcher count off the search card (0 when eBay shows no badge = low
+    # interest). Defaulted so non-search construction sites keep working.
+    watchers: int = 0
     # CPU fields
     socket: Optional[str] = None
     cores: Optional[int] = None
@@ -1680,8 +1695,9 @@ def _upload(cur, p: Product, product_type: str, listing_kind: str = 'auction',
     # (LastSeenAt keeps moving as the 30-min sweep re-sees the same listing).
     cur.execute("""
         INSERT INTO EBAY (ID, Title, Price, Shipping, Quantity, Bids, EndTime, SoldDate, URL,
-                          SellerFeedbackPct, SellerFeedbackCount, ListingType, FirstSeenAt, LastSeenAt)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                          SellerFeedbackPct, SellerFeedbackCount, ListingType, Watchers,
+                          FirstSeenAt, LastSeenAt)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
         ON DUPLICATE KEY UPDATE
             Title = VALUES(Title),
             Price = VALUES(Price),
@@ -1694,10 +1710,13 @@ def _upload(cur, p: Product, product_type: str, listing_kind: str = 'auction',
             SellerFeedbackPct = VALUES(SellerFeedbackPct),
             SellerFeedbackCount = VALUES(SellerFeedbackCount),
             ListingType = IF(%s = 1, VALUES(ListingType), ListingType),
+            -- watcher counts only ever climb; a card that dropped its badge
+            -- must not erase the peak we already saw
+            Watchers = GREATEST(COALESCE(Watchers, 0), VALUES(Watchers)),
             LastSeenAt = NOW();
         """, (p.id, p.title, p.price * 100, int(round((p.shipping or 0) * 100)),
               p.quantity or 1, p.bid_count, p.time_end, p.sold_date, p.url,
-              p.feedback_pct, p.feedback_count, listing_kind,
+              p.feedback_pct, p.feedback_count, listing_kind, p.watchers or 0,
               1 if kind_authoritative else 0)
     )
     ebay_rc = cur.rowcount
@@ -2062,6 +2081,7 @@ def _product_from_dict(d: dict) -> Product:
         shipping=d.get("shipping") or 0,
         time_left=d["time-left"], time_end=d["time-end"],
         sold_date=d["sold-date"], bid_count=d["bid-count"],
+        watchers=d.get("watchers") or 0,
         reviews_count=d["reviews-count"], url=d["url"],
         brand=d["brand"], model=d["model"], vram=d["vram"],
         socket=d["socket"], cores=d["cores"], chipset=d.get("chipset"),
@@ -2742,18 +2762,21 @@ def EnrichListing(ebay_id: int) -> dict | None:
 
 def EnsureEnrichmentColumns() -> None:
     """EBAY.ReserveNotMet (deal queries gate on it) — reserve-not-met
-    auctions show a price nobody can actually win at."""
+    auctions show a price nobody can actually win at. EBAY.Watchers is the
+    free demand signal scraped off every search card."""
     DUP_COLUMN_ERRNO = 1060
     conn = _get_connection()
     try:
         cur = conn.cursor()
-        try:
-            cur.execute("ALTER TABLE Scraper.EBAY ADD COLUMN ReserveNotMet TINYINT(1) NOT NULL DEFAULT 0")
-            conn.commit()
-            log.info("EBAY: added ReserveNotMet column")
-        except mariadb.Error as e:
-            if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
-                log.error("EBAY: unexpected error adding ReserveNotMet: %s", e)
+        for col_sql in ("ReserveNotMet TINYINT(1) NOT NULL DEFAULT 0",
+                        "Watchers INT NULL"):
+            try:
+                cur.execute(f"ALTER TABLE Scraper.EBAY ADD COLUMN {col_sql}")
+                conn.commit()
+                log.info("EBAY: added %s column", col_sql.split()[0])
+            except mariadb.Error as e:
+                if getattr(e, "errno", None) != DUP_COLUMN_ERRNO:
+                    log.error("EBAY: unexpected error adding %s: %s", col_sql.split()[0], e)
     finally:
         conn.close()
 
@@ -3045,7 +3068,8 @@ def _enrich_and_gate(cur, ebay_id: int, product_type: str):
     cur.execute("""
         UPDATE Scraper.DealOutcomes
         SET ItemLocation = %s, Epid = %s, CategoryPath = %s,
-            ItemCondition = %s, EnrichNote = %s, Watchers = %s
+            ItemCondition = %s, EnrichNote = %s,
+            Watchers = GREATEST(COALESCE(Watchers, 0), COALESCE(%s, 0))
         WHERE EbayID = %s
     """, (enrich['location'], enrich['epid'], enrich['category_path'],
           enrich['condition'], suppress, enrich.get('watchers'), ebay_id))
@@ -3153,8 +3177,8 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
                              if row.get('PremiumSamples') else None)
                 ins.execute("""
                     INSERT IGNORE INTO Scraper.DealOutcomes
-                        (EbayID, Category, Model, SurfacedPrice, AvgMarketPrice, DiscountPct, BidCount, EndTime, PredictedFinal, NearMiss, PredMargin)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (EbayID, Category, Model, SurfacedPrice, AvgMarketPrice, DiscountPct, BidCount, Watchers, EndTime, PredictedFinal, NearMiss, PredMargin)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     row['ID'],
                     product_type.upper(),
@@ -3163,6 +3187,7 @@ def SurfaceDeals(window_hours: int = 2, min_discount: float = 20,
                     int(round(row['AvgMarketPrice'] * qty * 100)),
                     float(row['DiscountPct']),
                     int(row.get('Bids') or 0),
+                    int(row.get('Watchers') or 0),
                     row['EndTime'],
                     predicted,
                     near_miss,

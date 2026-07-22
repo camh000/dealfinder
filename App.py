@@ -361,7 +361,8 @@ def ensure_seller_feedback_columns():
     try:
         conn = get_connection()
         cur = conn.cursor()
-        for col_sql in ("SellerFeedbackPct FLOAT NULL", "SellerFeedbackCount INT NULL"):
+        for col_sql in ("SellerFeedbackPct FLOAT NULL", "SellerFeedbackCount INT NULL",
+                        "Watchers INT NULL"):
             try:
                 cur.execute(f"ALTER TABLE Scraper.EBAY ADD COLUMN {col_sql}")
                 conn.commit()

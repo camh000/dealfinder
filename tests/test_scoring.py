@@ -1222,6 +1222,14 @@ class TestItemEnrichment:
         assert enrich['has_bin'] is False
         assert enrich['has_best_offer'] is False
 
+    def test_card_watchers_regex(self):
+        # search-card badge → the free demand signal (no item-page fetch)
+        r = EbayScraper._CARD_WATCHERS_RE
+        assert r.search('Pre-owned £120.00 15 watchers').group(1) == '15'
+        assert r.search('1,204 watchers').group(1) == '1,204'
+        assert r.search('1 watcher').group(1) == '1'
+        assert r.search('no badge here') is None
+
     def test_fixture_watchers(self, enrich):
         # the "Add to Watchlist - 35 watchers" aria-label is the stable count
         assert enrich['watchers'] == 35

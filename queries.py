@@ -360,6 +360,7 @@ SELECT
         / GREATEST(TIMESTAMPDIFF(MINUTE, NOW(), e.EndTime) / 60.0, 0.25)
         / (1 + COALESCE(e.Bids, 0)), 2)          AS DealScore,
     e.Bids,
+    COALESCE(e.Watchers, 0) AS Watchers,
     e.SellerFeedbackPct,
     e.SellerFeedbackCount,
     dout.SurfacedAt,
@@ -484,6 +485,7 @@ SELECT
         / GREATEST(TIMESTAMPDIFF(MINUTE, NOW(), e.EndTime) / 60.0, 0.25)
         / (1 + COALESCE(e.Bids, 0)), 2)     AS DealScore,
     e.Bids,
+    COALESCE(e.Watchers, 0) AS Watchers,
     COALESCE(e.ListingType, 'auction')      AS ListingType,
     e.SellerFeedbackPct,
     e.SellerFeedbackCount,
