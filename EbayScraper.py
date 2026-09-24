@@ -1,5 +1,6 @@
 import re
 import time
+import random
 import logging
 import requests
 import urllib.parse
@@ -68,6 +69,60 @@ EBAY_DISPLAY_TZ = os.environ.get('EBAY_DISPLAY_TZ', 'America/Los_Angeles')
 # Call reset_direct_session() before each run to get a fresh identity.
 _direct_session = None
 
+# Browser identities for the direct fetcher, rotated on a block. Akamai's
+# verdict hinges on the TLS/HTTP2 fingerprint as much as the IP — verified
+# 24 Sep 2026 from Tower's home IP: every Chrome/Edge/Firefox profile 403'd
+# the homepage (and got "Pardon our interruption" on searches) while Safari
+# passed and returned full result pages. Override with DIRECT_IMPERSONATE.
+_IMPERSONATE_PROFILES = [p.strip() for p in os.environ.get(
+    'DIRECT_IMPERSONATE', 'safari,safari184').split(',') if p.strip()]
+_profile_idx = 0
+
+# Pacing: a minimum gap plus random jitter between eBay requests, so a run
+# can't burst and the cadence doesn't read as a metronome.
+_MIN_DELAY_S = float(os.environ.get('DIRECT_MIN_DELAY_S', '2'))
+_JITTER_S = float(os.environ.get('DIRECT_JITTER_S', '2'))
+_last_fetch_at = 0.0
+
+# On a block: back off, take a fresh session on the next fingerprint, retry
+# once. After _BREAKER_THRESHOLD consecutive blocks, stop asking eBay at all
+# for a cool-down — hammering a flagged IP only deepens the flag.
+_BLOCK_BACKOFF_S = float(os.environ.get('DIRECT_BLOCK_BACKOFF_S', '8'))
+_BREAKER_THRESHOLD = int(os.environ.get('DIRECT_BREAKER_THRESHOLD', '6'))
+_BREAKER_COOLDOWN_S = int(os.environ.get('DIRECT_BREAKER_COOLDOWN_S', '900'))
+_consecutive_blocks = 0
+_breaker_open_until = 0.0
+
+# eBay redirects anonymous SOLD/COMPLETED searches to sign-in (since ~23 Jul
+# 2026). That's policy, not a block of us: rotating or retrying can't help,
+# and the page is big enough (~116 KB) to pass a size check and parse as an
+# empty result — which is how it went unnoticed for two months.
+SIGNIN_WALL = 'sign-in wall'
+CIRCUIT_OPEN = 'circuit open'
+
+# Why the most recent direct fetch failed (None on success), and the final
+# URL of the most recent success (item pages redirect to /p/ when purged).
+last_block_reason: str | None = None
+last_fetch_url: str = ''
+
+
+class SignInWallError(RuntimeError):
+    """eBay demanded a sign-in for this page (sold/completed searches)."""
+
+
+def classify_response(status: int, url: str, html: str) -> str | None:
+    """Why a response is unusable, or None when it's a real eBay page."""
+    if status != 200:
+        return f'HTTP {status}'
+    if 'signin.ebay.' in (url or ''):
+        return SIGNIN_WALL
+    if 'Pardon our interruption' in (html or '')[:30_000]:
+        return 'bot challenge'
+    # Real search and item pages are several hundred KB; block pages are tiny.
+    if len(html or '') < 50_000:
+        return 'too small'
+    return None
+
 # Full browser header set that Akamai inspects.  curl-cffi sets the TLS/HTTP2
 # fingerprint; we supply the application-layer headers to match.
 _DIRECT_HEADERS_BASE = {
@@ -110,71 +165,119 @@ def reset_direct_session() -> None:
     _close_direct_session()
 
 
-def _fetch_direct(url: str) -> str | None:
-    """Fetch URL via a persistent curl-cffi session impersonating Chrome 131.
+def _current_profile() -> str:
+    return _IMPERSONATE_PROFILES[_profile_idx % len(_IMPERSONATE_PROFILES)]
 
-    On first call (or after reset_direct_session()), warms up by fetching the
-    eBay homepage so Akamai bot-detection cookies (_abck, bm_sz, etc.) are
-    established before any search request.
 
-    Returns HTML string on success, or None if the request fails or the
-    response looks like a bot-detection / block page.
-    """
+def _pace() -> None:
+    """Hold the minimum (jittered) gap since the previous eBay request."""
+    global _last_fetch_at
+    gap = _MIN_DELAY_S + (random.uniform(0, _JITTER_S) if _JITTER_S > 0 else 0)
+    wait = _last_fetch_at + gap - time.monotonic()
+    if wait > 0:
+        time.sleep(wait)
+    _last_fetch_at = time.monotonic()
+
+
+def _open_direct_session(cffi_requests) -> None:
+    """New session on the current fingerprint + homepage warmup, so Akamai
+    bot-detection cookies (_abck, bm_sz, etc.) exist before any search."""
     global _direct_session
+    profile = _current_profile()
+    _direct_session = cffi_requests.Session(impersonate=profile)
+    try:
+        _pace()
+        warmup = _direct_session.get(
+            'https://www.ebay.co.uk/',
+            headers={
+                **_DIRECT_HEADERS_BASE,
+                'Sec-Fetch-Site':  'none',
+                'Accept-Encoding': 'gzip, deflate',  # exclude br: homepage sends brotli
+            },                                       # which fails on Windows libcurl (curl 23)
+            timeout=15,
+        )
+        log.info(
+            "Direct session warmed up (%s, HTTP %s, %d cookies)",
+            profile, warmup.status_code, len(_direct_session.cookies),
+        )
+    except Exception as e:
+        log.warning("Session warmup failed: %s", e)
+
+
+def _fetch_direct(url: str) -> str | None:
+    """Fetch URL via a persistent curl-cffi session impersonating a browser.
+
+    Returns HTML on success. On failure returns None and sets
+    `last_block_reason`: the sign-in wall returns at once (retrying can't
+    help); a block (403 / bot challenge / tiny page / error) backs off,
+    rotates to a fresh session on the next fingerprint and retries once, and
+    enough consecutive blocks open a circuit breaker that skips eBay for a
+    cool-down instead of hammering a flagged IP.
+    """
+    global _profile_idx, _consecutive_blocks, _breaker_open_until
+    global last_block_reason, last_fetch_url
 
     try:
         from curl_cffi import requests as cffi_requests
     except ImportError:
         log.warning("curl_cffi not installed — skipping direct fetch")
+        last_block_reason = 'curl_cffi missing'
         return None
 
-    # Initialise session + homepage warmup once per scrape run.
-    if _direct_session is None:
-        _direct_session = cffi_requests.Session(impersonate='chrome120')
+    if time.monotonic() < _breaker_open_until:
+        last_block_reason = CIRCUIT_OPEN
+        return None
+
+    for attempt in range(2):
+        if _direct_session is None:
+            _open_direct_session(cffi_requests)
+        profile = _current_profile()
+        _pace()
+        html = None
         try:
-            warmup = _direct_session.get(
-                'https://www.ebay.co.uk/',
+            resp = _direct_session.get(
+                url,
                 headers={
                     **_DIRECT_HEADERS_BASE,
-                    'Sec-Fetch-Site':  'none',
-                    'Accept-Encoding': 'gzip, deflate',  # exclude br: homepage sends brotli
-                },                                       # which fails on Windows libcurl (curl 23)
-                timeout=15,
+                    'Referer':        'https://www.ebay.co.uk/',
+                    'Sec-Fetch-Site': 'same-origin',
+                },
+                timeout=30,
             )
-            log.info(
-                "Direct session warmed up (HTTP %s, %d cookies)",
-                warmup.status_code, len(_direct_session.cookies),
-            )
+            html = resp.text
+            final_url = str(getattr(resp, 'url', '') or '')
+            reason = classify_response(resp.status_code, final_url, html)
         except Exception as e:
-            log.warning("Session warmup failed: %s", e)
+            reason = f'error: {e}'
 
-    try:
-        resp = _direct_session.get(
-            url,
-            headers={
-                **_DIRECT_HEADERS_BASE,
-                'Referer':        'https://www.ebay.co.uk/',
-                'Sec-Fetch-Site': 'same-origin',
-            },
-            timeout=30,
-        )
-        if resp.status_code != 200:
-            log.warning("Direct fetch: HTTP %s for %s", resp.status_code, url)
+        if reason is None:
+            _consecutive_blocks = 0
+            last_block_reason = None
+            last_fetch_url = final_url
+            log.info("Direct fetch OK (%s, %d chars)", profile, len(html))
+            return html
+
+        last_block_reason = reason
+        if reason == SIGNIN_WALL:
+            log.info("Direct fetch: eBay sign-in wall for %s", url)
             return None
-        html = resp.text
-        # Real eBay search pages are >1 MB; block/CAPTCHA pages are tiny.
-        if len(html) < 50_000:
-            log.warning(
-                "Direct fetch: response too small (%d chars) — possible block page", len(html)
-            )
-            _close_direct_session()  # session may be flagged; reset for next call
-            return None
-        log.info("Direct fetch OK (curl-cffi/chrome131, %d chars)", len(html))
-        return html
-    except Exception as e:
-        log.warning("Direct fetch failed: %s", e)
+
+        log.warning("Direct fetch blocked (%s, %s): %s", reason, profile, url)
         _close_direct_session()
-        return None
+        _profile_idx += 1
+        _consecutive_blocks += 1
+        if _consecutive_blocks >= _BREAKER_THRESHOLD:
+            _breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_S
+            _consecutive_blocks = 0
+            log.error("Direct fetch: %d consecutive blocks — pausing all eBay requests "
+                      "for %ds so the IP can cool off", _BREAKER_THRESHOLD, _BREAKER_COOLDOWN_S)
+            return None
+        if attempt == 0:
+            time.sleep(_BLOCK_BACKOFF_S)
+    return None
+
+
+_zyte_disabled = False
 
 
 def _fetch_zyte(url: str) -> str | None:
@@ -192,9 +295,12 @@ def _fetch_zyte(url: str) -> str | None:
     and decode with resp.json()["browserHtml"] (no base64). Cost ~$9/1k.
     """
     import base64
+    global _zyte_disabled
     api_key = os.environ.get("ZYTE_API_KEY")
     if not api_key:
-        log.warning("Zyte API key not configured — skipping Zyte fetch")
+        log.debug("Zyte API key not configured — skipping Zyte fetch")
+        return None
+    if _zyte_disabled:
         return None
 
     max_retries = int(os.environ.get('ZYTE_MAX_RETRIES', '3'))
@@ -227,6 +333,14 @@ def _fetch_zyte(url: str) -> str | None:
                 if attempt < max_retries - 1:
                     time.sleep(backoff)
                 continue
+
+            if resp.status_code in (401, 402, 403):
+                # Auth/billing refusal (e.g. "account-suspended" at the spend
+                # limit) won't fix itself mid-run — stop calling until restart.
+                _zyte_disabled = True
+                log.error("Zyte refused the account (HTTP %s: %s) — Zyte fallback disabled "
+                          "until the scraper restarts", resp.status_code, resp.text[:160])
+                return None
 
             resp.raise_for_status()
             html = base64.b64decode(resp.json()["httpResponseBody"]).decode("utf-8", errors="replace")
@@ -277,7 +391,12 @@ def __GetHTML(query, country, condition='', listing_type='all', alreadySold=True
         )
         log.debug("Fetching: %s", url)
 
-        responseHTML = _fetch_direct(url) or _fetch_zyte(url)
+        responseHTML = _fetch_direct(url)
+        if responseHTML is None and last_block_reason == SIGNIN_WALL:
+            # Zyte would hit the same wall (it's anonymous too) — don't pay for it.
+            raise SignInWallError(f"eBay sign-in wall for: {url}")
+        if responseHTML is None:
+            responseHTML = _fetch_zyte(url)
         if responseHTML is None:
             raise RuntimeError(f"All fetch methods failed for: {url}")
 
@@ -1902,6 +2021,13 @@ def coverage_alerts(cov: dict | None, min_items: int = 100) -> list[str]:
     return alerts
 
 
+# Sold searches hit eBay's sign-in wall; once seen, skip them (saving a
+# pointless request per query) and re-probe every SOLD_WALL_RECHECK_S in case
+# eBay lifts it.
+SOLD_WALL_RECHECK_S = int(os.environ.get('SOLD_WALL_RECHECK_S', str(6 * 3600)))
+_sold_wall_until = 0.0
+
+
 def Scrape(query, product_type, country='us', condition='all', listing_type='all', cache=False):
     if country not in countryDict:
         raise Exception('Country not supported, please use one of the following: ' + ', '.join(countryDict.keys()))
@@ -1910,10 +2036,21 @@ def Scrape(query, product_type, country='us', condition='all', listing_type='all
     if listing_type not in typeDict:
         raise Exception('Type not supported, please use one of the following: ' + ', '.join(typeDict.keys()))
 
-    sold_soup = __GetHTML(query, country, condition, listing_type, alreadySold=True, cache=cache)
+    global _sold_wall_until
+    sold_items = []
+    if time.monotonic() >= _sold_wall_until:
+        try:
+            sold_soup = __GetHTML(query, country, condition, listing_type, alreadySold=True, cache=cache)
+            sold_items = __ParseItems(sold_soup, query, product_type)
+        except SignInWallError:
+            _sold_wall_until = time.monotonic() + SOLD_WALL_RECHECK_S
+            log.warning("eBay requires sign-in for sold searches — skipping them for %dh "
+                        "(sold prices come from item pages via ResolveEndedAuctions)",
+                        SOLD_WALL_RECHECK_S // 3600)
+        except RuntimeError as e:
+            # Sold results are a bonus now — the live listings are the point.
+            log.warning("Sold search skipped for '%s': %s", query, e)
     active_soup = __GetHTML(query, country, condition, listing_type, alreadySold=False, cache=cache)
-
-    sold_items = __ParseItems(sold_soup, query, product_type)
     active_items = __ParseItems(active_soup, query, product_type)
 
     _record_coverage(sold_items, sold=True)
@@ -1922,28 +2059,212 @@ def Scrape(query, product_type, country='us', condition='all', listing_type='all
     return sold_items + active_items
 
 
+# ── ended-auction resolution from item pages ──────────────────────────────────
+# Since ~23 Jul 2026 eBay hides SOLD/COMPLETED searches behind sign-in. That
+# killed both sources of sold prices at once: the sold-search half of every
+# scrape (the market history) and the per-ID sold lookup that verified deal
+# outcomes — which then read "not found" twice and closed ~2,000 real sales as
+# cancelled. Item pages of ended listings are still public and state the
+# verdict as structured JSON, so every auction we watched live is resolved by
+# one item-page fetch once it ends. eBay keeps ended item pages ~60-90 days;
+# after that /itm/<id> redirects to a catalogue /p/ page ("gone").
+
+_LISTING_STATUS_RE = re.compile(r'"listingStatus"\s*:\s*"(\w+)"')
+_ITEM_BID_COUNT_RE = re.compile(r'"bidCount"\s*:\s*(\d+)')
+_CURRENT_BID_RE = re.compile(
+    r'"currentBidPrice"\s*:\s*\{\s*"value"\s*:\s*([\d.]+)\s*,\s*"currency"\s*:\s*"(\w+)"')
+_BIDDING_ENDED_RE = re.compile(
+    r'"biddingEndedAt"\s*:\s*"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)"')
+# The status banner: "Item sold on Wed, 23 Sep..." vs "Bidding ended on ..."
+# (0 bids, reserve not met, or ended by the seller).
+_ITEM_SOLD_RE = re.compile(r'"text"\s*:\s*"Item sold on ')
+
+RESOLVE_MAX_ATTEMPTS = 3
+
+
+def _iso_to_naive_utc(s: str):
+    try:
+        dt = datetime.fromisoformat(s.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def parse_item_outcome(html: str, final_url: str = '') -> dict:
+    """Read an auction's verdict off its item page.
+
+    state: 'sold' (price = winning bid, GBP) | 'unsold' | 'active' |
+           'gone' (purged → redirected to a /p/ catalogue page) |
+           'unknown' (no listing data we recognise)
+    """
+    out = {'state': 'unknown', 'price': None, 'bids': None, 'end': None}
+    if urllib.parse.urlsplit(final_url or '').path.startswith('/p/'):
+        out['state'] = 'gone'
+        return out
+    html = html or ''
+    status = _LISTING_STATUS_RE.search(html)
+    if not status:
+        return out
+    bids = _ITEM_BID_COUNT_RE.search(html)
+    out['bids'] = int(bids.group(1)) if bids else None
+    end = _BIDDING_ENDED_RE.search(html) or _END_DATE_RE.search(html)
+    out['end'] = _iso_to_naive_utc(end.group(1)) if end else None
+    if status.group(1) != 'ENDED':
+        out['state'] = 'active'
+        return out
+    if _ITEM_SOLD_RE.search(html):
+        price = _CURRENT_BID_RE.search(html)
+        if price and price.group(2) == 'GBP':
+            out['state'] = 'sold'
+            out['price'] = float(price.group(1))
+        return out   # sold at an unreadable price stays 'unknown' — never guess
+    out['state'] = 'unsold'
+    return out
+
+
+def _apply_item_outcome(cur, ebay_id: int, r: dict, repair: bool = False) -> None:
+    """Write one parsed verdict. repair=True may overwrite a row the old
+    two-strike logic wrongly closed as unsold (SoldDate set, Price NULL)."""
+    state = r['state']
+    if state == 'sold':
+        cur.execute("""
+            UPDATE Scraper.EBAY
+            SET    SoldDate = COALESCE(%s, EndTime), Price = %s, Bids = COALESCE(%s, Bids)
+            WHERE  ID = %s AND (SoldDate IS NULL OR (%s AND Price IS NULL))
+        """, (r['end'], int(round(r['price'] * 100)), r['bids'], ebay_id, repair))
+        cur.execute("""
+            UPDATE Scraper.DealOutcomes SET EndedUnsold = 0, GaveUp = 0 WHERE EbayID = %s
+        """, (ebay_id,))
+    elif state == 'unsold':
+        cur.execute("""
+            UPDATE Scraper.EBAY
+            SET    SoldDate = COALESCE(%s, EndTime), Price = NULL, Bids = COALESCE(%s, Bids)
+            WHERE  ID = %s AND SoldDate IS NULL
+        """, (r['end'], r['bids'], ebay_id))
+        cur.execute("""
+            UPDATE Scraper.DealOutcomes SET EndedUnsold = 1 WHERE EbayID = %s
+        """, (ebay_id,))
+    elif state == 'active' and r['end'] and r['end'] > datetime.now(timezone.utc).replace(tzinfo=None):
+        # Our EndTime was early (search countdowns truncate) — re-queue on the real end.
+        cur.execute("""
+            UPDATE Scraper.EBAY SET EndTime = %s, EndTimeExact = 1
+            WHERE  ID = %s AND SoldDate IS NULL
+        """, (r['end'], ebay_id))
+    else:
+        cur.execute("""
+            UPDATE Scraper.EBAY SET ResolveAttempts = ResolveAttempts + 1 WHERE ID = %s
+        """, (ebay_id,))
+
+
+def _resolve_ids(ids, repair: bool = False) -> dict:
+    """Fetch + apply the item-page verdict for each ID (one commit per row so a
+    long pass never holds locks against the scraper's own writes)."""
+    stats = {'checked': 0, 'sold': 0, 'unsold': 0, 'active': 0, 'gone': 0,
+             'unknown': 0, 'failed': 0, 'ended_with_bids': 0}
+    if not ids:
+        return stats
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        for ebay_id in ids:
+            html = _fetch_direct(f'https://www.ebay.co.uk/itm/{ebay_id}')
+            if html is None:
+                if last_block_reason == CIRCUIT_OPEN:
+                    break           # eBay is cooling off — try the rest next run
+                stats['failed'] += 1
+                r = {'state': 'failed'}
+            else:
+                stats['checked'] += 1
+                r = parse_item_outcome(html, last_fetch_url)
+                stats[r['state']] += 1
+                if r['state'] in ('sold', 'unsold') and (r['bids'] or 0) > 0:
+                    stats['ended_with_bids'] += 1
+            try:
+                _apply_item_outcome(cur, ebay_id, r, repair=repair)
+                conn.commit()
+            except mariadb.Error as e:
+                conn.rollback()
+                log.warning("Resolve: DB write failed for %s: %s", ebay_id, e)
+    finally:
+        conn.close()
+    return stats
+
+
+def resolve_alerts(stats: dict) -> list[str]:
+    """Canary: if eBay rewords the "Item sold on" banner, every sale would
+    silently read as unsold (the exact failure class that hid the sign-in
+    wall). Many ended-with-bids auctions and not one sale = the parser is blind."""
+    if stats.get('ended_with_bids', 0) >= 10 and stats.get('sold', 0) == 0:
+        return [f"item-page sold detection: 0 sales among {stats['ended_with_bids']} "
+                "ended auctions with bids — eBay markup has likely drifted"]
+    return []
+
+
+def ResolveEndedAuctions(limit: int = 60, min_age_minutes: int = 15,
+                         max_age_days: int = 14, repair: bool = False) -> dict:
+    """Resolve ended, untracked auctions from their item pages — now the ONLY
+    source of sold prices for the market medians.
+
+    Newest first, so fresh prices land before any backlog. Rows older than
+    max_age_days are left alone (PruneStaleListings deletes unresolved ones at
+    14d). Deal-tracked rows are VerifyPendingOutcomes' job, except in repair
+    mode, which instead re-checks tracked rows the pre-Sep-2026 two-strike
+    logic closed as unsold / gave up on while the sign-in wall hid every sale.
+    """
+    conn = _get_connection()
+    try:
+        cur = conn.cursor()
+        if repair:
+            cur.execute("""
+                SELECT e.ID
+                FROM   Scraper.DealOutcomes o
+                JOIN   Scraper.EBAY e ON e.ID = o.EbayID
+                WHERE  e.ResolveAttempts < %s
+                  AND  o.EndTime > NOW() - INTERVAL %s DAY
+                  AND  ((e.SoldDate IS NOT NULL AND e.Price IS NULL
+                         AND o.EndedUnsold = 1 AND o.VerifyMisses >= 2)
+                        OR (e.SoldDate IS NULL AND o.GaveUp = 1))
+                ORDER BY o.EndTime DESC
+                LIMIT  %s
+            """, (RESOLVE_MAX_ATTEMPTS, max_age_days, limit))
+        else:
+            cur.execute("""
+                SELECT e.ID
+                FROM   Scraper.EBAY e
+                WHERE  COALESCE(e.ListingType, 'auction') = 'auction'
+                  AND  e.SoldDate IS NULL
+                  AND  e.EndTime < NOW() - INTERVAL %s MINUTE
+                  AND  e.EndTime > NOW() - INTERVAL %s DAY
+                  AND  e.ResolveAttempts < %s
+                  AND  NOT EXISTS (SELECT 1 FROM Scraper.DealOutcomes o WHERE o.EbayID = e.ID)
+                ORDER BY e.EndTime DESC
+                LIMIT  %s
+            """, (min_age_minutes, max_age_days, RESOLVE_MAX_ATTEMPTS, limit))
+        ids = [r[0] for r in cur.fetchall()]
+        conn.commit()
+    finally:
+        conn.close()
+    stats = _resolve_ids(ids, repair=repair)
+    log.info("ResolveEndedAuctions%s: %d queued -> %s", " [repair]" if repair else "",
+             len(ids), {k: v for k, v in stats.items() if v})
+    return stats
+
+
 def VerifyPendingOutcomes(hours_after: int = 6, give_up_days: int = 7) -> int:
-    """Search eBay sold listings for DealOutcomes past their end time that
-    still have SoldDate IS NULL in the EBAY table.
+    """Resolve deal outcomes past their end time from their item pages.
 
-    Two-phase logic:
-      Phase 1 — mark give-up: any item past `give_up_days` that is still
-                unresolved is flagged GaveUp=1 and will never be retried.
-      Phase 2 — verify in-window items: items between `hours_after` hours
-                and `give_up_days` days old are looked up by ID in eBay
-                sold results, then all-completed results.
+    Phase 1 — mark give-up: anything past `give_up_days` still unresolved is
+              flagged GaveUp=1 and no longer retried here.
+    Phase 2 — each in-window outcome gets one item-page fetch; its verdict
+              ('Item sold on' + winning bid, or ended unsold) is written by
+              _apply_item_outcome. Seller-cancelled listings show as ended
+              without a sale, so they close as EndedUnsold like before.
 
-    Cancelled listings appear in NEITHER search (sellers pull auctions that
-    are going too cheap — the best deals attract cancellations). Two
-    consecutive not-found passes with successful fetches ⇒ the listing was
-    removed: close it as EndedUnsold instead of retrying for a week.
-
-    Returns the number of outcomes successfully resolved this run.
+    Returns the number of outcomes resolved (sold or unsold) this run.
     """
     conn = _get_connection()
     cur = conn.cursor()
     try:
-        # ── Phase 1: mark items past the give-up threshold ───────────────────
         cur.execute("""
             UPDATE Scraper.DealOutcomes o
             JOIN   Scraper.EBAY e ON e.ID = o.EbayID
@@ -1952,126 +2273,38 @@ def VerifyPendingOutcomes(hours_after: int = 6, give_up_days: int = 7) -> int:
               AND  e.SoldDate IS NULL
               AND  o.EndTime < NOW() - INTERVAL %s DAY
         """, (give_up_days,))
-        gave_up = cur.rowcount
-        if gave_up:
-            log.warning(
-                "Outcome verification: gave up on %d item(s) past %dd threshold",
-                gave_up, give_up_days,
-            )
+        if cur.rowcount:
+            log.warning("Outcome verification: gave up on %d item(s) past %dd threshold",
+                        cur.rowcount, give_up_days)
 
-        # ── Phase 2: verify in-window items ──────────────────────────────────
         cur.execute("""
-            SELECT o.EbayID, o.Category, e.Title, o.EndTime, o.VerifyMisses
+            SELECT o.EbayID
             FROM   Scraper.DealOutcomes o
             JOIN   Scraper.EBAY e ON e.ID = o.EbayID
             WHERE  o.EndTime < NOW() - INTERVAL %s HOUR
               AND  o.EndTime > NOW() - INTERVAL %s DAY
               AND  e.SoldDate IS NULL
               AND  o.GaveUp = 0
-        """, (hours_after, give_up_days))
-        pending = cur.fetchall()
-
-        if not pending:
-            log.info("Outcome verification: no unresolved outcomes in window (%dh–%dd)", hours_after, give_up_days)
-            conn.commit()
-            return 0
-
-        log.info("Outcome verification: checking %d item(s) in window (%dh–%dd)", len(pending), hours_after, give_up_days)
-        resolved = 0
-
-        for ebay_id, category, title, end_time, verify_misses in pending:
-            try:
-                # ── Pass 1: sold-only search ──────────────────────────────────
-                item = _scrape_item_by_id(ebay_id, category, sold=True)
-                if item and item.get('sold-date'):
-                    cur.execute("""
-                        UPDATE Scraper.EBAY
-                        SET    SoldDate = %s,
-                               Price    = %s,
-                               Bids     = %s
-                        WHERE  ID       = %s
-                          AND  SoldDate IS NULL
-                    """, (item['sold-date'], int(round(item['price'] * 100)), item['bid-count'], ebay_id))
-                    log.info(
-                        "Outcome verified: ID=%s sold for £%.2f on %s",
-                        ebay_id, item['price'], item['sold-date'],
-                    )
-                    resolved += 1
-                    continue
-
-                # ── Pass 2: all-completed search (sold + ended-unsold) ────────
-                completed_item = _scrape_item_completed(ebay_id, category)
-                if completed_item:
-                    # Found in completed results but NOT in sold results →
-                    # the auction ended without a buyer.  Record the end time
-                    # and NULL the price so it is excluded from market-price
-                    # averages.
-                    cur.execute("""
-                        UPDATE Scraper.EBAY
-                        SET    SoldDate = %s,
-                               Price    = NULL
-                        WHERE  ID       = %s
-                          AND  SoldDate IS NULL
-                    """, (end_time, ebay_id))
-                    cur.execute("""
-                        UPDATE Scraper.DealOutcomes
-                        SET    EndedUnsold = 1
-                        WHERE  EbayID = %s
-                    """, (ebay_id,))
-                    log.info(
-                        "Outcome ended unsold: ID=%s category=%s end_time=%s title='%s'",
-                        ebay_id, category, end_time, title[:80],
-                    )
-                    resolved += 1
-                else:
-                    # Both fetches succeeded and the listing is in neither
-                    # sold nor completed results — removed/cancelled by the
-                    # seller. One miss could be indexing lag; two consecutive
-                    # passes (~an hour apart, 6h+ after end) is conclusive.
-                    misses = (verify_misses or 0) + 1
-                    if misses >= 2:
-                        cur.execute("""
-                            UPDATE Scraper.EBAY
-                            SET    SoldDate = %s,
-                                   Price    = NULL
-                            WHERE  ID       = %s
-                              AND  SoldDate IS NULL
-                        """, (end_time, ebay_id))
-                        cur.execute("""
-                            UPDATE Scraper.DealOutcomes
-                            SET    EndedUnsold = 1, VerifyMisses = %s
-                            WHERE  EbayID = %s
-                        """, (misses, ebay_id))
-                        log.info(
-                            "Outcome closed as removed/cancelled after %d not-found passes: "
-                            "ID=%s category=%s end_time=%s title='%s'",
-                            misses, ebay_id, category, end_time, title[:80],
-                        )
-                        resolved += 1
-                    else:
-                        cur.execute("""
-                            UPDATE Scraper.DealOutcomes
-                            SET    VerifyMisses = %s
-                            WHERE  EbayID = %s
-                        """, (misses, ebay_id))
-                        log.warning(
-                            "Outcome not found in sold or completed results (pass %d/2) — "
-                            "ID=%s category=%s title='%s'; will close as removed on next miss",
-                            misses, ebay_id, category, title[:80],
-                        )
-            except Exception as e:
-                log.warning("Outcome verification skipped for item %s: %s", ebay_id, e)
-
+              AND  e.ResolveAttempts < %s
+        """, (hours_after, give_up_days, RESOLVE_MAX_ATTEMPTS))
+        ids = [r[0] for r in cur.fetchall()]
         conn.commit()
-        log.info("Outcome verification complete: %d/%d resolved", resolved, len(pending))
-        return resolved
-
     except Exception as e:
         log.error("Outcome verification error: %s", e)
         conn.rollback()
         return 0
     finally:
         conn.close()
+
+    if not ids:
+        log.info("Outcome verification: no unresolved outcomes in window (%dh-%dd)",
+                 hours_after, give_up_days)
+        return 0
+    stats = _resolve_ids(ids)
+    resolved = stats['sold'] + stats['unsold']
+    log.info("Outcome verification complete: %d/%d resolved %s", resolved, len(ids),
+             {k: v for k, v in stats.items() if v})
+    return resolved
 
 
 def _product_from_dict(d: dict) -> Product:
@@ -2104,9 +2337,16 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
     cur = conn.cursor()
 
     try:
-        inserted = updated = 0
+        inserted = updated = failed = 0
         for query in query_list:
-            items = Scrape(query, product_type, country, condition, listing_type, cache=cache)
+            # One blocked query must not sink the category (it used to: the
+            # first 403 aborted all remaining queries). Fail only if all do.
+            try:
+                items = Scrape(query, product_type, country, condition, listing_type, cache=cache)
+            except Exception as e:
+                failed += 1
+                log.warning("%s query '%s' skipped: %s", product_type, query, e)
+                continue
 
             # An auction-only search KNOWS every result is an auction (and can
             # heal rows the BIN sweep once mis-tagged); an 'all' search knows
@@ -2124,7 +2364,10 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
                     log.error("DB error uploading item %s: %s", p.id, e)
 
         conn.commit()
-        log.info("Scrape complete [%s]: %d new, %d updated", product_type, inserted, updated)
+        if query_list and failed == len(query_list):
+            raise RuntimeError(f"all {failed} {product_type} queries failed")
+        log.info("Scrape complete [%s]: %d new, %d updated%s", product_type, inserted, updated,
+                 f" ({failed}/{len(query_list)} queries skipped)" if failed else "")
         return inserted, updated
 
     except Exception as e:
@@ -2769,7 +3012,10 @@ def EnsureEnrichmentColumns() -> None:
     try:
         cur = conn.cursor()
         for col_sql in ("ReserveNotMet TINYINT(1) NOT NULL DEFAULT 0",
-                        "Watchers INT NULL"):
+                        "Watchers INT NULL",
+                        # item-page resolutions that couldn't read a verdict
+                        # (see ResolveEndedAuctions) — capped retries
+                        "ResolveAttempts TINYINT NOT NULL DEFAULT 0"):
             try:
                 cur.execute(f"ALTER TABLE Scraper.EBAY ADD COLUMN {col_sql}")
                 conn.commit()

@@ -43,6 +43,11 @@ OUTCOME_VERIFY_HOURS = int(os.environ.get('OUTCOME_VERIFY_HOURS', '6'))
 # marked as gave-up (GaveUp=1) and excluded from future retries.
 OUTCOME_GIVE_UP_DAYS = int(os.environ.get('OUTCOME_GIVE_UP_DAYS', '7'))
 
+# Ended auctions resolved from item pages per full run (one fetch each). The
+# watched pool ends ~300-450 auctions/day, so 60/hour keeps up with room to
+# drain a backlog, while a run stays a few minutes long.
+RESOLVE_PER_RUN = int(os.environ.get('RESOLVE_PER_RUN', '60'))
+
 # Minutes between full query-list scrapes.
 FULL_SCRAPE_INTERVAL_MINUTES = int(os.environ.get('FULL_SCRAPE_INTERVAL_MINUTES', '60'))
 
@@ -428,6 +433,14 @@ def run_full_scrape():
     except Exception as e:
         log.error("Outcome verification failed: %s", e)
 
+    # Sold prices for the market medians: eBay walls off sold SEARCHES behind
+    # sign-in, so every ended auction we watched is resolved from its item page.
+    resolve_stats = {}
+    try:
+        resolve_stats = EbayScraper.ResolveEndedAuctions(limit=RESOLVE_PER_RUN)
+    except Exception as e:
+        log.error("Ended-auction resolution failed: %s", e)
+
     # Server-side deal surfacing + push notifications — deals are captured
     # and alerted even when nobody has the dashboard open.
     try:
@@ -454,12 +467,15 @@ def run_full_scrape():
 
     _last_full_scrape = _utcnow()
     coverage = EbayScraper.get_field_coverage()
-    alerts = EbayScraper.coverage_alerts(coverage)
+    cov_alerts = EbayScraper.coverage_alerts(coverage)
+    res_alerts = EbayScraper.resolve_alerts(resolve_stats)
+    alerts = cov_alerts + res_alerts
     try:
         EbayScraper.RecordScrapeCompleted(stats={
             'rows': total_rows,
             'categories_ok': categories_ok,
             'coverage': coverage,
+            'resolved': resolve_stats,
             'alerts': alerts,
         })
     except Exception as e:
@@ -472,13 +488,15 @@ def run_full_scrape():
     # Field-coverage collapse ALSO withholds the heartbeat: partial markup
     # drift (a single field's parser going blind, like the old silent-£0
     # shipping bug) is invisible to the row count.
-    for a in alerts:
+    for a in cov_alerts:
         log.error("Field-coverage alert: %s — eBay markup has likely drifted "
                   "for this field. Kuma heartbeat withheld.", a)
     kuma_heartbeat(
         ok=(categories_ok > 0 and total_rows > 0 and not alerts),
         msg=f"full scrape ok: {total_rows} rows across {categories_ok}/{len(CATEGORY_QUERIES)} categories",
     )
+    for a in res_alerts:
+        log.error("Resolve alert: %s — Kuma heartbeat withheld.", a)
     if categories_ok > 0 and total_rows == 0:
         log.error(
             "Full scrape touched 0 rows — eBay markup may have changed "
@@ -590,7 +608,9 @@ _last_beat = time.monotonic()
 def _watchdog():
     while True:
         time.sleep(60)
-        stalled = time.monotonic() - _last_beat
+        # A long paced run (dozens of jittered fetches) is alive as long as
+        # requests keep going out; a wedged loop stops both clocks.
+        stalled = time.monotonic() - max(_last_beat, EbayScraper._last_fetch_at)
         if stalled > WATCHDOG_TIMEOUT_S:
             log.critical("Watchdog: scrape loop stalled %.0fs (> %ds) — force-exiting "
                          "for a clean restart.", stalled, WATCHDOG_TIMEOUT_S)

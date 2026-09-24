@@ -166,6 +166,18 @@ class TestFetchDirect:
     def setup_method(self):
         # Each test gets a clean module-level session so tests don't bleed into each other.
         EbayScraper.reset_direct_session()
+        self._saved = {k: getattr(EbayScraper, k) for k in (
+            '_MIN_DELAY_S', '_JITTER_S', '_BLOCK_BACKOFF_S', '_profile_idx')}
+        EbayScraper._MIN_DELAY_S = EbayScraper._JITTER_S = EbayScraper._BLOCK_BACKOFF_S = 0
+        EbayScraper._consecutive_blocks = 0
+        EbayScraper._breaker_open_until = 0.0
+
+    def teardown_method(self):
+        for k, v in self._saved.items():
+            setattr(EbayScraper, k, v)
+        EbayScraper._consecutive_blocks = 0
+        EbayScraper._breaker_open_until = 0.0
+        EbayScraper.reset_direct_session()
 
     def _mock_session(self, status=200, text=LARGE_HTML):
         """Return a mock curl_cffi Session whose .get() yields the given response."""
@@ -200,6 +212,31 @@ class TestFetchDirect:
         with patch("curl_cffi.requests.Session", return_value=session):
             result = EbayScraper._fetch_direct("https://example.com")
         assert result is None
+
+    def test_block_retries_once_on_the_next_fingerprint(self):
+        blocked, ok = self._mock_session(status=403), self._mock_session()
+        with patch("curl_cffi.requests.Session", side_effect=[blocked, ok]) as mk:
+            result = EbayScraper._fetch_direct("https://example.com")
+        assert result == LARGE_HTML
+        profiles = [c.kwargs['impersonate'] for c in mk.call_args_list]
+        assert profiles[0] != profiles[1]
+
+    def test_signin_wall_returns_at_once_without_rotating(self):
+        sess = self._mock_session()
+        sess.get.return_value.url = 'https://signin.ebay.co.uk/ws/eBayISAPI.dll?SignIn'
+        with patch("curl_cffi.requests.Session", return_value=sess) as mk:
+            assert EbayScraper._fetch_direct("https://example.com") is None
+        assert EbayScraper.last_block_reason == EbayScraper.SIGNIN_WALL
+        assert mk.call_count == 1
+
+    def test_consecutive_blocks_open_the_circuit(self):
+        with patch("curl_cffi.requests.Session", return_value=self._mock_session(status=403)):
+            for _ in range(EbayScraper._BREAKER_THRESHOLD):
+                EbayScraper._fetch_direct("https://example.com")
+        with patch("curl_cffi.requests.Session") as mk:
+            assert EbayScraper._fetch_direct("https://example.com") is None
+        mk.assert_not_called()
+        assert EbayScraper.last_block_reason == EbayScraper.CIRCUIT_OPEN
 
     def test_curl_cffi_missing_returns_none(self):
         with patch.dict("sys.modules", {"curl_cffi": None, "curl_cffi.requests": None}):
@@ -247,6 +284,17 @@ class TestFetchZyte:
             with patch("requests.post", side_effect=Exception("connection refused")):
                 result = EbayScraper._fetch_zyte("https://example.com")
         assert result is None
+
+    def test_suspended_account_disables_zyte(self):
+        suspended = MagicMock(status_code=403, text='{"type":"/auth/account-suspended"}')
+        try:
+            with patch.dict(os.environ, self.ZYTE_CREDS):
+                with patch("requests.post", return_value=suspended) as mock_post:
+                    assert EbayScraper._fetch_zyte("https://example.com") is None
+                    assert EbayScraper._fetch_zyte("https://example.com") is None
+            assert mock_post.call_count == 1
+        finally:
+            EbayScraper._zyte_disabled = False
 
     def test_http_error_returns_none(self):
         bad_resp = MagicMock()
@@ -437,170 +485,198 @@ class TestScrapeTargetedSnapshots:
 
 
 class TestVerifyPendingOutcomes:
-    """Unit tests for VerifyPendingOutcomes — all DB and network calls mocked."""
+    """VerifyPendingOutcomes resolves tracked deals from item pages (eBay put
+    sold SEARCHES behind sign-in in Jul 2026) — DB + fetch mocked."""
 
     def _make_conn(self, rows):
-        """Return a mock connection whose cursor fetchall() returns `rows`."""
         cur = MagicMock()
         cur.fetchall.return_value = rows
+        cur.rowcount = 0
         conn = MagicMock()
         conn.cursor.return_value = cur
         return conn, cur
 
     def test_skips_when_nothing_pending(self):
-        """Returns 0 and never calls scrape helpers when no pending items."""
         conn, cur = self._make_conn([])
-        cur.rowcount = 0  # Phase 1: no items gave up
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
-             patch.object(EbayScraper, '_scrape_item_by_id') as mock_scrape, \
-             patch.object(EbayScraper, '_scrape_item_completed') as mock_completed:
-            result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
-        assert result == 0
-        mock_scrape.assert_not_called()
-        mock_completed.assert_not_called()
+             patch.object(EbayScraper, '_fetch_direct') as mock_fetch:
+            assert EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7) == 0
+        mock_fetch.assert_not_called()
 
-    def test_resolves_matching_item(self):
-        """When _scrape_item_by_id returns the item with a sold-date, UPDATE is called."""
-        sold_dt = datetime(2026, 2, 27, 10, 0, 0)
-        end_time = datetime(2026, 2, 27, 8, 0, 0)
-        pending_row = (123456789, 'GPU', 'ASUS RTX 4090 24GB OC Gaming', end_time, 0)
-        conn, cur = self._make_conn([pending_row])
-        cur.rowcount = 0  # Phase 1: no items gave up
-
-        matching_item = {
-            'id': '123456789',
-            'title': 'ASUS RTX 4090 24GB OC Gaming',
-            'price': 750.00,
-            'shipping': 0,
-            'time-left': '',
-            'time-end': None,
-            'sold-date': sold_dt,
-            'bid-count': 12,
-            'reviews-count': 0,
-            'url': 'https://www.ebay.co.uk/itm/123456789',
-            'brand': 'ASUS', 'model': 'RTX 4090', 'vram': 24,
-            'socket': None, 'cores': None,
-            'capacity-gb': None, 'interface': None, 'form-factor': None, 'rpm': None,
-        }
-
+    def test_sold_item_page_resolves_outcome(self):
+        conn, cur = self._make_conn([(128083783938,)])
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
-             patch.object(EbayScraper, '_scrape_item_by_id', return_value=matching_item):
-            result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
+             patch.object(EbayScraper, '_fetch_direct', return_value=ITEM_SOLD_HTML), \
+             patch.object(EbayScraper, 'last_fetch_url', 'https://www.ebay.co.uk/itm/128083783938'):
+            assert EbayScraper.VerifyPendingOutcomes(hours_after=2, give_up_days=7) == 1
+        ebay = [c for c in cur.execute.call_args_list
+                if 'UPDATE Scraper.EBAY' in c[0][0] and 'Price = %s' in c[0][0]]
+        end, pence, bids, ebay_id, repair = ebay[0][0][1]
+        assert (pence, bids, ebay_id, repair) == (4049, 9, 128083783938, False)
+        assert end == datetime(2026, 9, 24, 6, 15, 6)
+        assert any('EndedUnsold = 0' in c[0][0] for c in cur.execute.call_args_list)
 
-        assert result == 1
-        # UPDATE should have been called with the correct values (last execute call)
-        update_call = cur.execute.call_args_list[-1]
-        args = update_call[0][1]          # positional tuple passed to execute
-        assert args[0] == sold_dt         # SoldDate
-        assert args[1] == 75000           # Price in pence (750.00 * 100)
-        assert args[2] == 12              # Bids
-        assert args[3] == 123456789       # ID
-        conn.commit.assert_called_once()
-
-    def test_first_miss_warns_and_counts(self):
-        """First not-found pass: log a warning, bump VerifyMisses, don't resolve
-        — one miss could be eBay indexing lag."""
-        end_time = datetime(2026, 2, 20, 12, 0, 0)
-        pending_row = (555666777, 'CPU', 'Intel Core i9-14900K', end_time, 0)
-        conn, cur = self._make_conn([pending_row])
-        cur.rowcount = 0  # Phase 1: no items gave up
-
+    def test_unsold_item_page_marks_ended_unsold(self):
+        conn, cur = self._make_conn([(227518392483,)])
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
-             patch.object(EbayScraper, '_scrape_item_by_id', return_value=None), \
-             patch.object(EbayScraper, '_scrape_item_completed', return_value=None), \
-             patch.object(EbayScraper, 'log') as mock_log:
-            result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
+             patch.object(EbayScraper, '_fetch_direct', return_value=ITEM_UNSOLD_HTML):
+            assert EbayScraper.VerifyPendingOutcomes(hours_after=2, give_up_days=7) == 1
+        sqls = [c[0][0] for c in cur.execute.call_args_list]
+        assert any('Price = NULL' in s for s in sqls)
+        assert any('EndedUnsold = 1' in s for s in sqls)
 
-        assert result == 0
-        mock_log.error.assert_not_called()
-        assert any('555666777' in str(c) for c in mock_log.warning.call_args_list)
-        # VerifyMisses bumped to 1 (last execute call)
-        args = cur.execute.call_args_list[-1][0][1]
-        assert args == (1, 555666777)
-
-    def test_second_miss_closes_as_removed(self):
-        """Second consecutive not-found pass: the listing was cancelled/removed
-        — close it as EndedUnsold so it leaves the pending panel."""
-        end_time = datetime(2026, 2, 20, 12, 0, 0)
-        pending_row = (555666777, 'CPU', 'Intel Core i9-14900K', end_time, 1)
-        conn, cur = self._make_conn([pending_row])
-        cur.rowcount = 0  # Phase 1: no items gave up
-
+    def test_fetch_failure_counts_an_attempt(self):
+        conn, cur = self._make_conn([(555666777,)])
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
-             patch.object(EbayScraper, '_scrape_item_by_id', return_value=None), \
-             patch.object(EbayScraper, '_scrape_item_completed', return_value=None):
-            result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
+             patch.object(EbayScraper, '_fetch_direct', return_value=None), \
+             patch.object(EbayScraper, 'last_block_reason', 'HTTP 403'):
+            assert EbayScraper.VerifyPendingOutcomes(hours_after=2, give_up_days=7) == 0
+        assert any('ResolveAttempts = ResolveAttempts + 1' in c[0][0]
+                   for c in cur.execute.call_args_list)
 
-        assert result == 1
-        executed = [str(c[0][0]) for c in cur.execute.call_args_list]
-        assert any('EndedUnsold = 1' in sql for sql in executed)
-        # EBAY row closed with the end time as SoldDate and a NULLed price
-        ebay_update = [c for c in cur.execute.call_args_list
-                       if 'SoldDate' in str(c[0][0]) and 'UPDATE Scraper.EBAY' in str(c[0][0])]
-        assert ebay_update and ebay_update[0][0][1] == (end_time, 555666777)
-
-    def test_ended_unsold_marks_outcome(self):
-        """When sold search finds nothing but completed search does, EndedUnsold=1 is set."""
-        end_time = datetime(2026, 2, 20, 18, 0, 0)
-        pending_row = (777888999, 'GPU', 'MSI RTX 3080 Gaming X Trio', end_time, 0)
-        conn, cur = self._make_conn([pending_row])
-        cur.rowcount = 0  # Phase 1: no items gave up
-
-        # Item appears in all-completed results (ended unsold) but not in sold-only
-        completed_item = {
-            'id': '777888999',
-            'title': 'MSI RTX 3080 Gaming X Trio',
-            'price': 320.00,
-            'shipping': 0,
-            'time-left': '',
-            'time-end': end_time,
-            'sold-date': None,   # no sold-date — it ended without a sale
-            'bid-count': 3,
-            'reviews-count': 0,
-            'url': 'https://www.ebay.co.uk/itm/777888999',
-            'brand': 'MSI', 'model': 'RTX 3080', 'vram': 10,
-            'socket': None, 'cores': None,
-            'capacity-gb': None, 'interface': None, 'form-factor': None, 'rpm': None,
-        }
-
+    def test_open_circuit_stops_the_pass(self):
+        conn, cur = self._make_conn([(1,), (2,), (3,)])
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
-             patch.object(EbayScraper, '_scrape_item_by_id', return_value=None), \
-             patch.object(EbayScraper, '_scrape_item_completed', return_value=completed_item), \
-             patch.object(EbayScraper, 'log') as mock_log:
-            result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
+             patch.object(EbayScraper, '_fetch_direct', return_value=None) as mock_fetch, \
+             patch.object(EbayScraper, 'last_block_reason', EbayScraper.CIRCUIT_OPEN):
+            EbayScraper.VerifyPendingOutcomes(hours_after=2, give_up_days=7)
+        assert mock_fetch.call_count == 1      # the rest wait for the next run
 
-        assert result == 1
-        # Should NOT log an error
-        mock_log.error.assert_not_called()
-        # Two UPDATE statements should have been executed (EBAY + DealOutcomes)
-        execute_calls = cur.execute.call_args_list
-        sql_calls = [call[0][0] for call in execute_calls]
-        ebay_update = any('EBAY' in s and 'SoldDate' in s for s in sql_calls)
-        outcome_update = any('DealOutcomes' in s and 'EndedUnsold' in s for s in sql_calls)
-        assert ebay_update, "Expected UPDATE on EBAY table for SoldDate"
-        assert outcome_update, "Expected UPDATE on DealOutcomes table for EndedUnsold"
-        # Price is hardcoded NULL in the SQL (not passed as a param), verify it's in the query
-        ebay_call = next(c for c in execute_calls if 'EBAY' in c[0][0] and 'SoldDate' in c[0][0])
-        ebay_sql = ebay_call[0][0]
-        assert 'NULL' in ebay_sql, "Price should be set to NULL in EBAY UPDATE SQL"
-        conn.commit.assert_called_once()
 
-    def test_give_up_marks_old_items(self):
-        """Items past give_up_days are marked GaveUp=1, a warning is logged, and Phase 2 is skipped."""
-        conn, cur = self._make_conn([])  # Phase 2 returns no in-window items
-        cur.rowcount = 2  # Phase 1 UPDATE marked 2 items as gave-up
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8b. Item-page outcome parsing — real captured ended-auction pages
+# ═══════════════════════════════════════════════════════════════════════════════
 
+_FIX = os.path.join(os.path.dirname(__file__), 'fixtures')
+ITEM_SOLD_HTML = open(os.path.join(_FIX, 'ebay_item_ended_sold_2026-09.html'), encoding='utf-8').read()
+ITEM_UNSOLD_HTML = open(os.path.join(_FIX, 'ebay_item_ended_unsold_2026-09.html'), encoding='utf-8').read()
+ITEM_LIVE_HTML = open(os.path.join(_FIX, 'ebay_item_page_2026-07.html'), encoding='utf-8').read()
+
+
+class TestParseItemOutcome:
+    def test_sold_page(self):
+        # 9-bid RAM kit; the page showed "EUR 47.10" but currentBidPrice is GBP
+        r = EbayScraper.parse_item_outcome(ITEM_SOLD_HTML)
+        assert r == {'state': 'sold', 'price': 40.49, 'bids': 9,
+                     'end': datetime(2026, 9, 24, 6, 15, 6)}
+
+    def test_no_bid_page_is_unsold(self):
+        r = EbayScraper.parse_item_outcome(ITEM_UNSOLD_HTML)
+        assert r['state'] == 'unsold' and r['bids'] == 0 and r['price'] is None
+
+    def test_live_page_is_active(self):
+        assert EbayScraper.parse_item_outcome(ITEM_LIVE_HTML)['state'] == 'active'
+
+    def test_catalogue_redirect_is_gone(self):
+        r = EbayScraper.parse_item_outcome('<html>x</html>', 'https://www.ebay.co.uk/p/11046131534')
+        assert r['state'] == 'gone'
+
+    def test_unrecognised_page_is_unknown(self):
+        assert EbayScraper.parse_item_outcome('<html>nothing</html>')['state'] == 'unknown'
+
+    def test_sold_banner_without_readable_price_never_guesses(self):
+        html = ITEM_SOLD_HTML.replace('"currency":"GBP","convertedFromValue"',
+                                      '"currency":"EUR","convertedFromValue"')
+        assert EbayScraper.parse_item_outcome(html)['state'] == 'unknown'
+
+
+class TestResolveAlerts:
+    def test_blind_sold_detection_alerts(self):
+        assert EbayScraper.resolve_alerts({'ended_with_bids': 12, 'sold': 0})
+
+    def test_healthy_or_thin_runs_do_not(self):
+        assert not EbayScraper.resolve_alerts({'ended_with_bids': 12, 'sold': 7})
+        assert not EbayScraper.resolve_alerts({'ended_with_bids': 4, 'sold': 0})
+        assert not EbayScraper.resolve_alerts({})
+
+
+class TestResolveEndedAuctions:
+    def test_repair_mode_may_overwrite_wrongly_closed_rows(self):
+        cur = MagicMock()
+        cur.fetchall.return_value = [(128083783938,)]
+        conn = MagicMock()
+        conn.cursor.return_value = cur
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
-             patch.object(EbayScraper, '_scrape_item_by_id') as mock_scrape, \
-             patch.object(EbayScraper, 'log') as mock_log:
-            result = EbayScraper.VerifyPendingOutcomes(hours_after=6, give_up_days=7)
+             patch.object(EbayScraper, '_fetch_direct', return_value=ITEM_SOLD_HTML):
+            stats = EbayScraper.ResolveEndedAuctions(limit=5, repair=True)
+        assert stats['sold'] == 1
+        select_sql = cur.execute.call_args_list[0][0][0]
+        assert 'VerifyMisses >= 2' in select_sql
+        ebay = [c for c in cur.execute.call_args_list if 'Price = %s' in c[0][0]]
+        assert ebay[0][0][1][-1] is True        # repair flag reaches the WHERE
 
-        assert result == 0
-        mock_scrape.assert_not_called()
-        mock_log.warning.assert_called_once()
-        # Phase 1 execute should reference GaveUp
-        phase1_sql = cur.execute.call_args_list[0][0][0]
-        assert 'GaveUp' in phase1_sql
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8c. Block handling — classification, sign-in wall, per-query resilience
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestClassifyResponse:
+    BIG = 'x' * 60_000
+
+    def test_real_page(self):
+        assert EbayScraper.classify_response(200, 'https://www.ebay.co.uk/sch/i.html', self.BIG) is None
+
+    def test_http_error(self):
+        assert EbayScraper.classify_response(403, '', self.BIG) == 'HTTP 403'
+
+    def test_signin_redirect_is_the_wall_even_when_large(self):
+        # the real sign-in page is ~116 KB — it used to sail past the size check
+        url = 'https://signin.ebay.co.uk/ws/eBayISAPI.dll?SignIn&siteid=3'
+        assert EbayScraper.classify_response(200, url, self.BIG) == EbayScraper.SIGNIN_WALL
+
+    def test_bot_challenge(self):
+        html = '<title>Pardon our interruption...</title>' + self.BIG
+        assert EbayScraper.classify_response(200, '', html) == 'bot challenge'
+
+    def test_tiny_page(self):
+        assert EbayScraper.classify_response(200, '', '<html></html>') == 'too small'
+
+
+class TestSignInWall:
+    def setup_method(self):
+        EbayScraper._sold_wall_until = 0.0
+
+    def teardown_method(self):
+        EbayScraper._sold_wall_until = 0.0
+
+    def test_wall_skips_zyte_and_sold_searches_but_keeps_active(self):
+        calls = []
+
+        def fake_direct(url):
+            calls.append(url)
+            if 'LH_Sold=1' in url:
+                EbayScraper.last_block_reason = EbayScraper.SIGNIN_WALL
+                return None
+            EbayScraper.last_block_reason = None
+            return LARGE_HTML
+
+        with patch.object(EbayScraper, '_fetch_direct', side_effect=fake_direct), \
+             patch.object(EbayScraper, '_fetch_zyte') as mock_zyte:
+            EbayScraper.Scrape('rtx 3060', 'GPU', country='uk', condition='used',
+                               listing_type='auction')
+            EbayScraper.Scrape('rtx 3070', 'GPU', country='uk', condition='used',
+                               listing_type='auction')
+        mock_zyte.assert_not_called()
+        sold = [u for u in calls if 'LH_Sold=1' in u]
+        assert len(sold) == 1                   # second query didn't retry the wall
+        assert len(calls) == 3                  # both active searches still ran
+
+
+class TestScrapeAndUploadResilience:
+    def test_one_failed_query_does_not_abort_the_category(self):
+        conn = MagicMock()
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'Scrape',
+                          side_effect=[RuntimeError('blocked'), [], []]) as mock_scrape:
+            assert EbayScraper.ScrapeAndUpload(['a', 'b', 'c'], 'GPU', country='uk') == (0, 0)
+        assert mock_scrape.call_count == 3
+
+    def test_all_queries_failing_fails_the_category(self):
+        conn = MagicMock()
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'Scrape', side_effect=RuntimeError('blocked')):
+            with pytest.raises(RuntimeError, match='all 2 GPU queries failed'):
+                EbayScraper.ScrapeAndUpload(['a', 'b'], 'GPU', country='uk')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
