@@ -605,6 +605,14 @@ class TestResolveEndedAuctions:
         ebay = [c for c in cur.execute.call_args_list if 'Price = %s' in c[0][0]]
         assert ebay[0][0][1][-1] is True        # repair flag reaches the WHERE
 
+    def test_repair_confirmed_unsold_leaves_the_queue(self):
+        # the repair query keys on VerifyMisses >= 2; a confirmed unsold
+        # verdict must clear it or the row is re-fetched forever
+        cur = MagicMock()
+        EbayScraper._apply_item_outcome(cur, 1, {'state': 'unsold', 'bids': 0, 'end': None},
+                                        repair=True)
+        assert any('VerifyMisses = 0' in c[0][0] for c in cur.execute.call_args_list)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 8c. Block handling — classification, sign-in wall, per-query resilience

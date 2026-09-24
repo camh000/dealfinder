@@ -2141,8 +2141,10 @@ def _apply_item_outcome(cur, ebay_id: int, r: dict, repair: bool = False) -> Non
             SET    SoldDate = COALESCE(%s, EndTime), Price = NULL, Bids = COALESCE(%s, Bids)
             WHERE  ID = %s AND SoldDate IS NULL
         """, (r['end'], r['bids'], ebay_id))
+        # VerifyMisses=0: a confirmed verdict, not the old not-found guess —
+        # which also drops the row out of the repair queue.
         cur.execute("""
-            UPDATE Scraper.DealOutcomes SET EndedUnsold = 1 WHERE EbayID = %s
+            UPDATE Scraper.DealOutcomes SET EndedUnsold = 1, VerifyMisses = 0 WHERE EbayID = %s
         """, (ebay_id,))
     elif state == 'active' and r['end'] and r['end'] > datetime.now(timezone.utc).replace(tzinfo=None):
         # Our EndTime was early (search countdowns truncate) — re-queue on the real end.
