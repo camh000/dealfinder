@@ -99,6 +99,8 @@ _breaker_open_until = 0.0
 # empty result — which is how it went unnoticed for two months.
 SIGNIN_WALL = 'sign-in wall'
 CIRCUIT_OPEN = 'circuit open'
+# A real answer from eBay (the listing is gone), as opposed to a block.
+NOT_FOUND = ('HTTP 404', 'HTTP 410')
 
 # Why the most recent direct fetch failed (None on success), and the final
 # URL of the most recent success (item pages redirect to /p/ when purged).
@@ -177,6 +179,24 @@ def _pace() -> None:
     if wait > 0:
         time.sleep(wait)
     _last_fetch_at = time.monotonic()
+
+
+def breaker_remaining() -> float:
+    """Seconds until the circuit breaker lets eBay requests through again."""
+    return max(0.0, _breaker_open_until - time.monotonic())
+
+
+def wait_for_breaker(on_tick=None, chunk_s: float = 20.0) -> float:
+    """Sleep until the breaker closes; returns the seconds waited (0 if it
+    wasn't open). on_tick() runs every chunk so a caller's watchdog stays fed."""
+    waited = 0.0
+    while (left := breaker_remaining()) > 0:
+        step = min(chunk_s, left)
+        time.sleep(step)
+        waited += step
+        if on_tick:
+            on_tick()
+    return waited
 
 
 def _open_direct_session(cffi_requests) -> None:
@@ -260,6 +280,11 @@ def _fetch_direct(url: str) -> str | None:
         last_block_reason = reason
         if reason == SIGNIN_WALL:
             log.info("Direct fetch: eBay sign-in wall for %s", url)
+            return None
+        if reason in NOT_FOUND:
+            # eBay answered: the page doesn't exist. Not a block — rotating,
+            # retrying or counting it toward the breaker would all be wrong.
+            log.info("Direct fetch: %s for %s", reason, url)
             return None
 
         log.warning("Direct fetch blocked (%s, %s): %s", reason, profile, url)
@@ -2174,6 +2199,10 @@ def _resolve_ids(ids, repair: bool = False) -> dict:
                 if last_block_reason == CIRCUIT_OPEN:
                     break           # eBay is cooling off — try the rest next run
                 stats['failed'] += 1
+                if last_block_reason not in NOT_FOUND:
+                    # Blocked, not answered: we learned nothing about the
+                    # listing, so it must not cost one of its ResolveAttempts.
+                    continue
                 r = {'state': 'failed'}
             else:
                 stats['checked'] += 1
@@ -2334,7 +2363,11 @@ def _product_from_dict(d: dict) -> Product:
     )
 
 
-def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', condition='all', listing_type='all', cache=False):
+def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', condition='all', listing_type='all', cache=False,
+                    on_breaker=None):
+    """on_breaker: optional callable invoked when a query fails with the
+    circuit breaker open. If it returns True (it waited the pause out) the
+    query is retried once; otherwise the query is skipped as before."""
     conn = _get_connection()
     cur = conn.cursor()
 
@@ -2344,7 +2377,14 @@ def ScrapeAndUpload(query_list: list[str], product_type: str, country='us', cond
             # One blocked query must not sink the category (it used to: the
             # first 403 aborted all remaining queries). Fail only if all do.
             try:
-                items = Scrape(query, product_type, country, condition, listing_type, cache=cache)
+                try:
+                    items = Scrape(query, product_type, country, condition, listing_type, cache=cache)
+                except Exception:
+                    # Breaker open: every remaining query would fail instantly.
+                    # Let the caller sit the pause out, then try this one again.
+                    if not (on_breaker and breaker_remaining() > 0 and on_breaker()):
+                        raise
+                    items = Scrape(query, product_type, country, condition, listing_type, cache=cache)
             except Exception as e:
                 failed += 1
                 log.warning("%s query '%s' skipped: %s", product_type, query, e)

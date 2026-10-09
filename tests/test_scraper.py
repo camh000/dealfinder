@@ -238,6 +238,15 @@ class TestFetchDirect:
         mk.assert_not_called()
         assert EbayScraper.last_block_reason == EbayScraper.CIRCUIT_OPEN
 
+    def test_404_is_an_answer_not_a_block(self):
+        sess = self._mock_session(status=404)
+        with patch("curl_cffi.requests.Session", return_value=sess) as mk:
+            for _ in range(EbayScraper._BREAKER_THRESHOLD + 1):
+                assert EbayScraper._fetch_direct("https://example.com") is None
+        assert EbayScraper.last_block_reason == 'HTTP 404'
+        assert mk.call_count == 1                       # no rotation, same session
+        assert EbayScraper.breaker_remaining() == 0.0   # and the breaker stays shut
+
     def test_curl_cffi_missing_returns_none(self):
         with patch.dict("sys.modules", {"curl_cffi": None, "curl_cffi.requests": None}):
             result = EbayScraper._fetch_direct("https://example.com")
@@ -525,14 +534,23 @@ class TestVerifyPendingOutcomes:
         assert any('Price = NULL' in s for s in sqls)
         assert any('EndedUnsold = 1' in s for s in sqls)
 
-    def test_fetch_failure_counts_an_attempt(self):
+    def test_missing_page_counts_an_attempt(self):
+        conn, cur = self._make_conn([(555666777,)])
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, '_fetch_direct', return_value=None), \
+             patch.object(EbayScraper, 'last_block_reason', 'HTTP 404'):
+            assert EbayScraper.VerifyPendingOutcomes(hours_after=2, give_up_days=7) == 0
+        assert any('ResolveAttempts = ResolveAttempts + 1' in c[0][0]
+                   for c in cur.execute.call_args_list)
+
+    def test_blocked_fetch_does_not_count_an_attempt(self):
         conn, cur = self._make_conn([(555666777,)])
         with patch.object(EbayScraper, '_get_connection', return_value=conn), \
              patch.object(EbayScraper, '_fetch_direct', return_value=None), \
              patch.object(EbayScraper, 'last_block_reason', 'HTTP 403'):
             assert EbayScraper.VerifyPendingOutcomes(hours_after=2, give_up_days=7) == 0
-        assert any('ResolveAttempts = ResolveAttempts + 1' in c[0][0]
-                   for c in cur.execute.call_args_list)
+        assert not any('ResolveAttempts = ResolveAttempts + 1' in c[0][0]
+                       for c in cur.execute.call_args_list)
 
     def test_open_circuit_stops_the_pass(self):
         conn, cur = self._make_conn([(1,), (2,), (3,)])
@@ -685,6 +703,53 @@ class TestScrapeAndUploadResilience:
              patch.object(EbayScraper, 'Scrape', side_effect=RuntimeError('blocked')):
             with pytest.raises(RuntimeError, match='all 2 GPU queries failed'):
                 EbayScraper.ScrapeAndUpload(['a', 'b'], 'GPU', country='uk')
+
+    def test_open_breaker_is_waited_out_and_the_query_retried(self):
+        conn, waited = MagicMock(), MagicMock(return_value=True)
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'breaker_remaining', return_value=600.0), \
+             patch.object(EbayScraper, 'Scrape',
+                          side_effect=[RuntimeError('circuit open'), [], []]) as mock_scrape:
+            assert EbayScraper.ScrapeAndUpload(['a', 'b'], 'GPU', country='uk',
+                                               on_breaker=waited) == (0, 0)
+        waited.assert_called_once()
+        assert mock_scrape.call_count == 3      # 'a' twice, then 'b'
+
+    def test_no_retry_when_the_caller_declines_to_wait(self):
+        conn = MagicMock()
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'breaker_remaining', return_value=600.0), \
+             patch.object(EbayScraper, 'Scrape',
+                          side_effect=[RuntimeError('circuit open'), []]) as mock_scrape:
+            EbayScraper.ScrapeAndUpload(['a', 'b'], 'GPU', country='uk',
+                                        on_breaker=lambda: False)
+        assert mock_scrape.call_count == 2
+
+    def test_ordinary_block_does_not_call_on_breaker(self):
+        conn, waited = MagicMock(), MagicMock(return_value=True)
+        with patch.object(EbayScraper, '_get_connection', return_value=conn), \
+             patch.object(EbayScraper, 'breaker_remaining', return_value=0.0), \
+             patch.object(EbayScraper, 'Scrape', side_effect=[RuntimeError('blocked'), []]):
+            EbayScraper.ScrapeAndUpload(['a', 'b'], 'GPU', country='uk', on_breaker=waited)
+        waited.assert_not_called()
+
+
+class TestBreakerWait:
+    def teardown_method(self):
+        EbayScraper._breaker_open_until = 0.0
+
+    def test_closed_breaker_returns_at_once(self):
+        EbayScraper._breaker_open_until = 0.0
+        assert EbayScraper.breaker_remaining() == 0.0
+        assert EbayScraper.wait_for_breaker() == 0.0
+
+    def test_waits_until_the_breaker_closes_and_feeds_the_tick(self):
+        import time as _t
+        EbayScraper._breaker_open_until = _t.monotonic() + 0.25
+        ticks = MagicMock()
+        waited = EbayScraper.wait_for_breaker(on_tick=ticks, chunk_s=0.1)
+        assert waited > 0 and EbayScraper.breaker_remaining() == 0.0
+        assert ticks.call_count >= 2
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

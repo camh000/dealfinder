@@ -202,10 +202,27 @@ CATEGORY_QUERIES = [
     (MOBO_QUERY_LIST, 'MOBO'),
 ]
 
+# A full run needs at least this many categories through to count as healthy
+# for the Kuma heartbeat (default: a majority).
+KUMA_MIN_CATEGORIES = int(os.environ.get('KUMA_MIN_CATEGORIES', len(CATEGORY_QUERIES) // 2 + 1))
+# How many circuit-breaker pauses one full run will sit out before giving up
+# on what's left (each is DIRECT_BREAKER_COOLDOWN_S, 15 min by default).
+FULL_RUN_BREAKER_WAITS = int(os.environ.get('FULL_RUN_BREAKER_WAITS', '2'))
+
+
+def _rotated(seq: list, n: int) -> list:
+    """seq starting from position n (wrapping). When eBay starts blocking
+    mid-run it's the tail that goes unscraped — rotating the start each run
+    shares that out instead of always starving the last categories."""
+    k = n % len(seq) if seq else 0
+    return seq[k:] + seq[:k]
+
 # ── Scheduler state ────────────────────────────────────────────────────────────
 
 _last_full_scrape: datetime | None = None
 _last_bin_scan: datetime | None = None
+_full_run_count = 0     # rotates the category start order (see _rotated)
+_bin_scan_count = 0
 _last_audit: datetime | None = None
 
 # Maps str(ebay_id) → datetime of last targeted scrape for that item.
@@ -338,10 +355,11 @@ def notify_bin_finds(finds: list) -> None:
 
 def run_bin_scan(min_discount: float):
     """Sweep newly-listed BIN items for all categories, then push new finds."""
-    global _last_bin_scan
+    global _last_bin_scan, _bin_scan_count
     _last_bin_scan = _utcnow()      # set first: a crashing scan must not hot-loop
     log.info("Starting BIN scan (min discount %.0f%%)...", min_discount)
-    for query_list, product_type in CATEGORY_QUERIES:
+    _bin_scan_count += 1
+    for query_list, product_type in _rotated(CATEGORY_QUERIES, _bin_scan_count):
         try:
             EbayScraper.ScrapeBinAndUpload(query_list, product_type=product_type,
                                            country=SCRAPE_COUNTRY, condition=SCRAPE_CONDITION)
@@ -404,7 +422,8 @@ def kuma_heartbeat(ok: bool, msg: str) -> None:
 
 def run_full_scrape():
     """Run the full query-list scrape for all categories + outcome verification."""
-    global _last_full_scrape
+    global _last_full_scrape, _full_run_count
+    run_started = _utcnow()
     log.info("Starting full scrape run...")
     # Fresh curl-cffi session per full run so Akamai cookies are re-established.
     EbayScraper.reset_direct_session()
@@ -417,15 +436,33 @@ def run_full_scrape():
     )
     total_rows = 0
     categories_ok = 0
-    for query_list, product_type in CATEGORY_QUERIES:
+    # Wait a breaker pause out (a bounded number of times per run) rather than
+    # let it instantly fail every category still to come.
+    waits_left = FULL_RUN_BREAKER_WAITS
+
+    def wait_out_breaker() -> bool:
+        nonlocal waits_left
+        left = EbayScraper.breaker_remaining()
+        if left <= 0 or waits_left <= 0:
+            return False
+        waits_left -= 1
+        log.info("eBay requests paused for another %.0fs — waiting it out before "
+                 "carrying on with the run", left)
+        EbayScraper.wait_for_breaker(on_tick=_beat)
+        return True
+
+    for query_list, product_type in _rotated(CATEGORY_QUERIES, _full_run_count):
+        wait_out_breaker()
         try:
             log.info("Scraping %s...", product_type)
-            inserted, updated = EbayScraper.ScrapeAndUpload(query_list, product_type=product_type, **common)
+            inserted, updated = EbayScraper.ScrapeAndUpload(
+                query_list, product_type=product_type, on_breaker=wait_out_breaker, **common)
             total_rows += inserted + updated
             categories_ok += 1
             log.info("%s scrape complete.", product_type)
         except Exception as e:
             log.error("%s scrape failed: %s", product_type, e)
+    _full_run_count += 1
 
     # Verify outcomes for items past their end time that are still unresolved.
     try:
@@ -465,7 +502,11 @@ def run_full_scrape():
     except Exception as e:
         log.error("Stale-listing prune failed: %s", e)
 
-    _last_full_scrape = _utcnow()
+    # Next run is timed from this run's START, so sitting out a breaker pause
+    # doesn't stretch the hourly cadence (and the Kuma push window with it).
+    # Floor: never start the next one less than 10 min after this one ends.
+    _last_full_scrape = max(run_started, _utcnow() - timedelta(
+        minutes=max(0, FULL_SCRAPE_INTERVAL_MINUTES - 10)))
     coverage = EbayScraper.get_field_coverage()
     cov_alerts = EbayScraper.coverage_alerts(coverage)
     res_alerts = EbayScraper.resolve_alerts(resolve_stats)
@@ -491,12 +532,17 @@ def run_full_scrape():
     for a in cov_alerts:
         log.error("Field-coverage alert: %s — eBay markup has likely drifted "
                   "for this field. Kuma heartbeat withheld.", a)
+    # "Healthy" means most categories got through: a run that scraped 1 of 6
+    # used to beat as ok, which hid a week of ~40% blocking behind a green light.
     kuma_heartbeat(
-        ok=(categories_ok > 0 and total_rows > 0 and not alerts),
+        ok=(categories_ok >= KUMA_MIN_CATEGORIES and total_rows > 0 and not alerts),
         msg=f"full scrape ok: {total_rows} rows across {categories_ok}/{len(CATEGORY_QUERIES)} categories",
     )
     for a in res_alerts:
         log.error("Resolve alert: %s — Kuma heartbeat withheld.", a)
+    if 0 < categories_ok < KUMA_MIN_CATEGORIES:
+        log.error("Only %d/%d categories scraped (need %d) — Kuma heartbeat withheld.",
+                  categories_ok, len(CATEGORY_QUERIES), KUMA_MIN_CATEGORIES)
     if categories_ok > 0 and total_rows == 0:
         log.error(
             "Full scrape touched 0 rows — eBay markup may have changed "
@@ -603,6 +649,12 @@ def _handle_sigterm(signum, frame):
 # slowest legitimate operation (a full scrape is minutes).
 WATCHDOG_TIMEOUT_S = int(os.environ.get('WATCHDOG_TIMEOUT_S', '900'))
 _last_beat = time.monotonic()
+
+
+def _beat() -> None:
+    """Feed the watchdog from inside a long, deliberate wait."""
+    global _last_beat
+    _last_beat = time.monotonic()
 
 
 def _watchdog():
